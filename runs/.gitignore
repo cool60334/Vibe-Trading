@@ -1,0 +1,4 @@
+# Skip large regeneratable artifacts. Keep metrics + trades for traceability.
+**/artifacts/equity.csv
+**/artifacts/ohlcv_*.csv
+**/artifacts/positions.csv

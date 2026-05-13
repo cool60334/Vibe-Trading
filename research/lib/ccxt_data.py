@@ -2,14 +2,76 @@
 ccxt-based fetchers for data not exposed by OKX public endpoints.
 
 Use cases:
+- Funding rate history (Binance / Bybit support multi-year via ccxt; longer than OKX public endpoint)
 - OI history (Bybit / Binance publish historical OI publicly via ccxt)
 - Long/short ratio (some exchanges)
 """
 
 from datetime import datetime, timedelta, timezone
+import time
 
 import ccxt
 import pandas as pd
+
+
+def fetch_funding_rate_history_ccxt(
+    exchange_name: str = "binance",
+    symbol: str = "BTC/USDT:USDT",
+    days: int = 730,
+) -> pd.DataFrame:
+    """Fetch funding rate history via ccxt (Binance/Bybit support multi-year).
+
+    Args:
+        exchange_name: 'binance', 'bybit', 'okx', etc.
+        symbol: ccxt unified perp symbol (e.g. 'BTC/USDT:USDT')
+        days: lookback window
+
+    Returns:
+        DataFrame indexed by UTC time (tz-aware), column 'funding_rate' (float).
+    """
+    if exchange_name == "binance":
+        exchange = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "future"}})
+        page_limit = 1000
+    elif exchange_name == "bybit":
+        exchange = ccxt.bybit({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+        page_limit = 200
+    else:
+        exchange = getattr(ccxt, exchange_name)({"enableRateLimit": True})
+        page_limit = 100
+
+    since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    rows: list = []
+    while since < end_ms:
+        try:
+            batch = exchange.fetch_funding_rate_history(symbol, since=since, limit=page_limit)
+        except Exception as e:
+            print(f"  fetch_funding_rate_history error at since={since}: {e}")
+            break
+        if not batch:
+            break
+        for entry in batch:
+            ts = entry.get("timestamp")
+            rate = entry.get("fundingRate")
+            if ts is None or rate is None:
+                continue
+            rows.append(
+                {
+                    "time": datetime.fromtimestamp(ts / 1000, tz=timezone.utc),
+                    "funding_rate": float(rate),
+                }
+            )
+        last_ts = batch[-1].get("timestamp")
+        if last_ts is None or last_ts <= since:
+            break
+        since = last_ts + 1
+        time.sleep(0.1)
+
+    if not rows:
+        return pd.DataFrame(columns=["funding_rate"])
+    df = pd.DataFrame(rows).drop_duplicates("time").set_index("time").sort_index()
+    return df
 
 
 def fetch_oi_history_bybit(symbol: str = "BTC/USDT:USDT", days: int = 90, timeframe: str = "1h") -> pd.DataFrame:
