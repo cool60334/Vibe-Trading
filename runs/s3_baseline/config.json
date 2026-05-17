@@ -1,0 +1,15 @@
+{
+  "codes": ["BTC-USDT"],
+  "start_date": "2024-05-14",
+  "end_date": "2026-05-13",
+  "source": "ccxt",
+  "interval": "1H",
+  "engine": "daily",
+  "initial_cash": 1000.0,
+  "leverage": 1.5,
+  "maker_rate": 0.0002,
+  "taker_rate": 0.00055,
+  "slippage": 0.0005,
+  "margin_mode": "isolated",
+  "benchmark": "BTC-USDT"
+}
