@@ -18,13 +18,17 @@ def fetch_funding_rate_history_ccxt(
     exchange_name: str = "binance",
     symbol: str = "BTC/USDT:USDT",
     days: int = 730,
+    since_dt: datetime | None = None,
+    until_dt: datetime | None = None,
 ) -> pd.DataFrame:
     """Fetch funding rate history via ccxt (Binance/Bybit support multi-year).
 
     Args:
         exchange_name: 'binance', 'bybit', 'okx', etc.
         symbol: ccxt unified perp symbol (e.g. 'BTC/USDT:USDT')
-        days: lookback window
+        days: lookback window (used only if since_dt/until_dt not set)
+        since_dt: optional explicit start (tz-aware UTC). Overrides days.
+        until_dt: optional explicit end (tz-aware UTC). Defaults to now.
 
     Returns:
         DataFrame indexed by UTC time (tz-aware), column 'funding_rate' (float).
@@ -39,8 +43,14 @@ def fetch_funding_rate_history_ccxt(
         exchange = getattr(ccxt, exchange_name)({"enableRateLimit": True})
         page_limit = 100
 
-    since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
-    end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    if since_dt is not None:
+        since = int(since_dt.timestamp() * 1000)
+    else:
+        since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    if until_dt is not None:
+        end_ms = int(until_dt.timestamp() * 1000)
+    else:
+        end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     rows: list = []
     while since < end_ms:
@@ -55,6 +65,8 @@ def fetch_funding_rate_history_ccxt(
             ts = entry.get("timestamp")
             rate = entry.get("fundingRate")
             if ts is None or rate is None:
+                continue
+            if ts > end_ms:
                 continue
             rows.append(
                 {
