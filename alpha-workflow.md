@@ -11,6 +11,12 @@
   - 加入 Git workflow + backtest 沙箱坑 + 2 年 ccxt 資料 baseline
   - 加入 backtest-diagnose 反饋迴圈（vibe-trading swarm → Claude 對話 review）
 - **v2.1（2026-05-13 主檔遷移）**：v2 補充 A-E 分散併入各階段；本檔成為唯一活檔
+- **v3（2026-05-18 跨 regime + ensemble 強制規則）**：通用方法論升級
+  - 階段 1 加：單因子 |IC| < 0.10 不可單用、cross-regime 驗證強制 ≥ 3 期
+  - 新增階段 2.5 Regime detection 層（任何 regime-conditional 策略必備）
+  - 階段 3 加 3 個必跑檢查：cost stress、parameter sweep、OOS walk-forward
+  - 階段 5 改評分原則：ensemble > 單套、Pareto sum、asymmetric variant 三版必跑
+  - 階段 6 補 TV Pine 限制：無乾淨 funding/FNG feed → 監控用，不執行
 
 ---
 
@@ -231,6 +237,17 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 **通過條件**：至少 2 個因子 \|IC\| > 0.05 且 \|IR\| > 0.5。若不通過 → 擴大 Tier 2 因子重試。
 
+**v3 強制規則**：
+
+1. **單一因子 \|IC\| < 0.10 不可單獨建策略** — 弱因子必組 ensemble（多因子投票稀釋雜訊）。單因子 \|IC\| ~0.08 的策略在敵對 regime 會被結構性逆風吃光，須與其他因子組合。
+
+2. **Cross-regime 強制驗證（≥ 3 期）** — IC 計算不能只看 2 年單區間。任何因子分析報告須包含至少：
+   - 1 個 bear cycle（如 2022 LUNA/FTX、2018 緩跌）
+   - 1 個 bull cycle（如 2024-26、2020-21 alt-bull）
+   - 1 個 chop / 整理期（如 2023 post-FTX）
+   
+   各期 IC 列表並標注「regime-conditional」vs「regime-stable」屬性。Regime-stable 因子優先進策略。
+
 ---
 
 ### 🧪 階段 2：策略原型產生（**gpt-5 主跑**）
@@ -270,6 +287,49 @@ DO NOT write Python. ONLY use write_file tool.
 **產出**：4 份 `strategy_Sn.yaml` 策略規格（含參數搜尋範圍）
 
 > 注意 sandbox：write_file 落腳 `runs/<run_id>/research/strategies/`，需 cp 到 repo 真實位置。
+
+---
+
+### 🛂 階段 2.5：Regime detection 層（v3 新增）
+
+**新手白話**：策略不能不分牛熊都用同一套 — 同一個 contrarian 策略在熊市可能 Sharpe +2，在牛市 -0.7。要先有「現在是哪種市場」的偵測器，才能決定該不該開倉。
+
+**為何必須**：
+
+任何 regime-conditional 策略（特別是 contrarian、mean reversion、funding 反向類）需要這層 gate。實證：
+- 同一套 funding 反向策略在 bear regime Sharpe > +0.8，bull regime Sharpe < -0.5
+- 拿掉 gate 在強牛 OOS（如 covid 後 alt-bull）DD 可達 -38%
+- 加 gate 後 OOS DD < -2%
+
+**設計範本（不寫具體數字，視策略客製）**：
+
+1. **價格 trend 元件**：移動平均（EMA / SMA）+ slope 過濾
+   - 例：N 日 EMA vs 現價、N 日 slope 方向
+2. **持續性過濾**：避免單日反彈被誤標
+   - 例：滾動 M 天內 X% 比例為 raw bear，才確認 bear
+3. **因子方向 override**：用主要因子的均值符號當額外確認
+   - 例：funding 連續正值（市場狂熱）即使技術面看似 bear 也降級 neutral
+4. **三類標籤**：bull / bear / neutral
+5. **Gate 規則**：策略只在指定 regime 內開倉，其餘強制歸零
+
+**參數選擇方法**：
+
+- 不靠人類直覺定數字，跑 grid search 找 Pareto 最佳
+- 評分指標：跨 N regime 的 Sharpe sum（不是單 regime 最佳）
+- 警惕「緊縮 detector」過敏（如 30d/83% 持續門檻會吃 bumpy bear 的 dead-cat 反彈）
+
+**驗證方法**：
+
+1. 計算各歷史 regime 的 label distribution：
+   - 已知 bear 期間：bear% 應 ≥ 70%
+   - 已知 bull 期間：bull% 應為主，bear% 用來捕捉回檔（10-35% 合理）
+   - 已知 chop 期間：neutral % 高
+2. 跑 gate 開關對比實驗：策略在「無 gate」vs「有 gate」的 OOS DD 與 Sharpe 差異
+3. 至少 1 個 OOS regime（從未調 detector 參數的時段）驗 label 行為合理
+
+**實作參考**：`research/lib/regime.py`（generic detector）+ `research/regime_validate.py`（label 分佈驗證範本）
+
+**通過條件**：detector 在 OOS regime 上 label 分佈與該 regime 真實特性一致，且加 gate 後策略 OOS DD ≤ ungated DD / 3。
 
 ---
 
@@ -336,6 +396,29 @@ DO NOT write Python. ONLY use write_file tool.
 8. **ccxt loader 符號轉換**：`code.replace("-", "/")` → `BTC-USDT-SWAP` 變 `BTC/USDT/SWAP`（非法）。改用 `BTC-USDT`（spot proxy）作 walk-through
 9. **平台 read_file 沙箱**：agent 讀不到 repo 絕對路徑 → 要透過 prompt inline 或 `VIBE_TRADING_ALLOWED_FILE_ROOTS` env
 
+**v3 強制三檢查**（任何策略進階段 4 前必跑，缺一不可）：
+
+1. **Cost stress test（成本壓力測試）**
+   - 把 config 的 maker_rate / taker_rate / slippage 全部 × 3 重跑
+   - 若 base Sharpe > 1.0 但 stress Sharpe < 0 → alpha 是 fee illusion，禁進實盤
+   - 通過條件：stress Sharpe ≥ base Sharpe × 0.5 且仍為正
+   - 揭示「signal 結構穩 vs alpha 被費吃」的差別：DD 變化 < 5pp 是好，return 被吃 50%+ 通常是 frequency 太高
+
+2. **Parameter sweep（參數掃描）**
+   - 對策略主要參數（持續性、percentile window、EMA 長度等）做 grid search（≥ 5 個鄰近 config）
+   - 評分用「跨 N regime 的 Sharpe sum」，不是單期最佳
+   - 若 metric 隨鄰近參數劇烈震盪 → cherry-pick / overfit
+   - 若 metric 形成 plateau → 真實 alpha，選 plateau 中心當 production 參數
+   - 警惕只比較單一 regime 結果決定參數，這會 overfit 該 regime
+
+3. **OOS walk-forward（樣本外驗證）**
+   - 至少 2 個從未拿來調參的 regime（且 character 需多樣 — 不能 2 個都是 bull）
+   - 例：訓練用 bear2022 + bear2018 + bull2024-26 → OOS 用 covid_altbull + post-FTX_chop
+   - 通過條件：OOS DD ≤ 訓練期 max DD × 1.5、OOS Sharpe ≥ 0
+   - 任一 OOS 翻車（DD > -25% 或 Sharpe < -0.5）→ 退回階段 2 重設計，不准進實盤
+
+三項全過 → 進階段 4 微調。任一不過 → 退階段 2。
+
 ---
 
 ### 🔧 階段 4：保守參數優化（**gpt-5 主判斷**）
@@ -381,6 +464,18 @@ for w, t in itertools.product(windows, thresholds):
 - 或放寬持倉時長限制
 - 或考慮 regime-aware multi-strategy（不再追求單一全天候策略）
 
+**v3 評分原則（取代「Sharpe top 1」單一選法）**：
+
+1. **Ensemble > 單套**：若單策略 IC 弱（|IC| < 0.10）或跨 regime 性格差異大（同策略在 bear2022 vs bear2018 結果反轉），組 ensemble 多因子投票 + 倉位自動降權（單票觸發 << 多票同向）。Diversification 是補弱因子最直接方法。
+
+2. **Pareto 跨 regime sum > 單期峰值**：選策略時用「N 個 regime 的 Sharpe 加總」排名，不只看單 regime 最高。單期 Sharpe +2.5 但其他 regime -0.5 的策略，比四個 regime 都 +0.8 的策略更脆。實證：peak-chasing 在 OOS 常翻車，sum-based 通常穩。
+
+3. **Asymmetric variant 三版必跑**：long-only、short-only、long+short 全部回測同一份訊號。若信號 IC 在「短側」遠強於「長側」（如 funding 反向 contrarian），short-only 通常 Sharpe/Calmar 顯著優於 long+short。不要假設對稱。
+
+4. **Regime gate 是 production 必要安全閥**：即使單套策略看似全 regime 都正，OOS 環境會出現訓練時沒見過的 regime 性格（如 alt-bull / chop）。Gate 過濾掉非適配 regime 是 OOS 翻車防火牆。實證：拿掉 gate 在 OOS bull regime DD 可達 -38%；加 gate 後 -2%。
+
+5. **Cost-adjusted 最終排名**：Sharpe top 不是 base Sharpe top，而是 stress Sharpe top（3× cost 後）。實戰執行費用 + 滑價會不只 3×，stress 通過的策略才有實戰價值。
+
 ---
 
 ### 📜 階段 6：TradingView Pine Script 導出
@@ -407,6 +502,24 @@ vibe-trading --pine <run_id>
 **驗證**：TradingView 回測淨值曲線形狀應與平台回測 ±5% 內吻合。
 
 **Alert 設定**：Strategy 內加 `strategy.entry/exit` → 在 TradingView Create Alert → 設 webhook URL（需 TradingView Pro+）。
+
+**v3 限制盤點 — TradingView 不能取代 Python 執行**：
+
+實作後發現 TV Pine 對策略類因子的支援嚴重不足：
+
+1. **無乾淨 funding rate time-series feed**：TV 沒標準的「`<EXCHANGE>:BTCUSDT_FUNDING_RATE`」ticker，多數人會誤拿 perp 收盤價當代理，結果 funding 百分位變成「價格百分位」，訊號完全錯誤
+2. **無 alternative.me F&G feed**：所有 sentiment 因子要 fallback 到 BTC.D / USDT.D 等 proxy，與原訊號 drift 大
+3. **無 OI / 鏈上資料**：Tier 1 非價格因子大半在 TV 上無原生來源
+4. **無多源 funding 合併**：Python 可串 BitMEX（2017+）+ Binance（2019+）拉長歷史；TV 單一 ticker 受限
+5. **不能下 crypto 單**：TV strategy 只能跑回測 + alert webhook，真實執行得自架 server 接 webhook → ccxt 下單
+
+**TV 定位調整**：
+- ✅ **regime 監控儀表板**（看 EMA + slope 標 regime 背景色，用來決策進出場時機）
+- ✅ **價格 / 趨勢類因子視覺化**（EMA crossover、ATR、RSI 等 TV 強項）
+- ❌ **不當主執行平台**（funding / FNG / OI 為主的策略訊號精度差）
+- ❌ **不當主回測平台**（Strategy Tester 與 Python backtest 落差大）
+
+**真實執行路徑**：Bybit Python bot（ccxt）+ 自寫 live loop（fetch → signal → order → log）。TV 只負責看圖確認 regime。
 
 ---
 
