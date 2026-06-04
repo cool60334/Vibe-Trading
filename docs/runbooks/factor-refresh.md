@@ -16,14 +16,14 @@ container reads them via `/repo:ro` — no restart needed.
    cd /path/to/repo/research
    python3.11 -m venv .venv
    source .venv/bin/activate
-   pip install -r requirements.txt   # or the project's research deps
+   pip install pandas pyarrow ccxt requests pyyaml scipy scikit-learn   # core research deps
    ```
 2. Seed the parquet once (verifies network + creds):
    ```bash
    RESEARCH_VENV=/path/to/repo/research/.venv \
      bash /path/to/repo/scripts/refresh_factors.sh
    ```
-   Confirm `research/refresh_factors.log` ends with `refresh_factors: OK`.
+   Confirm the terminal output ends with `refresh_factors: OK`.
 
 ## Enable the daily cron
 
@@ -42,7 +42,7 @@ Add to the VPS crontab (`crontab -e`), runs 00:30 UTC daily:
   Should be within ~1 day of now (UTC).
 - The trader pauses and emits a `factor data stale:` alert if the newest factor
   timestamp is older than 2 days (`FACTOR_MAX_AGE_DAYS`, overridable via env).
-  Check the strategy's `testnet_status.json` → `live.status` / `alerts`.
+  The status file is at `runs/testnet/<testnet_id>/testnet_status.json` — check `live.status` and `alerts`.
 
 ## When it breaks
 
