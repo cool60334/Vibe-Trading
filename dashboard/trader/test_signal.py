@@ -78,3 +78,18 @@ def test_compute_signal_no_manifests_dir_is_never_stale(tmp_path):
     )
     assert result.stale is False
     assert result.signal == 1
+
+
+def test_compute_signal_manifests_dir_but_no_meta_is_stale(tmp_path):
+    run_dir = _make_run_dir(tmp_path / "run")
+    manifests = tmp_path / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    # No .meta.json or .parquet file — factor_index_end returns None
+
+    result = compute_signal(
+        run_dir, exchange=None, symbol="ETH/USDT:USDT",
+        manifests_dir=manifests, now=datetime(2026, 6, 4, tzinfo=timezone.utc),
+    )
+    assert result.stale is True
+    assert result.signal == 0
+    assert result.age_days is None

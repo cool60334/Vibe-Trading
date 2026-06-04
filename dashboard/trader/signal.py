@@ -15,7 +15,7 @@ from typing import Optional
 
 import pandas as pd
 
-from trader.freshness import factor_index_end, is_stale
+from trader.freshness import factor_index_end, is_stale, _to_utc
 
 FACTOR_MAX_AGE_DAYS = float(os.environ.get("FACTOR_MAX_AGE_DAYS", "2"))
 
@@ -95,12 +95,12 @@ def compute_signal(
 
     engine_symbol = getattr(engine, "SYMBOL", symbol)
 
-    now = now or datetime.now(tz=timezone.utc)
+    now_utc = _to_utc(now) if now is not None else datetime.now(tz=timezone.utc)
     index_end = factor_index_end(manifests_dir, engine_symbol) if manifests_dir else None
-    age_days = (now - index_end).total_seconds() / 86400 if index_end else None
+    age_days = (now_utc - index_end).total_seconds() / 86400 if index_end else None
 
     if manifests_dir is not None and is_stale(
-        index_end, now, timedelta(days=FACTOR_MAX_AGE_DAYS)
+        index_end, now_utc, timedelta(days=FACTOR_MAX_AGE_DAYS)
     ):
         return SignalResult(signal=0, stale=True, index_end=index_end, age_days=age_days)
 
