@@ -146,6 +146,7 @@ def run(args: argparse.Namespace) -> None:
     qty: float = args.qty
 
     out_dir = repo_root / "runs" / "testnet" / testnet_id
+    manifests_dir = repo_root / "research" / "manifests"
     sleep_secs = _INTERVAL_SLEEP.get(interval, 3600)
     started_at = _now_iso()
 
@@ -163,6 +164,7 @@ def run(args: argparse.Namespace) -> None:
     trade_count = 0
     alerts: list = []
     current_signal = 0
+    stale_alerted = False
 
     # Graceful shutdown on SIGTERM / SIGINT
     _shutdown = {"flag": False}
@@ -217,12 +219,35 @@ def run(args: argparse.Namespace) -> None:
 
             # ── Compute signal ────────────────────────────────────────────────
             if live_status == "running":
-                new_signal = compute_signal(
-                    run_dir, broker.exchange, symbol, interval, lookback
+                result = compute_signal(
+                    run_dir, broker.exchange, symbol, interval, lookback,
+                    manifests_dir=manifests_dir,
                 )
 
+                if result.stale:
+                    # Factor data too old — do not trade on frozen alpha.
+                    live_status = "paused"
+                    if not stale_alerted:
+                        stale_alerted = True
+                        age = f"{result.age_days:.1f}d" if result.age_days is not None else "unknown"
+                        ie = result.index_end.isoformat() if result.index_end else "none"
+                        alerts.append({
+                            "timestamp": _now_iso(),
+                            "severity": "warning",
+                            "message": f"factor data stale: index_end={ie}, age={age} — paused",
+                        })
+                        logger.warning("Factor data stale (age=%s) — pausing", age)
+                    new_signal = current_signal  # hold position, place no new orders
+                else:
+                    if stale_alerted:
+                        # Factors fresh again — resume.
+                        stale_alerted = False
+                        if live_status == "paused":
+                            live_status = "running"
+                    new_signal = result.signal
+
                 # ── Execute signal ────────────────────────────────────────────
-                if new_signal != current_signal:
+                if not result.stale and new_signal != current_signal:
                     pos = broker.get_position(symbol)
 
                     # Close existing position if changing direction or going flat
