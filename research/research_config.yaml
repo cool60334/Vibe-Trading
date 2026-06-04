@@ -13,10 +13,9 @@ symbols:
   okx_swap: "BTC-USDT-SWAP"
   ccxt_bybit: "BTC/USDT:USDT"
 
-# ETH 已驗證為 negative result（見 memory project_eth_4yr_negative_result），暫關：
-# - name: eth
-#   okx_swap: "ETH-USDT-SWAP"
-#   ccxt_bybit: "ETH/USDT:USDT"
+- name: eth
+  okx_swap: "ETH-USDT-SWAP"
+  ccxt_bybit: "ETH/USDT:USDT"
 
 # ─── 資料抓取參數 ──────────────────────────────────────────────────────────────
 period: 1460         # 回溯天數（約 4 年）— funding 改 ccxt 多年源後可拉長；2022-05 起資料
@@ -41,7 +40,16 @@ fees:
 horizons_h: [8, 24, 72, 168]
 
 # ─── Stage 0 探索快取 ────────────────────────────────────────────────────────
-discovery_cache_days: 7    # swarm 重跑間隔天數（0 = 永不快取）
+discovery_cache_days: 7    # 重跑間隔天數（0 = 永不快取）
+
+# ─── Stage 0 deterministic selector 門檻（可選） ──────────────────────────────
+# Stage 0 已從 LLM swarm 主導翻轉為 deterministic top-K from evidence。下列
+# 區塊覆寫 select_candidates_from_evidence 的預設門檻；省略此區塊用內建預設。
+# 見 research/PIPELINE.md「Stage 0」章節。
+# stage0_selector:
+#   min_abs_ic: 0.05      # 預設 0.05；過 |IC| 門檻才入選
+#   min_abs_ir: 0.10      # 預設 0.10；過 |IR| 門檻才入選
+#   max_candidates: 6     # 預設 6；最多挑幾個因子
 
 # ─── 技術指標池（evidence-driven factor discovery） ──────────────────────────
 # 列出啟用的短名稱指標；indicators.py 依此清單計算特徵。
