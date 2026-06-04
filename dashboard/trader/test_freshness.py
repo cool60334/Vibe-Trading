@@ -62,3 +62,9 @@ def test_is_stale_exact_boundary_is_not_stale():
 
 def test_is_stale_none_index_is_stale():
     assert is_stale(None, _utc(2026, 6, 4), timedelta(days=2)) is True
+
+
+def test_is_stale_naive_now_treated_as_utc():
+    index_end = _utc(2026, 6, 3)
+    naive_now = datetime(2026, 6, 4)  # no tzinfo
+    assert is_stale(index_end, naive_now, timedelta(days=2)) is False

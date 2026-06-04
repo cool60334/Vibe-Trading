@@ -68,4 +68,4 @@ def is_stale(
     """
     if index_end is None:
         return True
-    return (now - index_end) > max_age
+    return (_to_utc(now) - index_end) > max_age
