@@ -146,6 +146,7 @@ def run(args: argparse.Namespace) -> None:
     qty: float = args.qty
 
     out_dir = repo_root / "runs" / "testnet" / testnet_id
+    out_dir.mkdir(parents=True, exist_ok=True)
     manifests_dir = repo_root / "research" / "manifests"
     sleep_secs = _INTERVAL_SLEEP.get(interval, 3600)
     started_at = _now_iso()
