@@ -7,11 +7,25 @@ via ccxt, and returns the latest signal value for the symbol.
 from __future__ import annotations
 
 import importlib.util
-import sys
+import os
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+from trader.freshness import factor_index_end, is_stale
+
+FACTOR_MAX_AGE_DAYS = float(os.environ.get("FACTOR_MAX_AGE_DAYS", "2"))
+
+
+@dataclass
+class SignalResult:
+    signal: int
+    stale: bool
+    index_end: "datetime | None"
+    age_days: "float | None"
 
 
 _INTERVAL_MAP = {
@@ -66,27 +80,29 @@ def compute_signal(
     symbol: str,
     interval: str = "1H",
     lookback: int = 200,
-) -> int:
+    manifests_dir: "Path | None" = None,
+    now: "datetime | None" = None,
+) -> SignalResult:
     """Compute the current signal for *symbol* using the run's signal engine.
 
-    Args:
-        run_dir: Backtest run directory containing code/signal_engine.py.
-        exchange: ccxt exchange instance (authenticated for private, or public).
-        symbol: Exchange symbol, e.g. "BTC/USDT:USDT".
-        interval: OHLCV bar interval.
-        lookback: Number of bars to fetch (must cover signal's lookback window).
-
-    Returns:
-        Signal as integer: 1 (long), -1 (short), 0 (flat).
+    When *manifests_dir* is given, the factor store's freshness is checked
+    first. If the newest factor timestamp is older than ``FACTOR_MAX_AGE_DAYS``,
+    the OHLCV fetch is skipped and a stale ``SignalResult`` (signal=0) is
+    returned so the caller can pause instead of trading on frozen factors.
     """
     engine_cls = _load_signal_engine(run_dir)
     engine = engine_cls()
 
-    # The backtest engine keys data_map by its canonical symbol (e.g.
-    # "ETH-USDT-SWAP"), not the ccxt trading symbol (e.g. "ETH/USDT:USDT").
-    # Use the engine's own SYMBOL for the data_map key, falling back to the
-    # ccxt symbol if the engine does not declare one.
     engine_symbol = getattr(engine, "SYMBOL", symbol)
+
+    now = now or datetime.now(tz=timezone.utc)
+    index_end = factor_index_end(manifests_dir, engine_symbol) if manifests_dir else None
+    age_days = (now - index_end).total_seconds() / 86400 if index_end else None
+
+    if manifests_dir is not None and is_stale(
+        index_end, now, timedelta(days=FACTOR_MAX_AGE_DAYS)
+    ):
+        return SignalResult(signal=0, stale=True, index_end=index_end, age_days=age_days)
 
     df = _fetch_ohlcv(exchange, symbol, interval, lookback)
     data_map = {engine_symbol: df}
@@ -94,11 +110,13 @@ def compute_signal(
     signal_map = engine.generate(data_map)
     series: Optional[pd.Series] = signal_map.get(engine_symbol)
     if series is None or series.empty:
-        return 0
+        return SignalResult(signal=0, stale=False, index_end=index_end, age_days=age_days)
 
     raw = float(series.iloc[-1])
     if raw > 1e-9:
-        return 1
-    if raw < -1e-9:
-        return -1
-    return 0
+        sig = 1
+    elif raw < -1e-9:
+        sig = -1
+    else:
+        sig = 0
+    return SignalResult(signal=sig, stale=False, index_end=index_end, age_days=age_days)
