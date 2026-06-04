@@ -64,8 +64,8 @@ class Supervisor:
             if key not in env:
                 raise EnvironmentError(f"{key} not set — cannot start trader")
 
-        # trader/ package lives next to server/ inside dashboard/
-        trader_pkg_dir = self.dashboard_dir.parent / "trader"
+        # trader/ package lives next to server/ inside dashboard_dir
+        trader_pkg_dir = self.dashboard_dir / "trader"
         if not trader_pkg_dir.exists():
             raise FileNotFoundError(f"trader package not found at {trader_pkg_dir}")
 
@@ -81,8 +81,8 @@ class Supervisor:
             "--qty", str(qty),
         ]
 
-        # Add dashboard/ parent so ``trader`` package is importable
-        python_path = str(self.dashboard_dir.parent)
+        # Add dashboard_dir so ``trader`` package is importable
+        python_path = str(self.dashboard_dir)
         env["PYTHONPATH"] = python_path + os.pathsep + env.get("PYTHONPATH", "")
 
         logger.info("Starting trader subprocess: %s", " ".join(cmd))

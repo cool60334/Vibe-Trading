@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server/ .
 
+# trader/ package — launched as a subprocess by the supervisor (python -m trader.loop)
+COPY trader/ /app/trader/
+
 # Repo root is mounted at /repo at runtime
 ENV REPO_ROOT=/repo
 

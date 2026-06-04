@@ -82,11 +82,17 @@ def compute_signal(
     engine_cls = _load_signal_engine(run_dir)
     engine = engine_cls()
 
+    # The backtest engine keys data_map by its canonical symbol (e.g.
+    # "ETH-USDT-SWAP"), not the ccxt trading symbol (e.g. "ETH/USDT:USDT").
+    # Use the engine's own SYMBOL for the data_map key, falling back to the
+    # ccxt symbol if the engine does not declare one.
+    engine_symbol = getattr(engine, "SYMBOL", symbol)
+
     df = _fetch_ohlcv(exchange, symbol, interval, lookback)
-    data_map = {symbol: df}
+    data_map = {engine_symbol: df}
 
     signal_map = engine.generate(data_map)
-    series: Optional[pd.Series] = signal_map.get(symbol)
+    series: Optional[pd.Series] = signal_map.get(engine_symbol)
     if series is None or series.empty:
         return 0
 
