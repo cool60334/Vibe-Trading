@@ -165,6 +165,7 @@ def run(args: argparse.Namespace) -> None:
     alerts: list = []
     current_signal = 0
     stale_alerted = False
+    stale_pause = False
 
     # Graceful shutdown on SIGTERM / SIGINT
     _shutdown = {"flag": False}
@@ -218,7 +219,7 @@ def run(args: argparse.Namespace) -> None:
                     logger.warning("Kill switch PAUSE: %s", reason)
 
             # ── Compute signal ────────────────────────────────────────────────
-            if live_status == "running":
+            if live_status == "running" or stale_pause:
                 result = compute_signal(
                     run_dir, broker.exchange, symbol, interval, lookback,
                     manifests_dir=manifests_dir,
@@ -227,6 +228,7 @@ def run(args: argparse.Namespace) -> None:
                 if result.stale:
                     # Factor data too old — do not trade on frozen alpha.
                     live_status = "paused"
+                    stale_pause = True
                     if not stale_alerted:
                         stale_alerted = True
                         age = f"{result.age_days:.1f}d" if result.age_days is not None else "unknown"
@@ -239,11 +241,18 @@ def run(args: argparse.Namespace) -> None:
                         logger.warning("Factor data stale (age=%s) — pausing", age)
                     new_signal = current_signal  # hold position, place no new orders
                 else:
-                    if stale_alerted:
-                        # Factors fresh again — resume.
+                    if stale_pause:
+                        # Factors fresh again — resume trading.
+                        stale_pause = False
                         stale_alerted = False
                         if live_status == "paused":
                             live_status = "running"
+                        alerts.append({
+                            "timestamp": _now_iso(),
+                            "severity": "info",
+                            "message": "factor data fresh — resuming",
+                        })
+                        logger.info("Factor data fresh — resuming")
                     new_signal = result.signal
 
                 # ── Execute signal ────────────────────────────────────────────
