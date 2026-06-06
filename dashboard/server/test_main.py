@@ -353,6 +353,68 @@ def test_list_testnet_empty(tmp_path):
     assert r.json() == []
 
 
+def test_get_testnet_mode_defaults_null_when_absent(client_testnet):
+    # TESTNET_PAYLOAD has no "mode" → schema default None → JSON null.
+    r = client_testnet.get("/api/testnet/tn_001")
+    assert r.status_code == 200
+    assert r.json()["mode"] is None
+
+
+@pytest.fixture()
+def client_testnet_csv(tmp_path: Path):
+    tn = tmp_path / "runs" / "testnet" / "tn_001"
+    tn.mkdir(parents=True)
+    payload = {**TESTNET_PAYLOAD, "mode": "paper"}
+    (tn / "testnet_status.json").write_text(json.dumps(payload), encoding="utf-8")
+    (tn / "equity.csv").write_text(
+        "timestamp,equity\n"
+        "2024-01-01T00:00:00Z,10000\n"
+        "2024-01-01T01:00:00Z,10050\n",
+        encoding="utf-8",
+    )
+    (tn / "trades.csv").write_text(
+        "timestamp,symbol,side,qty,price\n"
+        "2024-01-01T00:30:00Z,BTC/USDT:USDT,buy,0.01,60000\n",
+        encoding="utf-8",
+    )
+    os.environ["REPO_ROOT"] = str(tmp_path)
+    import importlib, main as main_module
+    importlib.reload(main_module)
+    from main import app
+    with TestClient(app) as c:
+        yield c
+
+
+def test_get_testnet_status_reports_mode(client_testnet_csv):
+    r = client_testnet_csv.get("/api/testnet/tn_001")
+    assert r.status_code == 200
+    assert r.json()["mode"] == "paper"
+
+
+def test_get_testnet_equity_returns_live_curve(client_testnet_csv):
+    r = client_testnet_csv.get("/api/testnet/tn_001/equity")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 2
+    assert data[0]["equity"] == 10000
+    assert data[-1]["equity"] == 10050
+
+
+def test_get_testnet_trades_returns_live_fills(client_testnet_csv):
+    r = client_testnet_csv.get("/api/testnet/tn_001/trades")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["side"] == "buy"
+    assert data[0]["price"] == 60000
+
+
+def test_get_testnet_equity_404_when_no_csv(client_testnet):
+    # Basic fixture writes status JSON only, no equity.csv.
+    r = client_testnet.get("/api/testnet/tn_001/equity")
+    assert r.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # GET /api/pipeline
 # ---------------------------------------------------------------------------

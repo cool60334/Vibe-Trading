@@ -72,12 +72,14 @@ def _write_status(
     terminate_dd: float,
     alerts: list,
     started_at: str,
+    mode: str = "paper",
 ) -> None:
     status = {
         "schema_version": 1,
         "testnet_id": testnet_id,
         "strategy_id": strategy_id,
         "symbol": symbol,
+        "mode": mode,
         "live": {
             "started_at": started_at,
             "updated_at": _now_iso(),
@@ -207,7 +209,7 @@ def run(args: argparse.Namespace) -> None:
                     out_dir, strategy_id, testnet_id, symbol, live_status,
                     equity, 0, trade_count, None, max_dd,
                     ks_triggered, ks_triggered_at, ks_reason, 0.05, 0.07,
-                    alerts, started_at,
+                    alerts, started_at, mode,
                 )
                 break
 
@@ -310,7 +312,7 @@ def run(args: argparse.Namespace) -> None:
                 out_dir, strategy_id, testnet_id, symbol, live_status,
                 equity, open_positions, trade_count, None, max_dd,
                 ks_triggered, ks_triggered_at, ks_reason, 0.05, 0.07,
-                alerts, started_at,
+                alerts, started_at, mode,
             )
 
         except Exception as e:
@@ -337,7 +339,7 @@ def run(args: argparse.Namespace) -> None:
         out_dir, strategy_id, testnet_id, symbol, live_status,
         equity, 0, trade_count, None, None,
         ks_triggered, ks_triggered_at, ks_reason, 0.05, 0.07,
-        alerts, started_at,
+        alerts, started_at, mode,
     )
     logger.info("Trader stopped. strategy=%s", strategy_id)
 

@@ -253,6 +253,28 @@ def get_testnet(testnet_id: str) -> TestnetStatus:
     return status
 
 
+def _resolve_testnet_csv(testnet_id: str, filename: str) -> Path:
+    """Path to the live trader's runs/testnet/<id>/<filename>; 404 if missing."""
+    path = (REPO_ROOT / "runs" / "testnet" / testnet_id / filename).resolve()
+    if not path.is_relative_to((REPO_ROOT / "runs" / "testnet").resolve()):
+        raise HTTPException(status_code=403, detail="Path outside testnet dir")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"{filename} not found for '{testnet_id}'")
+    return path
+
+
+@app.get("/api/testnet/{testnet_id}/equity")
+def get_testnet_equity(testnet_id: str) -> list[dict[str, Any]]:
+    """Live virtual-equity curve for a running trader (paper/testnet/live)."""
+    return parsers.csv_to_records(_resolve_testnet_csv(testnet_id, "equity.csv"))
+
+
+@app.get("/api/testnet/{testnet_id}/trades")
+def get_testnet_trades(testnet_id: str) -> list[dict[str, Any]]:
+    """Live fills recorded by a running trader (paper/testnet/live)."""
+    return parsers.csv_to_records(_resolve_testnet_csv(testnet_id, "trades.csv"))
+
+
 # ---------------------------------------------------------------------------
 # 6.5 Trader start / stop (v1.5)
 # ---------------------------------------------------------------------------

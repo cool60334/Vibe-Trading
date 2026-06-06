@@ -8,8 +8,38 @@ import {
   type TestnetAlert,
   type AlertSeverity,
   type LiveStatus,
+  type TradingMode,
+  type EquityPoint,
+  type TestnetTradeRow,
+  type StrategyRow,
 } from "../lib/api";
+import { EquityChart } from "../components/charts/EquityChart";
 import { cn } from "../lib/utils";
+
+// ---------------------------------------------------------------------------
+// Trading-mode badge
+// ---------------------------------------------------------------------------
+
+const MODE_LABEL: Record<TradingMode, string> = {
+  paper: "PAPER · 主網模擬",
+  testnet: "TESTNET · 沙盒",
+  live: "LIVE · 真實下單",
+};
+
+const MODE_STYLE: Record<TradingMode, string> = {
+  paper: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  testnet: "bg-muted text-muted-foreground",
+  live: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+};
+
+function ModeBadge({ mode }: { mode: TradingMode | null }) {
+  if (!mode) return null;
+  return (
+    <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", MODE_STYLE[mode])}>
+      {MODE_LABEL[mode]}
+    </span>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Trader control (start / stop)
@@ -27,6 +57,7 @@ function TraderControls({
   const [showStartForm, setShowStartForm] = useState(false);
   const [runDir, setRunDir] = useState("");
   const [qty, setQty] = useState("0.001");
+  const [mode, setMode] = useState<TradingMode>(status.mode ?? "paper");
 
   const isRunning = status.live.status === "running" || status.live.status === "paused";
 
@@ -56,6 +87,7 @@ function TraderControls({
         run_dir: runDir.trim() || undefined,
         symbol: status.symbol,
         qty: parseFloat(qty) || 0.001,
+        mode,
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -103,14 +135,28 @@ function TraderControls({
               className="w-full rounded border px-2 py-1 text-xs bg-background"
             />
           </div>
-          <div className="space-y-1">
-            <label className="text-muted-foreground">下單數量（base asset）</label>
-            <input
-              value={qty}
-              onChange={(e) => setQty(e.target.value)}
-              placeholder="0.001"
-              className="w-32 rounded border px-2 py-1 text-xs bg-background"
-            />
+          <div className="flex gap-3">
+            <div className="space-y-1">
+              <label className="text-muted-foreground">下單數量（base asset）</label>
+              <input
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+                placeholder="0.001"
+                className="w-32 rounded border px-2 py-1 text-xs bg-background"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground">模式</label>
+              <select
+                value={mode}
+                onChange={(e) => setMode(e.target.value as TradingMode)}
+                className="rounded border px-2 py-1 text-xs bg-background"
+              >
+                <option value="paper">paper（主網模擬）</option>
+                <option value="testnet">testnet（沙盒）</option>
+                <option value="live">live（真實下單）</option>
+              </select>
+            </div>
           </div>
           <div className="flex gap-2">
             <button
@@ -330,10 +376,94 @@ function AlertsList({ alerts }: { alerts: TestnetAlert[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Live equity curve + trades (paper/testnet/live trader output)
+// ---------------------------------------------------------------------------
+
+function toEquityPoints(rows: { timestamp: string; equity: number }[]): EquityPoint[] {
+  let peak = -Infinity;
+  return rows.map((r) => {
+    const eq = Number(r.equity);
+    peak = Math.max(peak, eq);
+    const drawdown = peak > 0 ? (eq - peak) / peak : 0;
+    return { time: r.timestamp, equity: eq, drawdown };
+  });
+}
+
+function LiveEquity({ testnetId, refreshKey }: { testnetId: string; refreshKey: number }) {
+  const [points, setPoints] = useState<EquityPoint[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .testnetEquity(testnetId)
+      .then((rows) => { if (alive) { setPoints(toEquityPoints(rows)); setErr(null); } })
+      .catch((e: Error) => { if (alive) setErr(e.message); });
+    return () => { alive = false; };
+  }, [testnetId, refreshKey]);
+
+  if (err) return <p className="text-xs text-muted-foreground">淨值曲線尚無資料（trader 還沒寫第一筆）</p>;
+  if (points.length === 0) return <p className="text-xs text-muted-foreground">淨值曲線載入中…</p>;
+  return <EquityChart data={points} height={220} />;
+}
+
+function LiveTrades({ testnetId, refreshKey }: { testnetId: string; refreshKey: number }) {
+  const [trades, setTrades] = useState<TestnetTradeRow[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .testnetTrades(testnetId)
+      .then((rows) => { if (alive) { setTrades(rows); setErr(null); } })
+      .catch((e: Error) => { if (alive) setErr(e.message); });
+    return () => { alive = false; };
+  }, [testnetId, refreshKey]);
+
+  if (err || trades.length === 0) return <p className="text-sm text-muted-foreground">尚無成交</p>;
+
+  const recent = [...trades].reverse().slice(0, 30);
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b text-muted-foreground">
+            <th className="py-1.5 pr-3 text-left">時間</th>
+            <th className="py-1.5 pr-3 text-left">方向</th>
+            <th className="py-1.5 pr-3 text-right">數量</th>
+            <th className="py-1.5 text-right">價格</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {recent.map((t, i) => (
+            <tr key={i}>
+              <td className="py-1.5 pr-3 tabular-nums">{new Date(t.timestamp).toLocaleString("zh-TW")}</td>
+              <td className={cn("py-1.5 pr-3 font-medium", t.side === "buy" ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400")}>
+                {t.side === "buy" ? "買 / 多" : "賣 / 空"}
+              </td>
+              <td className="py-1.5 pr-3 text-right tabular-nums">{t.qty}</td>
+              <td className="py-1.5 text-right tabular-nums">{Number(t.price).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Single testnet card
 // ---------------------------------------------------------------------------
 
-function TestnetCard({ status, onRefresh }: { status: TestnetStatus; onRefresh: () => void }) {
+function TestnetCard({
+  status,
+  onRefresh,
+  refreshKey,
+}: {
+  status: TestnetStatus;
+  onRefresh: () => void;
+  refreshKey: number;
+}) {
   const { live, vs_backtest, killswitch, alerts } = status;
   const updatedAgo = Math.round(
     (Date.now() - new Date(live.updated_at).getTime()) / 1000
@@ -354,6 +484,7 @@ function TestnetCard({ status, onRefresh }: { status: TestnetStatus; onRefresh: 
         </span>
         <span className="font-mono font-semibold">{status.strategy_id}</span>
         <span className="text-sm text-muted-foreground">{status.symbol}</span>
+        <ModeBadge mode={status.mode} />
         <span className="ml-auto text-xs text-muted-foreground">
           更新於 {updatedAgo}s 前
         </span>
@@ -371,6 +502,18 @@ function TestnetCard({ status, onRefresh }: { status: TestnetStatus; onRefresh: 
 
         {/* Live metrics */}
         <LiveMetrics live={live} />
+
+        {/* Live equity curve */}
+        <div>
+          <div className="text-xs font-medium text-muted-foreground mb-2">即時淨值曲線</div>
+          <LiveEquity testnetId={status.testnet_id} refreshKey={refreshKey} />
+        </div>
+
+        {/* Live trades */}
+        <div>
+          <div className="text-xs font-medium text-muted-foreground mb-2">成交明細（最近 30 筆）</div>
+          <LiveTrades testnetId={status.testnet_id} refreshKey={refreshKey} />
+        </div>
 
         {/* vs Backtest */}
         {vs_backtest ? (
@@ -402,6 +545,157 @@ function TestnetCard({ status, onRefresh }: { status: TestnetStatus; onRefresh: 
           <TraderControls status={status} onAction={onRefresh} />
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Paper-run launcher — start the FIRST run for a strategy (no card needed yet)
+// ---------------------------------------------------------------------------
+
+function PaperRunLauncher({ onLaunched }: { onLaunched: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [strategies, setStrategies] = useState<StrategyRow[]>([]);
+  const [strategyId, setStrategyId] = useState("");
+  const [runDir, setRunDir] = useState("");
+  const [symbol, setSymbol] = useState("");
+  const [qty, setQty] = useState("0.001");
+  const [mode, setMode] = useState<TradingMode>("paper");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    api.strategies().then(setStrategies).catch(() => {});
+  }, [open]);
+
+  const onSelectStrategy = (id: string) => {
+    setStrategyId(id);
+    const row = strategies.find((s) => s.strategy_id === id);
+    if (row) setSymbol(row.symbol.includes("/") ? row.symbol : `${row.symbol}/USDT:USDT`);
+  };
+
+  const launch = async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const testnetId = `${strategyId}_${mode}`;
+      const res = await api.traderStart(testnetId, {
+        strategy_id: strategyId,
+        run_dir: runDir.trim() || undefined,
+        symbol: symbol.trim() || undefined,
+        qty: parseFloat(qty) || 0.001,
+        mode,
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error((j as { detail?: string }).detail ?? `HTTP ${res.status}`);
+      }
+      setOpen(false);
+      onLaunched();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-dashed p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">啟動新的 dry-run（paper）</div>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="rounded-md border px-3 py-1 text-xs hover:bg-muted transition-colors"
+        >
+          {open ? "收合" : "新增 run"}
+        </button>
+      </div>
+      {open && (
+        <div className="space-y-2 text-xs">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="space-y-1">
+              <label className="text-muted-foreground">策略</label>
+              <select
+                value={strategyId}
+                onChange={(e) => onSelectStrategy(e.target.value)}
+                className="w-full rounded border px-2 py-1 bg-background"
+              >
+                <option value="">— 選擇策略 —</option>
+                {strategies.map((s) => (
+                  <option key={s.strategy_id} value={s.strategy_id}>
+                    {s.strategy_id}（{s.symbol}）
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground">模式</label>
+              <select
+                value={mode}
+                onChange={(e) => setMode(e.target.value as TradingMode)}
+                className="w-full rounded border px-2 py-1 bg-background"
+              >
+                <option value="paper">paper（主網模擬）</option>
+                <option value="testnet">testnet（沙盒）</option>
+                <option value="live">live（真實下單）</option>
+              </select>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-muted-foreground">Run 目錄（repo-relative，含 code/signal_engine.py）</label>
+            <input
+              value={runDir}
+              onChange={(e) => setRunDir(e.target.value)}
+              placeholder="runs/eth_s5_oos"
+              className="w-full rounded border px-2 py-1 bg-background"
+            />
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="space-y-1">
+              <label className="text-muted-foreground">Symbol（ccxt）</label>
+              <input
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+                placeholder="BTC/USDT:USDT"
+                className="w-full rounded border px-2 py-1 bg-background"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground">下單數量（base asset）</label>
+              <input
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+                placeholder="0.001"
+                className="w-full rounded border px-2 py-1 bg-background"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={launch}
+              disabled={loading || !strategyId || !runDir.trim()}
+              className="rounded-md bg-blue-600 px-3 py-1 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              {loading ? "啟動中…" : "啟動"}
+            </button>
+            <button
+              onClick={() => setOpen(false)}
+              className="rounded-md border px-3 py-1 hover:bg-muted transition-colors"
+            >
+              取消
+            </button>
+          </div>
+          {err && (
+            <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-950/30 px-2 py-1 text-red-700 dark:text-red-400">
+              {err}
+            </div>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            提示：策略需先 promote 才能啟動；testnet_id 會用 <code>策略_模式</code>。
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -440,10 +734,12 @@ export default function Testnet() {
     return () => clearInterval(timer);
   }, [fetchData]);
 
+  const refreshKey = lastFetch ? lastFetch.getTime() : 0;
+
   return (
     <div className="p-6 space-y-4 max-w-4xl mx-auto">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Testnet 監控</h1>
+        <h1 className="text-2xl font-semibold">實盤監控（Paper / Testnet / Live）</h1>
         <div className="flex items-center gap-3">
           {lastFetch && (
             <span className="text-xs text-muted-foreground">
@@ -458,6 +754,8 @@ export default function Testnet() {
           </button>
         </div>
       </div>
+
+      <PaperRunLauncher onLaunched={fetchData} />
 
       {loading && (
         <div className="text-sm text-muted-foreground animate-pulse">載入 testnet 狀態…</div>
@@ -487,7 +785,7 @@ export default function Testnet() {
       )}
 
       {statuses.map((s) => (
-        <TestnetCard key={s.testnet_id} status={s} onRefresh={fetchData} />
+        <TestnetCard key={s.testnet_id} status={s} onRefresh={fetchData} refreshKey={refreshKey} />
       ))}
     </div>
   );

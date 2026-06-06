@@ -541,6 +541,9 @@ class TestnetStatus(_Manifest):
     testnet_id: str
     strategy_id: str
     symbol: str
+    mode: Optional[str] = Field(
+        default=None, description="Trading mode: paper | testnet | live."
+    )
     live: LiveBlock
     vs_backtest: Optional[VsBacktestBlock] = None
     killswitch: KillswitchBlock

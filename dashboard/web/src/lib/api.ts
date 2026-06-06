@@ -248,15 +248,32 @@ export interface TestnetAlert {
   message: string;
 }
 
+export type TradingMode = "paper" | "testnet" | "live";
+
 export interface TestnetStatus {
   schema_version: number;
   testnet_id: string;
   strategy_id: string;
   symbol: string;
+  mode: TradingMode | null;
   live: LiveBlock;
   vs_backtest: VsBacktestBlock | null;
   killswitch: KillswitchBlock;
   alerts: TestnetAlert[];
+}
+
+// Live trader CSV rows (runs/testnet/<id>/equity.csv, trades.csv)
+export interface TestnetEquityRow {
+  timestamp: string;
+  equity: number;
+}
+
+export interface TestnetTradeRow {
+  timestamp: string;
+  symbol: string;
+  side: string;
+  qty: number;
+  price: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +326,10 @@ export const api = {
   pipeline: (): Promise<PipelineRow[]> => get("/pipeline"),
   testnet: (): Promise<TestnetStatus[]> => get("/testnet"),
   testnetDetail: (id: string): Promise<TestnetStatus> => get(`/testnet/${id}`),
+  testnetEquity: (id: string): Promise<TestnetEquityRow[]> =>
+    get(`/testnet/${encodeURIComponent(id)}/equity`),
+  testnetTrades: (id: string): Promise<TestnetTradeRow[]> =>
+    get(`/testnet/${encodeURIComponent(id)}/trades`),
   promote: (id: string, body: { override_reason?: string }) =>
     fetch(`${BASE}/strategies/${id}/promote`, {
       method: "POST",
@@ -325,6 +346,7 @@ export const api = {
       symbol?: string;
       interval?: string;
       qty?: number;
+      mode?: TradingMode;
     },
   ) =>
     fetch(`${BASE}/testnet/${testnetId}/start`, {
