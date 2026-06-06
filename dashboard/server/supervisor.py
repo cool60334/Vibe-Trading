@@ -21,6 +21,42 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+def require_credentials(env: dict, mode: str) -> None:
+    """Raise if real-order modes lack Bybit keys. ``paper`` needs none."""
+    if mode in ("testnet", "live"):
+        for key in ("BYBIT_API_KEY", "BYBIT_API_SECRET"):
+            if not env.get(key):
+                raise EnvironmentError(
+                    f"{key} not set — cannot start trader in {mode} mode"
+                )
+
+
+def build_trader_command(
+    python_exe: str,
+    *,
+    mode: str,
+    strategy_id: str,
+    testnet_id: str,
+    run_dir: str,
+    symbol: str,
+    interval: str,
+    repo_root: str,
+    qty: float,
+) -> list:
+    """Build the ``python -m trader.loop`` argv, including ``--mode``."""
+    return [
+        python_exe, "-m", "trader.loop",
+        "--strategy-id", strategy_id,
+        "--testnet-id", testnet_id,
+        "--run-dir", run_dir,
+        "--symbol", symbol,
+        "--interval", interval,
+        "--repo-root", repo_root,
+        "--qty", str(qty),
+        "--mode", mode,
+    ]
+
+
 @dataclass
 class TraderProcess:
     strategy_id: str
@@ -49,20 +85,21 @@ class Supervisor:
         symbol: str,
         interval: str = "1H",
         qty: float = 0.001,
+        mode: Optional[str] = None,
     ) -> None:
         """Launch a trader subprocess for *strategy_id*.
 
-        Does nothing if already running.
+        *mode* selects paper / testnet / live (default ``$TRADING_MODE`` or
+        paper). Bybit keys are required only for testnet/live. Does nothing if
+        already running.
         """
         if self.is_running(strategy_id):
             logger.info("Trader for %s already running", strategy_id)
             return
 
         env = {**os.environ}
-        # Ensure BYBIT_* credentials are forwarded
-        for key in ("BYBIT_API_KEY", "BYBIT_API_SECRET"):
-            if key not in env:
-                raise EnvironmentError(f"{key} not set — cannot start trader")
+        mode = (mode or env.get("TRADING_MODE", "paper")).lower()
+        require_credentials(env, mode)
 
         # trader/ package lives next to server/ inside dashboard_dir
         trader_pkg_dir = self.dashboard_dir / "trader"
@@ -70,16 +107,17 @@ class Supervisor:
             raise FileNotFoundError(f"trader package not found at {trader_pkg_dir}")
 
         # Run from dashboard/ so relative imports work
-        cmd = [
-            sys.executable, "-m", "trader.loop",
-            "--strategy-id", strategy_id,
-            "--testnet-id", testnet_id,
-            "--run-dir", run_dir,
-            "--symbol", symbol,
-            "--interval", interval,
-            "--repo-root", str(self.repo_root),
-            "--qty", str(qty),
-        ]
+        cmd = build_trader_command(
+            sys.executable,
+            mode=mode,
+            strategy_id=strategy_id,
+            testnet_id=testnet_id,
+            run_dir=run_dir,
+            symbol=symbol,
+            interval=interval,
+            repo_root=str(self.repo_root),
+            qty=qty,
+        )
 
         # Add dashboard_dir so ``trader`` package is importable
         python_path = str(self.dashboard_dir)

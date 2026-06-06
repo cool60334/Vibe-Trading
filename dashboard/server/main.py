@@ -263,6 +263,7 @@ class TraderStartRequest(BaseModel):
     symbol: str = ""       # ccxt symbol e.g. "BTC/USDT:USDT"
     interval: str = "1H"
     qty: float = 0.001
+    mode: Optional[str] = None  # paper (default) | testnet | live; None → $TRADING_MODE
 
 
 @app.post("/api/testnet/{testnet_id}/start", status_code=201)
@@ -282,6 +283,7 @@ def start_trader(testnet_id: str, body: TraderStartRequest) -> dict:
             symbol=body.symbol,
             interval=body.interval,
             qty=body.qty,
+            mode=body.mode,
         )
     except EnvironmentError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

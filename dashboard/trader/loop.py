@@ -22,6 +22,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import signal as _signal
 import sys
 import time
@@ -132,7 +133,7 @@ def _signal_to_side(sig: int) -> Optional[str]:
 
 
 def run(args: argparse.Namespace) -> None:
-    from trader.broker import Broker
+    from trader.broker import make_broker
     from trader.killswitch import KillSwitch
     from trader.signal import compute_signal
 
@@ -144,6 +145,7 @@ def run(args: argparse.Namespace) -> None:
     lookback: int = args.lookback
     repo_root = Path(args.repo_root)
     qty: float = args.qty
+    mode: str = args.mode
 
     out_dir = repo_root / "runs" / "testnet" / testnet_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -151,10 +153,10 @@ def run(args: argparse.Namespace) -> None:
     sleep_secs = _INTERVAL_SLEEP.get(interval, 3600)
     started_at = _now_iso()
 
-    logger.info("Starting trader: strategy=%s testnet_id=%s symbol=%s interval=%s",
-                strategy_id, testnet_id, symbol, interval)
+    logger.info("Starting trader: strategy=%s testnet_id=%s symbol=%s interval=%s mode=%s",
+                strategy_id, testnet_id, symbol, interval, mode)
 
-    broker = Broker()
+    broker = make_broker(mode)
     initial_equity = broker.get_equity()
     ks = KillSwitch(initial_equity, pause_dd=0.05, terminate_dd=0.07)
 
@@ -340,8 +342,8 @@ def run(args: argparse.Namespace) -> None:
     logger.info("Trader stopped. strategy=%s", strategy_id)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Vibe-Trading testnet trader loop")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Vibe-Trading trader loop")
     parser.add_argument("--strategy-id", required=True)
     parser.add_argument("--testnet-id", required=True)
     parser.add_argument("--run-dir", required=True, help="Path to backtest run dir with code/signal_engine.py")
@@ -350,7 +352,17 @@ def main() -> None:
     parser.add_argument("--lookback", type=int, default=200)
     parser.add_argument("--repo-root", default="/repo")
     parser.add_argument("--qty", type=float, default=0.001, help="Order size in base asset")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--mode",
+        default=os.environ.get("TRADING_MODE", "paper"),
+        choices=["paper", "testnet", "live"],
+        help="paper=mainnet dry-run (default), testnet=sandbox orders, live=real orders",
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     run(args)
 
 

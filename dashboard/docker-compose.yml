@@ -6,7 +6,12 @@ services:
     environment:
       REPO_ROOT: /repo
       CORS_ORIGINS: http://localhost
-      # Forward Bybit credentials to supervisor subprocesses
+      # Trading mode (paper=mainnet dry-run default; testnet/live need keys)
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      PAPER_EQUITY: ${PAPER_EQUITY:-10000}
+      PAPER_TAKER_FEE: ${PAPER_TAKER_FEE:-0.00055}
+      PAPER_SLIPPAGE_BPS: ${PAPER_SLIPPAGE_BPS:-5}
+      # Forward Bybit credentials to supervisor subprocesses (testnet/live only)
       BYBIT_API_KEY: ${BYBIT_API_KEY:-}
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
     volumes:
@@ -36,6 +41,10 @@ services:
       dockerfile: Dockerfile.server
     command: ["echo", "Trader subprocess managed by server supervisor — use API to start"]
     environment:
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      PAPER_EQUITY: ${PAPER_EQUITY:-10000}
+      PAPER_TAKER_FEE: ${PAPER_TAKER_FEE:-0.00055}
+      PAPER_SLIPPAGE_BPS: ${PAPER_SLIPPAGE_BPS:-5}
       BYBIT_API_KEY: ${BYBIT_API_KEY:-}
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
       REPO_ROOT: /repo

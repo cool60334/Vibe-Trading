@@ -1,8 +1,13 @@
-"""Bybit testnet broker — ccxt wrapper for order execution.
+"""Bybit broker — ccxt wrapper for order execution.
 
-Reads credentials from environment:
-  BYBIT_API_KEY    — Bybit testnet API key
-  BYBIT_API_SECRET — Bybit testnet API secret
+Three trading modes, selected by ``make_broker`` / ``TRADING_MODE``:
+  paper   — mainnet market data, local virtual fills (no keys, no real orders)
+  testnet — Bybit sandbox, real orders on fake books (engineering/debug only)
+  live    — mainnet, REAL orders (needs keys; use with care)
+
+``testnet``/``live`` read credentials from the environment:
+  BYBIT_API_KEY
+  BYBIT_API_SECRET
 """
 
 from __future__ import annotations
@@ -12,11 +17,21 @@ from typing import Optional
 
 import ccxt
 
+from trader.paper_broker import PaperBroker
 
-def _make_exchange() -> ccxt.bybit:
+
+def _make_exchange(sandbox: bool, *, require_keys: bool = True) -> ccxt.bybit:
+    """Build a ccxt Bybit client.
+
+    Args:
+        sandbox: True → testnet endpoints; False → mainnet.
+        require_keys: Raise if API keys are absent. Public-data-only callers
+            (paper mode) pass False — mainnet OHLCV/ticker/book/funding are
+            public endpoints.
+    """
     api_key = os.environ.get("BYBIT_API_KEY", "")
     api_secret = os.environ.get("BYBIT_API_SECRET", "")
-    if not api_key or not api_secret:
+    if require_keys and (not api_key or not api_secret):
         raise EnvironmentError("BYBIT_API_KEY and BYBIT_API_SECRET must be set")
 
     exchange = ccxt.bybit(
@@ -27,15 +42,40 @@ def _make_exchange() -> ccxt.bybit:
             "enableRateLimit": True,
         }
     )
-    exchange.set_sandbox_mode(True)  # Bybit testnet
+    exchange.set_sandbox_mode(sandbox)
     return exchange
 
 
-class Broker:
-    """Thin ccxt wrapper for Bybit testnet perpetual trading."""
+def make_broker(mode: Optional[str] = None):
+    """Construct the broker for *mode* (defaults to ``$TRADING_MODE`` or paper).
 
-    def __init__(self) -> None:
-        self.exchange = _make_exchange()
+    paper → PaperBroker on mainnet public data; testnet/live → Broker with
+    real order execution on the sandbox / mainnet respectively.
+    """
+    mode = (mode or os.environ.get("TRADING_MODE", "paper")).lower()
+    if mode == "paper":
+        exchange = _make_exchange(sandbox=False, require_keys=False)
+        return PaperBroker(
+            exchange,
+            equity=float(os.environ.get("PAPER_EQUITY", "10000")),
+            taker_fee=float(os.environ.get("PAPER_TAKER_FEE", "0.00055")),
+            slippage_bps=float(os.environ.get("PAPER_SLIPPAGE_BPS", "5")),
+        )
+    if mode == "testnet":
+        return Broker(sandbox=True)
+    if mode == "live":
+        return Broker(sandbox=False)
+    raise ValueError(f"unknown TRADING_MODE: {mode!r} (expected paper|testnet|live)")
+
+
+class Broker:
+    """Thin ccxt wrapper for Bybit perpetual trading with REAL order execution.
+
+    ``sandbox=True`` routes to testnet; ``sandbox=False`` to mainnet (live).
+    """
+
+    def __init__(self, sandbox: bool = True) -> None:
+        self.exchange = _make_exchange(sandbox, require_keys=True)
 
     # ── Account ──────────────────────────────────────────────────────────────
 
