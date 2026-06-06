@@ -31,6 +31,10 @@ services:
       PAPER_EQUITY: ${PAPER_EQUITY:-10000}
       PAPER_TAKER_FEE: ${PAPER_TAKER_FEE:-0.00055}
       PAPER_SLIPPAGE_BPS: ${PAPER_SLIPPAGE_BPS:-5}
+      # Kill-switch drawdown thresholds. Defaults pause@5% / terminate@7%; raise
+      # terminate above a strategy's expected DD (eth_s5 ≈ 9% OOS) or it auto-stops.
+      KILL_PAUSE_DD: ${KILL_PAUSE_DD:-0.05}
+      KILL_TERMINATE_DD: ${KILL_TERMINATE_DD:-0.07}
       # Credentials only needed for testnet/live modes.
       BYBIT_API_KEY: ${BYBIT_API_KEY:-}
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}

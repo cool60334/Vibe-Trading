@@ -57,6 +57,23 @@ cp dashboard/.env.example dashboard/.env
 (run compose commands from `REPO/dashboard`). For `testnet`/`live` set
 `TRADING_MODE` accordingly and fill the keys.
 
+**Kill-switch thresholds (required edit for `eth_s5`).** The trader auto-pauses
+at 5% drawdown and auto-terminates at 7% by default. `eth_s5_half_size`'s OOS
+max drawdown is ≈9%, so with the defaults it **will** self-terminate mid-run.
+Raise the thresholds above the strategy's expected DD in `dashboard/.env`:
+
+```bash
+# in dashboard/.env — must exceed eth_s5's ~9% OOS drawdown
+KILL_PAUSE_DD=0.08
+KILL_TERMINATE_DD=0.12
+```
+
+These are read by the trader stack, so apply them **before** bringing up the
+trader (step 7); changing them later needs a trader rebuild (see Operations).
+On terminate the loop flips its own `control.json` to `stopped`, so the manager
+will not respawn it into an immediate re-terminate loop — but you then have to
+restart it deliberately, so size the thresholds to avoid nuisance stops.
+
 ## 3. Research venv (for the factor refresh)
 
 ```bash
@@ -229,6 +246,13 @@ virtual fills are recorded automatically when the signal fires.
   The manager restarts, re-reads the control files, and resumes every running
   id. Paper account and drawdown peak persist (below), so no reset / no
   equity-curve jump.
+- **Change kill-switch thresholds:** edit `KILL_PAUSE_DD` / `KILL_TERMINATE_DD`
+  in `dashboard/.env`, then recreate the trader so the loop picks up the new env:
+  ```bash
+  cd REPO/dashboard && docker compose -f docker-compose.trader.yml up -d
+  ```
+  Drawdown peak persists (`killswitch_state.json`), so the new threshold is
+  measured against the existing peak — no equity-curve reset.
 - **Factor freshness / refresh failures:** see `docs/runbooks/factor-refresh.md`
   and `research/refresh_factors.log`.
 

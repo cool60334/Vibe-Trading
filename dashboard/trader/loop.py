@@ -54,6 +54,38 @@ def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
+def kill_thresholds(env: Optional[dict] = None) -> tuple[float, float]:
+    """Return (pause_dd, terminate_dd) from env, defaulting to 5% / 7%.
+
+    Env-configurable so a strategy whose expected drawdown exceeds the 7%
+    default (e.g. eth_s5_half_size ≈ 9% OOS DD) can run without the kill switch
+    auto-terminating it. Override via KILL_PAUSE_DD / KILL_TERMINATE_DD.
+    """
+    env = env if env is not None else os.environ
+    return (
+        float(env.get("KILL_PAUSE_DD", "0.05")),
+        float(env.get("KILL_TERMINATE_DD", "0.07")),
+    )
+
+
+def _flip_control_stopped(out_dir: Path) -> bool:
+    """Flip the run's control.json to desired_state=stopped. False if missing.
+
+    Called when the kill switch terminates so the trader Manager does not
+    respawn the loop (control still saying "running" → reload peak → instant
+    re-terminate → respawn). Launch params are preserved for a manual restart.
+    """
+    path = out_dir / "control.json"
+    try:
+        ctrl = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    ctrl["desired_state"] = "stopped"
+    ctrl["updated_at"] = _now_iso()
+    path.write_text(json.dumps(ctrl, indent=2), encoding="utf-8")
+    return True
+
+
 def _write_status(
     out_dir: Path,
     strategy_id: str,
@@ -160,8 +192,9 @@ def run(args: argparse.Namespace) -> None:
 
     broker = make_broker(mode, state_path=out_dir / "paper_state.json")
     initial_equity = broker.get_equity()
+    pause_dd, terminate_dd = kill_thresholds()
     ks = KillSwitch(
-        initial_equity, pause_dd=0.05, terminate_dd=0.07,
+        initial_equity, pause_dd=pause_dd, terminate_dd=terminate_dd,
         state_path=out_dir / "killswitch_state.json",
     )
 
@@ -211,9 +244,11 @@ def run(args: argparse.Namespace) -> None:
                 _write_status(
                     out_dir, strategy_id, testnet_id, symbol, live_status,
                     equity, 0, trade_count, None, max_dd,
-                    ks_triggered, ks_triggered_at, ks_reason, 0.05, 0.07,
+                    ks_triggered, ks_triggered_at, ks_reason, pause_dd, terminate_dd,
                     alerts, started_at, mode,
                 )
+                # Stop the manager from respawning straight back into terminate.
+                _flip_control_stopped(out_dir)
                 break
 
             if decision == "pause":
@@ -314,7 +349,7 @@ def run(args: argparse.Namespace) -> None:
             _write_status(
                 out_dir, strategy_id, testnet_id, symbol, live_status,
                 equity, open_positions, trade_count, None, max_dd,
-                ks_triggered, ks_triggered_at, ks_reason, 0.05, 0.07,
+                ks_triggered, ks_triggered_at, ks_reason, pause_dd, terminate_dd,
                 alerts, started_at, mode,
             )
 
@@ -341,7 +376,7 @@ def run(args: argparse.Namespace) -> None:
     _write_status(
         out_dir, strategy_id, testnet_id, symbol, live_status,
         equity, 0, trade_count, None, None,
-        ks_triggered, ks_triggered_at, ks_reason, 0.05, 0.07,
+        ks_triggered, ks_triggered_at, ks_reason, pause_dd, terminate_dd,
         alerts, started_at, mode,
     )
     logger.info("Trader stopped. strategy=%s", strategy_id)
