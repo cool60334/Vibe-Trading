@@ -12,6 +12,11 @@
 #   stop  :  docker compose -f docker-compose.trader.yml down
 #
 # Only rebuild this when TRADER code changes — not on dashboard deploys.
+#
+# Distinct project name so it never collides with the dashboard compose project
+# (otherwise `docker compose ... --remove-orphans` on the dashboard could delete
+# this container).
+name: vibe-trader
 
 services:
   trader:
