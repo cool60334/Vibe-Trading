@@ -213,15 +213,21 @@ def client_full(repo_root_full: Path):
 
 
 def test_get_factor_analysis(client_full):
-    r = client_full.get("/api/factor-analysis?symbol=BTC")
+    r = client_full.get("/api/factor-analysis")
     assert r.status_code == 200
-    assert r.json()["symbol"] == "BTC"
-    assert len(r.json()["factors"]) == 1
+    payload = r.json()
+    assert isinstance(payload, list)
+    btc = next((m for m in payload if m["symbol"] == "BTC"), None)
+    assert btc is not None
+    assert len(btc["factors"]) == 1
 
 
-def test_get_factor_analysis_404(client_full):
-    r = client_full.get("/api/factor-analysis?symbol=ETH")
-    assert r.status_code == 404
+def test_get_factor_analysis_excludes_absent_symbol(client_full):
+    # Endpoint returns all factor manifests; fixture only has BTC, so ETH
+    # must not appear (no per-symbol 404 path on the list endpoint).
+    r = client_full.get("/api/factor-analysis")
+    assert r.status_code == 200
+    assert "ETH" not in {m["symbol"] for m in r.json()}
 
 
 def test_get_regime(client_full):
