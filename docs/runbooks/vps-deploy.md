@@ -87,18 +87,24 @@ python -c "import pandas, ccxt, pyarrow, scipy; print('deps ok')"
 deactivate
 ```
 
-## 4. Seed factors once (before first trade)
+## 4. Seed factors + regime once (before first trade)
 
-The trader pauses if factors are >2 days old, so generate fresh ones now:
+`refresh_factors.sh` runs stage0a + stage1 + **stage2.5 regime**, so it produces
+both the factor parquet and `regime_<sym>.json`. The trader pauses if factors
+are >2 days old; regime-overlay strategies (eth_s5) also need a current regime
+file — stale regime silently decays the overlay (its alpha). Generate fresh now:
 
 ```bash
 cd REPO
 RESEARCH_VENV="REPO/.venv" bash scripts/refresh_factors.sh
 # Confirm it ends with: refresh_factors: OK
 python - <<'PY'
-import json
+import json, datetime as dt
 m = json.load(open("research/manifests/factor_values_eth.meta.json"))
-print("eth index_end:", m["index_end"])   # should be ~today UTC
+print("eth factor index_end:", m["index_end"])           # ~today UTC
+r = json.load(open("research/manifests/regime_eth.json"))
+print("eth regime last bar:", r["breakdown"][-1]["date"]) # ~yesterday/today UTC
+print("eth current_regime:", r["current_regime"])
 PY
 ```
 

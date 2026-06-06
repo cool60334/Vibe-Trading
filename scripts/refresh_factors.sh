@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# Daily factor refresh — regenerate factor_values_*.parquet from fresh data.
+# Daily factor refresh — regenerate factor_values_*.parquet + regime_*.json
+# from fresh data.
 #
-# Re-runs the existing research pipeline (stage0a features + stage1 factors)
-# for ALL configured symbols (currently btc + eth). The testnet trader reads
-# research/manifests/factor_values_eth.parquet via its /repo:ro mount, so no
-# container restart is needed.
+# Re-runs the research pipeline (stage0a features + stage1 factors + stage2.5
+# regime) for ALL configured symbols (currently btc + eth). The trader reads
+# research/manifests/factor_values_eth.parquet AND regime_eth.json via its
+# /repo:ro mount, so no container restart is needed.
 #
-# Exit 0 on success; non-zero if any stage fails (old parquet is left intact).
+# stage2.5 regime matters for regime-overlay strategies (e.g. eth_s5_half_size,
+# whose bull/bear masking IS its alpha): without a daily regime refresh the live
+# signal ffills the last stored label forever and the overlay silently decays.
+#
+# Exit 0 on success; non-zero if any stage fails (old outputs are left intact).
 #
 # Optional env:
 #   RESEARCH_VENV  path to a venv to activate (…/bin/activate). If unset, the
@@ -33,5 +38,8 @@ python -m pipeline.stage0a_features
 
 echo "[$(ts)] stage1_factors…"
 python -m pipeline.stage1_factors
+
+echo "[$(ts)] stage2_5_regime…"
+python -m pipeline.stage2_5_regime
 
 echo "[$(ts)] refresh_factors: OK"
