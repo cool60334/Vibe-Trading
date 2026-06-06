@@ -3,14 +3,24 @@ research/pipeline/stage0_discovery.py
 ───────────────────────────────────────
 Stage-0 runner: Factor Discovery.
 
-For each symbol in research_config.yaml, invokes the ``crypto_factor_lab``
-swarm to propose FactorCandidate entries, validates them against SOURCE_REGISTRY
-and TRANSFORM_REGISTRY, and writes research/manifests/candidates_<sym>.json.
+For each symbol in research_config.yaml, builds a `candidates_<sym>.json`
+manifest. The runner has two modes:
 
-Stage-1 (factor_extended) consumes these manifests as its candidate list. If
-stage 0 fails for a symbol, it writes a ``candidates_<sym>.failed.json`` marker
-and prints a bold-red warning so the pipeline can fall back to LEGACY_FACTORS
-(handled by Task 5 / stage 1).
+  * **Deterministic** (default; ``--no-swarm`` / env
+    ``RESEARCH_STAGE0_USE_SWARM=0``) — picks factors from the Stage 0a
+    evidence manifest using a pure rule (``select_candidates_from_evidence``).
+    No LLM is called; cannot fail on JSON parse errors. This is the path
+    that runs in CI and in routine pipeline executions.
+
+  * **Enrichment** (``--use-swarm`` / env ``RESEARCH_STAGE0_USE_SWARM=1``) —
+    starts with the deterministic list, then calls the ``crypto_factor_lab``
+    swarm to overwrite each candidate's ``economic_logic`` string with a
+    human-friendly explanation. Swarm failures are *fail-soft*: the
+    deterministic placeholder text is preserved and the pipeline continues
+    with exit code 0.
+
+The legacy "swarm-primary + hardcoded fallback" path has been removed; see
+``openspec/changes/stage0-deterministic-discovery/`` for the proposal.
 
 Usage
 -----
@@ -26,12 +36,15 @@ Usage
     # Force re-run (ignore cache):
     python -m pipeline.stage0_discovery --force
 
+    # Enrich economic_logic via swarm (LLM call):
+    python -m pipeline.stage0_discovery --use-swarm
+
 Design note
 -----------
 Same thin-orchestration pattern as stage1_factors.py:
   - pure-logic helpers at module level (testable, no I/O dependencies)
-  - subprocess swarm call isolated in run_swarm()
-  - _process_symbol() handles one symbol end-to-end with retry
+  - subprocess swarm call isolated in run_swarm() (optional)
+  - _process_symbol() handles one symbol end-to-end
   - main() drives the loop then verify_outputs() + sys.exit()
 """
 
@@ -63,12 +76,19 @@ import os
 import re
 import subprocess
 from datetime import datetime, timezone
+from typing import Any
 
 # ── Third-party ────────────────────────────────────────────────────────────────
 import pandas as pd
 
 # ── Internal imports ───────────────────────────────────────────────────────────
 from pipeline.config import _REPO_ROOT as _CFG_REPO_ROOT, ResearchConfig, load_config
+from pipeline.lib.factor_selector import (
+    DEFAULT_MAX_CANDIDATES,
+    DEFAULT_MIN_ABS_IC,
+    DEFAULT_MIN_ABS_IR,
+    select_candidates_from_evidence,
+)
 from lib.sources import SOURCE_REGISTRY, TRANSFORM_REGISTRY
 from schemas import CandidatesManifest, FactorCandidate
 
@@ -421,6 +441,184 @@ def run_swarm(vars_dict: dict, timeout: int = SWARM_TIMEOUT_S) -> str:
     return completed.stdout or ""
 
 
+# ─── Deterministic + enrichment helpers ──────────────────────────────────────
+
+
+def _read_stage0_selector_overrides(
+    raw_config: dict | None,
+) -> tuple[float, float, int]:
+    """Return (min_abs_ic, min_abs_ir, max_candidates) using config overrides.
+
+    Looks up the ``stage0_selector`` block in the raw config dict. Any field
+    not present falls back to the module defaults (DEFAULT_MIN_ABS_IC etc.).
+
+    Args:
+        raw_config: Mapping loaded from research_config.yaml, or None. When
+                    None, all defaults are used.
+
+    Returns:
+        ``(min_abs_ic, min_abs_ir, max_candidates)`` tuple.
+    """
+    selector_cfg: dict[str, Any] = {}
+    if isinstance(raw_config, dict):
+        block = raw_config.get("stage0_selector")
+        if isinstance(block, dict):
+            selector_cfg = block
+
+    try:
+        min_abs_ic = float(selector_cfg.get("min_abs_ic", DEFAULT_MIN_ABS_IC))
+    except (TypeError, ValueError):
+        min_abs_ic = DEFAULT_MIN_ABS_IC
+    try:
+        min_abs_ir = float(selector_cfg.get("min_abs_ir", DEFAULT_MIN_ABS_IR))
+    except (TypeError, ValueError):
+        min_abs_ir = DEFAULT_MIN_ABS_IR
+    try:
+        max_candidates = int(selector_cfg.get("max_candidates", DEFAULT_MAX_CANDIDATES))
+    except (TypeError, ValueError):
+        max_candidates = DEFAULT_MAX_CANDIDATES
+
+    return min_abs_ic, min_abs_ir, max_candidates
+
+
+def run_deterministic_discovery(
+    sym_name: str,
+    evidence_path: Path,
+    features_path: Path,
+    *,
+    min_abs_ic: float = DEFAULT_MIN_ABS_IC,
+    min_abs_ir: float = DEFAULT_MIN_ABS_IR,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
+) -> list[FactorCandidate]:
+    """Select FactorCandidates deterministically from an evidence manifest.
+
+    Loads evidence JSON and feature store columns from disk, then delegates
+    to ``select_candidates_from_evidence``. Pure on top of those two reads —
+    no swarm, no network.
+
+    Args:
+        sym_name:       Short symbol name, e.g. "btc".
+        evidence_path:  Path to ``evidence_<sym>.json``.
+        features_path:  Path to ``features_<sym>.parquet``.
+        min_abs_ic:     IC threshold passed to selector.
+        min_abs_ir:     IR threshold passed to selector.
+        max_candidates: Hard cap on returned list length.
+
+    Returns:
+        List of FactorCandidate objects, may be empty.
+    """
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    try:
+        feature_cols = set(
+            pd.read_parquet(features_path, engine="pyarrow").columns.tolist()
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[stage0] {sym_name}: could not read features parquet for column set: {exc}",
+            file=sys.stderr,
+        )
+        feature_cols = set()
+
+    return select_candidates_from_evidence(
+        evidence,
+        feature_cols,
+        min_abs_ic=min_abs_ic,
+        min_abs_ir=min_abs_ir,
+        max_candidates=max_candidates,
+    )
+
+
+def enrich_candidates_with_swarm(
+    candidates: list[FactorCandidate],
+    sym_name: str,
+    okx_swap: str,
+    cfg: ResearchConfig,
+    manifests_dir: Path,
+    *,
+    timeout_s: int = SWARM_TIMEOUT_S,
+) -> list[FactorCandidate]:
+    """Best-effort overwrite of ``economic_logic`` via swarm; fail-soft.
+
+    Calls ``crypto_factor_lab`` with the deterministic candidate list as
+    context and asks for an ``economic_logic`` rewrite per factor. Returns
+    the (possibly enriched) candidate list. Any exception or unparseable
+    output leaves the deterministic placeholder text in place and the
+    pipeline continues normally — this function MUST NOT raise to its
+    caller.
+
+    Args:
+        candidates:    The deterministic candidate list to enrich in-place
+                       (returns a new list; inputs untouched).
+        sym_name:      Short symbol name, e.g. "btc".
+        okx_swap:      OKX swap ticker, e.g. "BTC-USDT-SWAP".
+        cfg:           Loaded ResearchConfig.
+        manifests_dir: Path to research/manifests/.
+        timeout_s:     Swarm subprocess timeout in seconds.
+
+    Returns:
+        List of FactorCandidate. On full success, each candidate's
+        ``economic_logic`` is swarm-authored; on any failure, the original
+        deterministic candidates are returned unchanged.
+    """
+    if not candidates:
+        return candidates
+
+    try:
+        vars_dict, _, _ = _build_swarm_vars(sym_name, okx_swap, cfg, manifests_dir)
+        # Inject the deterministic candidate list so the swarm knows what to
+        # explain (we ignore any candidates the swarm proposes — its job is
+        # text enrichment only).
+        vars_dict["preselected_candidates"] = json.dumps(
+            [{"feature_key": c.feature_key, "name": c.name} for c in candidates],
+            ensure_ascii=False,
+        )
+        vars_dict["extra_instruction"] = (
+            "為以下 preselected_candidates 的每個 feature_key 寫一段經濟邏輯散文。"
+            "回傳 JSON 陣列，每元素含 feature_key 與 economic_logic 兩欄。"
+        )
+        stdout = run_swarm(vars_dict, timeout=timeout_s)
+        raw_enriched = parse_candidates_json(stdout)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[stage0] {sym_name}: enrichment swarm failed ({exc}); "
+            "keeping deterministic placeholder text.",
+            file=sys.stderr,
+        )
+        return list(candidates)
+
+    # Build feature_key -> economic_logic map from swarm output.
+    enrichment: dict[str, str] = {}
+    for raw in raw_enriched if isinstance(raw_enriched, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        fk = raw.get("feature_key")
+        logic = raw.get("economic_logic")
+        if isinstance(fk, str) and isinstance(logic, str) and logic.strip():
+            enrichment[fk] = logic.strip()
+
+    if not enrichment:
+        print(
+            f"[stage0] {sym_name}: enrichment swarm returned no usable economic_logic; "
+            "keeping deterministic placeholder text."
+        )
+        return list(candidates)
+
+    out: list[FactorCandidate] = []
+    matched = 0
+    for c in candidates:
+        new_logic = enrichment.get(c.feature_key or "")
+        if new_logic:
+            matched += 1
+            out.append(c.model_copy(update={"economic_logic": new_logic}))
+        else:
+            out.append(c)
+    print(
+        f"[stage0] {sym_name}: enrichment overwrote economic_logic for "
+        f"{matched}/{len(candidates)} candidate(s)."
+    )
+    return out
+
+
 # ─── Per-symbol processing ───────────────────────────────────────────────────
 
 
@@ -465,24 +663,35 @@ def _process_symbol(
     okx_swap: str,
     cfg: ResearchConfig,
     manifests_dir: Path,
+    *,
+    use_swarm: bool,
+    min_abs_ic: float,
+    min_abs_ir: float,
+    max_candidates: int,
 ) -> CandidatesCheckResult:
-    """Run stage-0 discovery for one symbol, with retry and cache check.
+    """Run stage-0 discovery for one symbol (deterministic ± enrichment).
 
     Steps:
-      1. cache_hit check — return early if cached.
-      2. run_swarm with built vars_dict.
-      3. parse_candidates_json — retry once on ValueError with explicit JSON prompt.
-      4. filter_invalid_candidates — print warnings for filtered entries.
-      5. Pydantic-validate each candidate as FactorCandidate.
-      6. Build CandidatesManifest and write candidates_<sym>.json.
-      7. On any failure after retry: write candidates_<sym>.failed.json and
-         print a bold-red warning.
+      1. Pre-flight: features/evidence parquet/json must exist.
+      2. Cache hit check — return early if cached manifest is fresh.
+      3. Deterministic selection via select_candidates_from_evidence.
+      4. (Optional) swarm enrichment of economic_logic, fail-soft.
+      5. Build CandidatesManifest and write candidates_<sym>.json.
+
+    A 0-candidate result is *not* a failure: an empty manifest is written
+    with a stdout warning, and the exit code stays 0. The only failure
+    path is missing stage 0a outputs (caller's mistake, not pipeline
+    overreach).
 
     Args:
-        sym_name:      Short lowercase symbol name.
-        okx_swap:      OKX swap ticker.
-        cfg:           Loaded ResearchConfig.
-        manifests_dir: Path to research/manifests/.
+        sym_name:       Short lowercase symbol name.
+        okx_swap:       OKX swap ticker (only used by enrichment swarm).
+        cfg:            Loaded ResearchConfig.
+        manifests_dir:  Path to research/manifests/.
+        use_swarm:      When True, run enrichment after deterministic selection.
+        min_abs_ic:     Selector IC threshold.
+        min_abs_ir:     Selector IR threshold.
+        max_candidates: Hard cap on candidate count.
 
     Returns:
         CandidatesCheckResult for this symbol.
@@ -490,7 +699,7 @@ def _process_symbol(
     # ── 0. Pre-flight: verify stage0a outputs exist ───────────────────────────
     features_path = manifests_dir / f"features_{sym_name}.parquet"
     evidence_path = manifests_dir / f"evidence_{sym_name}.json"
-    missing = []
+    missing: list[str] = []
     if not features_path.exists():
         missing.append(str(features_path))
     if not evidence_path.exists():
@@ -501,15 +710,16 @@ def _process_symbol(
             f"run stage0a_features first. Missing: {missing}{_RESET}",
             file=sys.stderr,
         )
-        return _write_failed(
-            manifests_dir,
-            sym_name,
-            "stage0a outputs missing — run stage0a_features first",
+        return CandidatesCheckResult(
+            symbol=sym_name,
+            exists=False,
+            valid=False,
+            error="stage0a outputs missing — run stage0a_features first",
         )
 
     # ── 1. Cache check ────────────────────────────────────────────────────────
     if cache_hit(manifests_dir, sym_name, cfg.discovery_cache_days):
-        print(f"[stage0] {sym_name}: cache hit, skipping swarm")
+        print(f"[stage0] {sym_name}: cache hit, skipping discovery")
         path = manifests_dir / f"candidates_{sym_name}.json"
         try:
             raw = path.read_text(encoding="utf-8")
@@ -525,138 +735,53 @@ def _process_symbol(
             # Cache file exists but is corrupt — fall through to re-run.
             print(
                 f"[stage0] {sym_name}: cached file is corrupt ({exc}), "
-                "re-running swarm."
+                "re-running discovery."
             )
 
-    # ── 2. Build vars and run swarm ───────────────────────────────────────────
-    print(f"[stage0] {sym_name}: running swarm...")
-    vars_dict, available_sources, available_transforms = _build_swarm_vars(
-        sym_name, okx_swap, cfg, manifests_dir
+    # ── 2. Deterministic selection ────────────────────────────────────────────
+    print(
+        f"[stage0] {sym_name}: deterministic selection "
+        f"(min_abs_ic={min_abs_ic}, min_abs_ir={min_abs_ir}, "
+        f"max_candidates={max_candidates})"
+    )
+    candidates = run_deterministic_discovery(
+        sym_name,
+        evidence_path,
+        features_path,
+        min_abs_ic=min_abs_ic,
+        min_abs_ir=min_abs_ir,
+        max_candidates=max_candidates,
     )
 
-    try:
-        stdout = run_swarm(vars_dict)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        return _write_failed(
-            manifests_dir,
-            sym_name,
-            f"Swarm subprocess failed: {exc}",
+    # ── 3. Optional swarm enrichment ──────────────────────────────────────────
+    mode = "deterministic"
+    if use_swarm and candidates:
+        candidates = enrich_candidates_with_swarm(
+            candidates, sym_name, okx_swap, cfg, manifests_dir
         )
+        mode = "deterministic+swarm"
 
-    # ── 3. Parse JSON (with one retry on failure) ─────────────────────────────
-    raw_candidates: list[dict]
-    try:
-        raw_candidates = parse_candidates_json(stdout)
-    except ValueError as first_exc:
+    # ── 4. Zero-candidate is a soft warning, not a hard failure ───────────────
+    if not candidates:
         print(
-            f"[stage0] {sym_name}: JSON parse failed ({first_exc}), retrying with "
-            "strict JSON prompt..."
-        )
-        # Append a directive to vars and re-invoke the swarm.
-        retry_vars = dict(vars_dict)
-        retry_vars["extra_instruction"] = (
-            "請嚴格輸出 JSON，不要其他文字"
-        )
-        try:
-            stdout2 = run_swarm(retry_vars)
-            raw_candidates = parse_candidates_json(stdout2)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            return _write_failed(
-                manifests_dir,
-                sym_name,
-                f"Swarm subprocess failed on retry: {exc}",
-            )
-        except ValueError as retry_exc:
-            return _write_failed(
-                manifests_dir,
-                sym_name,
-                f"JSON parse failed after retry: {retry_exc}",
-            )
-
-    # ── 4. Filter invalid candidates ──────────────────────────────────────────
-    valid_dicts, filter_warnings = filter_invalid_candidates(
-        raw_candidates, available_sources, available_transforms
-    )
-    for warn in filter_warnings:
-        print(warn)
-
-    # ── 5. Pydantic-validate each candidate ───────────────────────────────────
-    validated_candidates: list[FactorCandidate] = []
-    pydantic_errors: list[str] = []
-    for raw_c in valid_dicts:
-        try:
-            validated_candidates.append(FactorCandidate.model_validate(raw_c))
-        except Exception as exc:  # noqa: BLE001
-            name = raw_c.get("name", "<unknown>")
-            pydantic_errors.append(f"  candidate '{name}': {exc}")
-
-    if pydantic_errors:
-        print(
-            f"[stage0] {sym_name}: {len(pydantic_errors)} candidate(s) failed "
-            "Pydantic validation and were dropped:"
-        )
-        for err in pydantic_errors:
-            print(err)
-
-    if not validated_candidates:
-        return _write_failed(
-            manifests_dir,
-            sym_name,
-            "No valid candidates remained after filtering and validation.",
+            f"{_RED}[stage0] {sym_name}: 0 factors passed IC/IR threshold — "
+            f"lower thresholds in research_config.yaml::stage0_selector or "
+            f"expand feature pool.{_RESET}"
         )
 
-    # ── 6. Validate feature_key against feature store columns ─────────────────
-    try:
-        feature_columns = pd.read_parquet(features_path, engine="pyarrow").columns.tolist()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[stage0] {sym_name}: could not read features parquet for key validation: {exc}")
-        feature_columns = []
-
-    available_feature_keys = set(feature_columns)
-    # Convert validated FactorCandidate objects back to dicts for validate_feature_keys
-    validated_dicts = [c.model_dump() for c in validated_candidates]
-    kept_dicts, fk_warnings = validate_feature_keys(validated_dicts, available_feature_keys)
-    for warn in fk_warnings:
-        print(warn)
-
-    if not kept_dicts:
-        return _write_failed(
-            manifests_dir,
-            sym_name,
-            "No candidates with valid feature_key remained",
-        )
-
-    # Re-validate kept dicts back into FactorCandidate objects
-    validated_candidates = []
-    for d in kept_dicts:
-        try:
-            validated_candidates.append(FactorCandidate.model_validate(d))
-        except Exception as exc:  # noqa: BLE001
-            print(f"[stage0] {sym_name}: re-validation error after feature_key filter: {exc}")
-
-    if not validated_candidates:
-        return _write_failed(
-            manifests_dir,
-            sym_name,
-            "No candidates with valid feature_key remained",
-        )
-
-    # ── 7. Write CandidatesManifest ───────────────────────────────────────────
+    # ── 5. Write CandidatesManifest ───────────────────────────────────────────
     manifest = CandidatesManifest(
         symbol=sym_name,
         generated_at=datetime.now(timezone.utc),
-        source_swarm_run=None,  # run id extraction not required for stage 0
-        candidates=validated_candidates,
+        source_swarm_run=None,
+        candidates=candidates,
     )
 
     out_path = manifests_dir / f"candidates_{sym_name}.json"
     manifests_dir.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        manifest.model_dump_json(indent=2),
-        encoding="utf-8",
-    )
+    out_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
     print(
-        f"[stage0] {sym_name}: wrote {len(validated_candidates)} candidates "
+        f"[stage0] {sym_name}: wrote {len(candidates)} candidates ({mode}) "
         f"→ {out_path}"
     )
 
@@ -664,80 +789,84 @@ def _process_symbol(
         symbol=sym_name,
         exists=True,
         valid=True,
-        n_candidates=len(validated_candidates),
-    )
-
-
-def _write_failed(
-    manifests_dir: Path,
-    sym_name: str,
-    error_msg: str,
-) -> CandidatesCheckResult:
-    """Write a .failed.json marker and print a bold-red warning.
-
-    Args:
-        manifests_dir: Path to research/manifests/.
-        sym_name:      Short lowercase symbol name.
-        error_msg:     Human-readable error summary.
-
-    Returns:
-        CandidatesCheckResult with ok=False.
-    """
-    failed_path = manifests_dir / f"candidates_{sym_name}.failed.json"
-    manifests_dir.mkdir(parents=True, exist_ok=True)
-    failed_payload = {
-        "symbol": sym_name,
-        "failed_at": datetime.now(timezone.utc).isoformat(),
-        "error": error_msg,
-    }
-    try:
-        failed_path.write_text(
-            json.dumps(failed_payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        print(f"[stage0] {sym_name}: could not write failed marker: {exc}", file=sys.stderr)
-
-    # Bold-red warning for pipeline visibility.
-    print(
-        f"{_RED}[WARN] stage0 FAILED for {sym_name} "
-        f"— stage1 will use LEGACY_FACTORS{_RESET}"
-    )
-    return CandidatesCheckResult(
-        symbol=sym_name,
-        exists=False,
-        valid=False,
-        error=error_msg,
+        n_candidates=len(candidates),
     )
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
 
+def _load_raw_config_yaml() -> dict[str, Any]:
+    """Re-read research_config.yaml as a raw dict for stage0_selector overrides.
+
+    ResearchConfig (the dataclass) doesn't carry the ``stage0_selector`` block
+    today; rather than thread a new field through it, this helper reads the
+    YAML again directly. The cost is cheap (single small file).
+
+    Returns:
+        Raw YAML mapping, or an empty dict if the file is missing or unreadable.
+    """
+    cfg_path = _CFG_REPO_ROOT / "research" / "research_config.yaml"
+    if not cfg_path.exists():
+        return {}
+    try:
+        import yaml  # local import to avoid hard dep at module import time
+
+        with cfg_path.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[stage0] warning: could not re-read research_config.yaml for "
+            f"stage0_selector overrides ({exc}); using defaults.",
+            file=sys.stderr,
+        )
+        return {}
+
+
 def main() -> None:
     """Stage-0 entry point: discover factor candidates, verify, report, exit."""
-    parser = argparse.ArgumentParser(
-        description="Stage-0 factor discovery runner."
-    )
+    parser = argparse.ArgumentParser(description="Stage-0 factor discovery runner.")
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Ignore cache and re-run swarm for all symbols.",
+        help="Ignore cache and re-run discovery for all symbols.",
     )
+    swarm_group = parser.add_mutually_exclusive_group()
+    swarm_group.add_argument(
+        "--use-swarm",
+        dest="use_swarm",
+        action="store_true",
+        help=(
+            "Enable LLM swarm enrichment of economic_logic after deterministic "
+            "selection. Failures are fail-soft (deterministic placeholder kept)."
+        ),
+    )
+    swarm_group.add_argument(
+        "--no-swarm",
+        dest="use_swarm",
+        action="store_false",
+        help="Force deterministic-only mode (default).",
+    )
+    # Default depends on RESEARCH_STAGE0_USE_SWARM env var.
+    env_use_swarm = os.environ.get("RESEARCH_STAGE0_USE_SWARM", "").strip()
+    parser.set_defaults(use_swarm=env_use_swarm == "1")
     args = parser.parse_args()
 
     # RESEARCH_FORCE_DISCOVERY env var also forces re-run.
     force = args.force or bool(os.environ.get("RESEARCH_FORCE_DISCOVERY", ""))
+    use_swarm: bool = bool(args.use_swarm)
 
     cfg: ResearchConfig = load_config()
     manifests_dir = _CFG_REPO_ROOT / "research" / "manifests"
 
     # Override cache TTL when --force / env var is set.
     effective_cache_days = 0 if force else cfg.discovery_cache_days
-
-    # Build a patched cfg with the effective cache days (we only shadow the field
-    # for the process_symbol call — cfg itself is frozen).
     effective_cfg = dataclasses.replace(cfg, discovery_cache_days=effective_cache_days)
+
+    # Read selector thresholds from research_config.yaml::stage0_selector.
+    raw_config = _load_raw_config_yaml()
+    min_abs_ic, min_abs_ir, max_candidates = _read_stage0_selector_overrides(raw_config)
 
     print("=" * 60)
     print("Stage 0 — Factor Discovery")
@@ -750,6 +879,13 @@ def main() -> None:
         f"Cache TTL: {effective_cache_days} days "
         f"({'disabled — force mode' if force else 'enabled'})"
     )
+    print(
+        f"Mode: {'deterministic+swarm enrichment' if use_swarm else 'deterministic only'}"
+    )
+    print(
+        f"Selector: min_abs_ic={min_abs_ic}  min_abs_ir={min_abs_ir}  "
+        f"max_candidates={max_candidates}"
+    )
     print(f"Output directory: {manifests_dir}")
 
     results: list[CandidatesCheckResult] = []
@@ -759,6 +895,10 @@ def main() -> None:
             okx_swap=sym_cfg.okx_swap,
             cfg=effective_cfg,
             manifests_dir=manifests_dir,
+            use_swarm=use_swarm,
+            min_abs_ic=min_abs_ic,
+            min_abs_ir=min_abs_ir,
+            max_candidates=max_candidates,
         )
         results.append(result)
 

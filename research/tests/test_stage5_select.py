@@ -20,6 +20,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -625,3 +626,166 @@ class TestIntegration:
         assert ranking[0]["rank"] == 1
         assert ranking[1]["strategy_id"] == "s_low"
         assert ranking[1]["rank"] == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TestManifestEmission — tasks 4.1–4.6
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _make_runs_map(strategies: dict, tmp_path: Path):
+    """Build a StrategyRunsMap from a dict of strategy_id -> info."""
+    from pipeline.strategy_runs import StrategyRunsMap, StrategyRunsEntry
+
+    entries = {}
+    for sid, info in strategies.items():
+        entries[sid] = StrategyRunsEntry(
+            symbol=info.get("symbol", "BTC-USDT-SWAP"),
+            spec_yaml=f"research/strategies/{sid}.yaml",
+            base_run=info.get("base_run"),
+            regime_runs={},
+            stress_runs={},
+            oos_runs=[],
+            sweep_run=None,
+        )
+    return StrategyRunsMap(entries=entries)
+
+
+class TestManifestEmission:
+    """Tests for the manifest-emission loop wired into stage5_select.main()."""
+
+    def _run_main(self, tmp_path: Path, strategies: dict) -> tuple[int, str, str]:
+        """
+        Run stage5_select.main() with patched paths and a synthetic StrategyRunsMap.
+
+        Returns (exit_code, stdout, stderr).
+        """
+        import pipeline.stage5_select as m5
+
+        runs_map = _make_runs_map(strategies, tmp_path)
+        manifests_dir = tmp_path / "research" / "manifests"
+        runs_root = tmp_path / "runs"
+
+        with (
+            patch.object(m5, "load_strategy_runs", return_value=runs_map),
+            patch.object(m5, "manifests_dir", manifests_dir, create=True),
+            patch("pipeline.stage5_select._REPO_ROOT", tmp_path),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            import io
+            from contextlib import redirect_stdout, redirect_stderr
+
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                m5.main()
+
+        return exc_info.value.code, out_buf.getvalue(), err_buf.getvalue()
+
+    # 4.2 – 3 strategies → 3 manifest.json files + selection.json + exit 0
+    def test_three_strategies_all_emit(self, tmp_path: Path):
+        sids = ["s_a", "s_b", "s_c"]
+        strategies = {sid: {"symbol": "BTC-USDT-SWAP", "base_run": f"run_{sid}"} for sid in sids}
+        for sid in sids:
+            _setup_strategy(tmp_path, sid, "proceed", base_run=f"run_{sid}")
+
+        exit_code, _out, _err = self._run_main(tmp_path, strategies)
+
+        assert exit_code == 0
+        for sid in sids:
+            manifest_path = tmp_path / "research" / "manifests" / sid / "manifest.json"
+            assert manifest_path.exists(), f"manifest.json missing for {sid}"
+        assert (tmp_path / "research" / "manifests" / "selection.json").exists()
+
+    # 4.3 – idempotent: second run overwrites manifest
+    def test_idempotent_second_run_overwrites(self, tmp_path: Path):
+        strategies = {"s_idem": {"symbol": "BTC-USDT-SWAP", "base_run": "run_idem"}}
+        _setup_strategy(tmp_path, "s_idem", "proceed", base_run="run_idem")
+
+        self._run_main(tmp_path, strategies)
+        manifest_path = tmp_path / "research" / "manifests" / "s_idem" / "manifest.json"
+        mtime1 = manifest_path.stat().st_mtime
+        content1 = manifest_path.read_text(encoding="utf-8")
+
+        self._run_main(tmp_path, strategies)
+        mtime2 = manifest_path.stat().st_mtime
+        content2 = manifest_path.read_text(encoding="utf-8")
+
+        # File must exist after second run
+        assert manifest_path.exists()
+        # Content should still be valid JSON
+        data = json.loads(content2)
+        assert data.get("strategy_id") == "s_idem"
+
+    # 4.4 – one strategy raises → others still emit, exit 0, stderr has warning
+    def test_one_emit_fails_others_succeed_exit_zero(self, tmp_path: Path, capsys):
+        sids = ["s_good1", "s_bad", "s_good2"]
+        strategies = {sid: {"symbol": "BTC-USDT-SWAP", "base_run": f"run_{sid}"} for sid in sids}
+        for sid in sids:
+            _setup_strategy(tmp_path, sid, "proceed", base_run=f"run_{sid}")
+
+        import pipeline.stage5_select as m5
+
+        runs_map = _make_runs_map(strategies, tmp_path)
+        manifests_dir = tmp_path / "research" / "manifests"
+        runs_root = tmp_path / "runs"
+
+        real_emit = m5.emit_manifest_for_strategy
+
+        def _patched_emit(strategy_id, entry, runs_root, manifests_dir):
+            if strategy_id == "s_bad":
+                raise RuntimeError("injected failure")
+            return real_emit(
+                strategy_id=strategy_id,
+                entry=entry,
+                runs_root=runs_root,
+                manifests_dir=manifests_dir,
+            )
+
+        with (
+            patch.object(m5, "load_strategy_runs", return_value=runs_map),
+            patch("pipeline.stage5_select._REPO_ROOT", tmp_path),
+            patch.object(m5, "emit_manifest_for_strategy", side_effect=_patched_emit),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            import io
+            from contextlib import redirect_stdout, redirect_stderr
+
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                m5.main()
+
+        assert exc_info.value.code == 0
+
+        # s_bad should appear in stderr
+        assert "s_bad" in err_buf.getvalue()
+
+        # good strategies should still have their manifests
+        assert (manifests_dir / "s_good1" / "manifest.json").exists()
+        assert (manifests_dir / "s_good2" / "manifest.json").exists()
+
+    # 4.5 – stdout contains "Emitted: N/M manifests successfully."
+    def test_stdout_contains_emitted_summary(self, tmp_path: Path):
+        strategies = {"s_x": {"symbol": "BTC-USDT-SWAP", "base_run": "run_x"}}
+        _setup_strategy(tmp_path, "s_x", "proceed", base_run="run_x")
+
+        import pipeline.stage5_select as m5
+
+        runs_map = _make_runs_map(strategies, tmp_path)
+
+        with (
+            patch.object(m5, "load_strategy_runs", return_value=runs_map),
+            patch("pipeline.stage5_select._REPO_ROOT", tmp_path),
+            pytest.raises(SystemExit),
+        ):
+            import io
+            from contextlib import redirect_stdout, redirect_stderr
+
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                m5.main()
+
+        assert "Emitted:" in out_buf.getvalue()
+        assert "manifests successfully." in out_buf.getvalue()

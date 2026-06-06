@@ -1,48 +1,122 @@
 {
-  "btc_s1_multi_factor_consensus": {
+  "btc_s7_stablecoin_funding_gated": {
     "symbol": "BTC-USDT-SWAP",
-    "spec_yaml": "research/strategies/strategy_btc_s1_multi_factor_consensus.yaml",
-    "base_run": "btc_s1_base",
+    "spec_yaml": "research/strategies/strategy_btc_s7_stablecoin_funding_gated.yaml",
+    "base_run": "btc_s7_base",
     "regime_runs": {
-      "bull": "btc_s1_bull",
-      "bear": "btc_s1_bear",
-      "neutral": "btc_s1_neutral"
-    },
-    "stress_runs": {
-      "3x_fees": "btc_s1_base_stress"
-    },
-    "oos_runs": [
-      "btc_s1_oos_2023",
-      "btc_s1_oos_2024"
-    ],
-    "sweep_run": "btc_s1_multi_factor_consensus_sweep_296"
-  },
-  "btc_s2_stablecoin_trend": {
-    "symbol": "BTC-USDT-SWAP",
-    "spec_yaml": "research/strategies/strategy_btc_s2_stablecoin_trend.yaml",
-    "base_run": "btc_s2_base",
-    "regime_runs": {
-      "bull": "btc_s2_bull",
-      "bear": "btc_s2_bear",
-      "neutral": "btc_s2_neutral"
+      "bull": "btc_s7_bull",
+      "bear": "btc_s7_bear",
+      "neutral": "btc_s7_neutral"
     },
     "stress_runs": {},
     "oos_runs": [],
-    "sweep_run": "btc_s2_stablecoin_trend_sweep_082",
+    "sweep_run": "btc_s7_stablecoin_funding_gated_sweep_097",
     "walk_forward_runs": [
-      "btc_s2_stablecoin_trend_oos_holdout"
+      "btc_s7_stablecoin_funding_gated_oos_holdout"
     ]
   },
-  "btc_s5_stablecoin_regime": {
+  "btc_s8_funding_z_contrarian": {
     "symbol": "BTC-USDT-SWAP",
-    "spec_yaml": "research/strategies/strategy_btc_s5_stablecoin_regime.yaml",
-    "base_run": "btc_s5_base",
+    "spec_yaml": "research/strategies/strategy_btc_s8_funding_z_contrarian.yaml",
+    "base_run": "btc_s8_base",
+    "regime_runs": {
+      "bull": "btc_s8_bull",
+      "bear": "btc_s8_bear",
+      "neutral": "btc_s8_neutral"
+    },
+    "stress_runs": {},
+    "oos_runs": [],
+    "sweep_run": null,
+    "walk_forward_runs": [
+      "btc_s8_funding_z_contrarian_oos_holdout"
+    ]
+  },
+  "btc_s9_stablecoin_funding_gated_tuned": {
+    "symbol": "BTC-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_btc_s9_stablecoin_funding_gated_tuned.yaml",
+    "base_run": "btc_s9_base",
+    "regime_runs": {
+      "bull": "btc_s9_bull",
+      "bear": "btc_s9_bear",
+      "neutral": "btc_s9_neutral"
+    },
+    "stress_runs": {},
+    "oos_runs": [],
+    "sweep_run": null,
+    "walk_forward_runs": [
+      "btc_s9_stablecoin_funding_gated_tuned_oos_holdout"
+    ]
+  },
+  "eth_s1_multi_factor_consensus": {
+    "symbol": "ETH-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_eth_s1_multi_factor_consensus.yaml",
+    "base_run": "eth_s1_base",
+    "regime_runs": {
+      "bull": "eth_s1_bull",
+      "bear": "eth_s1_bear",
+      "neutral": "eth_s1_neutral"
+    },
+    "stress_runs": {},
+    "oos_runs": [],
+    "sweep_run": null,
+    "walk_forward_runs": [
+      "eth_s1_multi_factor_consensus_oos_holdout"
+    ]
+  },
+  "eth_s5_half_size": {
+    "symbol": "ETH-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_eth_s5_half_size.yaml",
+    "base_run": "eth_s5_half_size_train",
     "regime_runs": {},
     "stress_runs": {},
-    "oos_runs": [
-      "btc_s5_oos_2024",
-      "btc_s5_oos_2025"
-    ],
-    "sweep_run": null
+    "oos_runs": [],
+    "sweep_run": "eth_s5_half_size_train",
+    "walk_forward_runs": [
+      "eth_s5_half_size_oos"
+    ]
+  },
+  "eth_s3_dynamic_exit": {
+    "symbol": "ETH-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_eth_s3_dynamic_exit.yaml",
+    "base_run": "eth_s3_base",
+    "regime_runs": {
+      "bull": "eth_s3_bull",
+      "bear": "eth_s3_bear",
+      "neutral": "eth_s3_neutral"
+    },
+    "stress_runs": {},
+    "oos_runs": [],
+    "sweep_run": "eth_s3_dynamic_exit_sweep_092",
+    "walk_forward_runs": [
+      "eth_s3_dynamic_exit_oos_holdout"
+    ]
+  },
+  "sol_s1_multi_factor_consensus": {
+    "symbol": "SOL-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_sol_s1_multi_factor_consensus.yaml",
+    "base_run": "sol_s1_base",
+    "regime_runs": {
+      "bull": "sol_s1_bull",
+      "bear": "sol_s1_bear",
+      "neutral": "sol_s1_neutral"
+    },
+    "stress_runs": {},
+    "oos_runs": [],
+    "sweep_run": "sol_s1_multi_factor_consensus_sweep_004",
+    "walk_forward_runs": [
+      "sol_s1_multi_factor_consensus_oos_holdout"
+    ]
+  },
+  "sol_s2_stablecoin_trend_gated": {
+    "symbol": "SOL-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_sol_s2_stablecoin_trend_gated.yaml",
+    "base_run": "sol_s2_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "oos_runs": [],
+    "sweep_run": null,
+    "walk_forward_runs": [
+      "sol_s2_stablecoin_trend_gated_oos_holdout"
+    ]
   }
 }

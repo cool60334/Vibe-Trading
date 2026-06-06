@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -215,6 +215,12 @@ class EvidenceEntry(_Manifest):
     ic_by_horizon: Dict[int, Optional[float]] = Field(..., description="Horizon hours → Spearman IC.")
     ir: float = Field(..., description="Information ratio.")
     sample_size: int = Field(..., ge=0, description="Number of paired observations.")
+    ic_eval_transform: Optional[str] = Field(
+        default=None,
+        description="Measurement-layer transform applied before computing IC (e.g. "
+        "'zscore_720h' for non-stationary OBV, 'native_freq'/'native_1D' for "
+        "forward-filled funding/stablecoin). Null = raw feature evaluated as-is.",
+    )
 
 
 class CandidatesManifest(_Manifest):
@@ -374,12 +380,27 @@ class OptimizationBlock(_Manifest):
 
 
 class DiagnosisBlock(_Manifest):
-    """Stage 3 diagnosis output — drives the explicit feedback loop."""
+    """Stage 3 diagnosis output — drives the explicit feedback loop.
+
+    ``walk_forward_source`` and ``walk_forward_metrics`` are optional Stage 3
+    OOS-aware additions: when the strategy has a walk-forward holdout run, the
+    diagnoser records which run was used and the metrics dict that drove the
+    recommendation. Both default to None so archived diagnosis.json files (and
+    strategies without walk-forward runs) parse unchanged.
+    """
 
     source_run: Optional[str] = None
     recommended_action: RecommendedAction
     summary: Optional[str] = None
     findings: List[str] = Field(default_factory=list)
+    walk_forward_source: Optional[str] = Field(
+        default=None,
+        description="Walk-forward holdout run id used as authoritative OOS evidence.",
+    )
+    walk_forward_metrics: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Metrics dict from the walk-forward run's metrics.csv (sharpe, max_drawdown, trade_count, ...).",
+    )
 
 
 class GateThreshold(_Manifest):

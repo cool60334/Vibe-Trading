@@ -62,6 +62,7 @@ for _p in (_RESEARCH_DIR,):
 from pipeline.config import _REPO_ROOT, ResearchConfig, load_config  # noqa: E402
 from pipeline.strategy_runs import StrategyRunsMap, load_strategy_runs  # noqa: E402
 from pipeline.stage3_diagnose import read_metrics_csv  # noqa: E402
+from emit_manifest import emit_manifest_for_strategy  # noqa: E402
 
 # ── Dashboard schemas path ─────────────────────────────────────────────────────
 _DASHBOARD_SCHEMAS = _REPO_ROOT / "dashboard" / "server"
@@ -69,6 +70,10 @@ if str(_DASHBOARD_SCHEMAS) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_SCHEMAS))
 
 from schemas import SelectionManifest, SelectionEntry  # noqa: E402
+
+# ─── ANSI colour constants ────────────────────────────────────────────────────
+_RED = "\033[31m"
+_RESET = "\033[0m"
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -445,6 +450,27 @@ def main() -> None:
     check = verify_selection(selection_path)
     if not check.ok:
         print(f"  [ERROR] verification failed: {check.error}", file=sys.stderr)
+
+    # ── Emit manifest.json for every strategy (not just eligible) ────────────
+    emit_ok = 0
+    emit_fail = 0
+    for strategy_id, entry in runs_map.entries.items():
+        try:
+            out_path = emit_manifest_for_strategy(
+                strategy_id=strategy_id,
+                entry=entry,
+                runs_root=runs_root,
+                manifests_dir=manifests_dir,
+            )
+            print(f"  [OK] {strategy_id} → {out_path.relative_to(runs_root.parent)}")
+            emit_ok += 1
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"{_RED}[stage5] {strategy_id}: manifest emit failed ({exc}){_RESET}",
+                file=sys.stderr,
+            )
+            emit_fail += 1
+    print(f"Emitted: {emit_ok}/{emit_ok + emit_fail} manifests successfully.")
 
     # ── Print summary and exit ────────────────────────────────────────────────
     print_summary(entries, total_strategies)

@@ -56,6 +56,7 @@ from pipeline.stage3_diagnose import (  # noqa: E402
     print_summary,
     read_metrics_csv,
     read_optimization_best,
+    read_walk_forward_metrics,
     rule_based_action,
     verify_diagnosis,
 )
@@ -903,3 +904,209 @@ class TestDiagnoseStrategyIntegration:
         data = json.loads(diag_path.read_text())
         # Rule-based on good metrics -> proceed.
         assert data["recommended_action"] == "proceed"
+
+
+# ---------------------------------------------------------------------------
+# (j) read_walk_forward_metrics — walk-forward holdout loader
+# ---------------------------------------------------------------------------
+
+
+class TestReadWalkForwardMetrics:
+    """Read the walk-forward holdout run's metrics, tolerant of every missing
+    or unparseable input mode."""
+
+    WF_METRICS = {
+        "sharpe": "1.02",
+        "max_drawdown": "-0.091",
+        "trade_count": "49",
+        "total_return": "0.094",
+    }
+
+    def test_returns_metrics_when_run_and_file_exist(self, tmp_path):
+        runs_root = tmp_path / "runs"
+        metrics_csv = runs_root / "eth_s5_holdout" / "artifacts" / "metrics.csv"
+        _write_metrics_csv(metrics_csv, self.WF_METRICS)
+
+        entry = {"walk_forward_runs": ["eth_s5_holdout"]}
+        result = read_walk_forward_metrics(entry, runs_root)
+
+        assert result is not None
+        assert "sharpe" in result
+        assert "max_drawdown" in result
+        assert "trade_count" in result
+        assert result["sharpe"] == pytest.approx(1.02)
+        assert result["max_drawdown"] == pytest.approx(-0.091)
+        assert int(result["trade_count"]) == 49
+
+    def test_empty_walk_forward_runs_returns_none(self, tmp_path):
+        entry = {"walk_forward_runs": []}
+        assert read_walk_forward_metrics(entry, tmp_path / "runs") is None
+
+    def test_missing_walk_forward_runs_key_returns_none(self, tmp_path):
+        entry = {"base_run": "btc_s1_base"}  # no walk_forward_runs key at all
+        assert read_walk_forward_metrics(entry, tmp_path / "runs") is None
+
+    def test_nonexistent_run_dir_returns_none(self, tmp_path):
+        runs_root = tmp_path / "runs"
+        # runs_root itself is never created.
+        entry = {"walk_forward_runs": ["does_not_exist_run"]}
+        assert read_walk_forward_metrics(entry, runs_root) is None
+
+    def test_run_dir_exists_but_metrics_csv_missing_returns_none(self, tmp_path):
+        runs_root = tmp_path / "runs"
+        artifacts = runs_root / "eth_s5_holdout" / "artifacts"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        # Intentionally do not create metrics.csv.
+
+        entry = {"walk_forward_runs": ["eth_s5_holdout"]}
+        assert read_walk_forward_metrics(entry, runs_root) is None
+
+
+# ---------------------------------------------------------------------------
+# (j) build_diagnosis_prompt with walk-forward (OOS-aware)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPromptWithWalkForward:
+    """Prompt builder must change shape when walk-forward metrics are provided."""
+
+    def _train_metrics(self) -> dict:
+        return {"base_run": {"sharpe": 1.55, "max_drawdown": -0.38, "trade_count": 120}}
+
+    def _wf_metrics(self) -> dict:
+        return {"sharpe": 1.02, "max_drawdown": -0.091, "trade_count": 49}
+
+    def test_walk_forward_present_marks_oos_authoritative(self):
+        """Non-None walk_forward → prompt contains 'Walk-Forward' + 'OOS' + 'authoritative'."""
+        prompt = build_diagnosis_prompt(
+            "eth_s5_half_size",
+            self._train_metrics(),
+            walk_forward_metrics=self._wf_metrics(),
+        )
+        assert "Walk-Forward" in prompt
+        assert "OOS" in prompt
+        # 'authoritative' check is case-insensitive (may appear as
+        # 'AUTHORITATIVE' in section header).
+        assert "authoritative" in prompt.lower()
+
+    def test_walk_forward_none_omits_oos_section(self):
+        """None walk_forward → prompt MUST NOT mention Walk-Forward / authoritative."""
+        prompt = build_diagnosis_prompt(
+            "eth_s5_half_size",
+            self._train_metrics(),
+            walk_forward_metrics=None,
+        )
+        assert "Walk-Forward" not in prompt
+        assert "authoritative" not in prompt.lower()
+
+    def test_walk_forward_values_appear_in_prompt(self):
+        """walk_forward dict values (sharpe / dd / trade_count) appear in prompt JSON."""
+        wf = {"sharpe": 1.02, "max_drawdown": -0.091, "trade_count": 49}
+        prompt = build_diagnosis_prompt(
+            "eth_s5_half_size",
+            self._train_metrics(),
+            walk_forward_metrics=wf,
+        )
+        assert "1.02" in prompt
+        assert "-0.091" in prompt
+        assert "49" in prompt
+
+    def test_task_instruction_mentions_oos_authoritative(self):
+        """Task block must explicitly say OOS is authoritative + train is for overfit detection."""
+        prompt = build_diagnosis_prompt(
+            "eth_s5_half_size",
+            self._train_metrics(),
+            walk_forward_metrics=self._wf_metrics(),
+        )
+        lower = prompt.lower()
+        # Task block must signal both the verdict authority and the overfit role.
+        assert "authoritative" in lower
+        assert "overfit" in lower
+
+    def test_walk_forward_with_optimization_still_renders_both(self):
+        """When both opt and wf provided, prompt contains both sections + OOS authority."""
+        opt = {"sharpe": 1.4, "max_drawdown": -0.12, "trade_count": 80}
+        prompt = build_diagnosis_prompt(
+            "eth_s5_half_size",
+            self._train_metrics(),
+            optimization_metrics=opt,
+            walk_forward_metrics=self._wf_metrics(),
+        )
+        assert "Stage-4 Best Combo" in prompt
+        assert "Walk-Forward" in prompt
+        assert "authoritative" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# (k) rule_based_action with walk-forward (OOS-aware)
+# ---------------------------------------------------------------------------
+
+
+class TestRuleBasedActionOOS:
+    """When walk_forward_metrics is provided, OOS path is authoritative."""
+
+    def _train_pass(self) -> dict:
+        """Train metrics that on their own would return PROCEED — to prove OOS overrides."""
+        return {"base": {"sharpe": 2.5, "max_drawdown": -0.05, "trade_count": 200}}
+
+    def test_oos_good_metrics_proceed(self):
+        """wf sharpe 1.02 / dd -0.091 / trades 49 → PROCEED (eth_s5 case)."""
+        wf = {"sharpe": 1.02, "max_drawdown": -0.091, "trade_count": 49}
+        result = rule_based_action({}, walk_forward_metrics=wf)
+        assert result == RecommendedAction.PROCEED
+
+    def test_oos_low_sharpe_or_high_dd_routes_to_stage_4(self):
+        """wf sharpe 0.25 / dd -0.26 / trades 89 → BACK_TO_STAGE_4."""
+        wf = {"sharpe": 0.25, "max_drawdown": -0.26, "trade_count": 89}
+        result = rule_based_action({}, walk_forward_metrics=wf)
+        assert result == RecommendedAction.BACK_TO_STAGE_4
+
+    def test_oos_negative_sharpe_routes_to_stage_2(self):
+        """wf sharpe -4.16 → BACK_TO_STAGE_2 (concept-level OOS failure)."""
+        wf = {"sharpe": -4.16, "max_drawdown": -0.50, "trade_count": 60}
+        result = rule_based_action({}, walk_forward_metrics=wf)
+        assert result == RecommendedAction.BACK_TO_STAGE_2
+
+    def test_walk_forward_none_preserves_train_path(self):
+        """walk_forward_metrics=None → train-anchored path unchanged (backwards compat)."""
+        # Reuse a scenario from TestRuleBasedAction: bad train → BACK_TO_STAGE_2.
+        bad_train = {"base": {"sharpe": -0.5, "max_drawdown": 0.20, "trade_count": 80}}
+        assert (
+            rule_based_action(bad_train, walk_forward_metrics=None)
+            == RecommendedAction.BACK_TO_STAGE_2
+        )
+        # And a good-train scenario remains PROCEED.
+        good_train = {"base": {"sharpe": 2.0, "max_drawdown": 0.08, "trade_count": 150}}
+        assert (
+            rule_based_action(good_train, walk_forward_metrics=None)
+            == RecommendedAction.PROCEED
+        )
+
+    def test_oos_trade_gate_at_30_inclusive(self):
+        """wf sharpe 1.10 / trades 35 → PROCEED (35 ≥ 30 gate, looser than train's 50)."""
+        wf = {"sharpe": 1.10, "max_drawdown": -0.08, "trade_count": 35}
+        result = rule_based_action({}, walk_forward_metrics=wf)
+        assert result == RecommendedAction.PROCEED
+
+    def test_oos_overrides_train(self):
+        """When wf is bad, train being great must NOT save it — OOS is authoritative."""
+        wf_bad = {"sharpe": -1.0, "max_drawdown": -0.4, "trade_count": 40}
+        result = rule_based_action(self._train_pass(), walk_forward_metrics=wf_bad)
+        assert result == RecommendedAction.BACK_TO_STAGE_2
+
+    def test_oos_overrides_optimization(self):
+        """Even with strong stage-4 opt metrics, weak OOS wins."""
+        opt = {"sharpe": 1.8, "max_drawdown": -0.09, "trade_count": 150}
+        wf_weak = {"sharpe": 0.4, "max_drawdown": -0.08, "trade_count": 60}
+        result = rule_based_action(
+            self._train_pass(),
+            optimization_metrics=opt,
+            walk_forward_metrics=wf_weak,
+        )
+        assert result == RecommendedAction.BACK_TO_STAGE_4
+
+    def test_oos_trade_below_30_routes_to_stage_4(self):
+        """Edge: wf trades 29 < 30 → BACK_TO_STAGE_4 even with good sharpe/dd."""
+        wf = {"sharpe": 1.5, "max_drawdown": -0.08, "trade_count": 29}
+        result = rule_based_action({}, walk_forward_metrics=wf)
+        assert result == RecommendedAction.BACK_TO_STAGE_4

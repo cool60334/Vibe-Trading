@@ -360,11 +360,24 @@ def _make_minimal_cfg() -> ResearchConfig:
 # ---------------------------------------------------------------------------
 
 
-class TestStage0aPreflightCheck:
-    """Pre-flight: _process_symbol must fail fast when stage0a outputs are absent."""
+_DEFAULT_PROCESS_KWARGS = dict(
+    use_swarm=False,
+    min_abs_ic=0.05,
+    min_abs_ir=0.10,
+    max_candidates=6,
+)
 
-    def test_missing_features_and_evidence_writes_failed_json(self, tmp_path: Path):
-        """Both features parquet and evidence JSON absent → failed.json written, ok=False."""
+
+class TestStage0aPreflightCheck:
+    """Pre-flight: _process_symbol must fail fast when stage0a outputs are absent.
+
+    Behaviour change: failed.json is no longer written (stage0-deterministic-
+    discovery change). Instead the result is ok=False with a clear error and
+    no candidate manifest is written.
+    """
+
+    def test_missing_features_and_evidence_returns_failure(self, tmp_path: Path):
+        """Both features parquet and evidence JSON absent → ok=False, no candidates file."""
         cfg = _make_minimal_cfg()
         sym_cfg = cfg.symbols[0]
 
@@ -373,19 +386,18 @@ class TestStage0aPreflightCheck:
             okx_swap=sym_cfg.okx_swap,
             cfg=cfg,
             manifests_dir=tmp_path,
+            **_DEFAULT_PROCESS_KWARGS,
         )
 
         assert result.ok is False
         assert "stage0a" in (result.error or "").lower() or "missing" in (result.error or "").lower()
 
-        failed_path = tmp_path / "candidates_eth.failed.json"
-        assert failed_path.exists(), "expected candidates_eth.failed.json to be written"
-        payload = json.loads(failed_path.read_text(encoding="utf-8"))
-        assert payload["symbol"] == "eth"
-        assert "missing" in payload["error"].lower() or "stage0a" in payload["error"].lower()
+        # New behaviour: no candidates manifest written, no failed.json.
+        assert not (tmp_path / "candidates_eth.json").exists()
+        assert not (tmp_path / "candidates_eth.failed.json").exists()
 
-    def test_missing_only_evidence_writes_failed_json(self, tmp_path: Path):
-        """Features parquet exists but evidence JSON is absent → still fails."""
+    def test_missing_only_evidence_returns_failure(self, tmp_path: Path):
+        """Features parquet exists but evidence JSON is absent → ok=False."""
         cfg = _make_minimal_cfg()
         sym_cfg = cfg.symbols[0]
 
@@ -400,11 +412,12 @@ class TestStage0aPreflightCheck:
             okx_swap=sym_cfg.okx_swap,
             cfg=cfg,
             manifests_dir=tmp_path,
+            **_DEFAULT_PROCESS_KWARGS,
         )
 
         assert result.ok is False
-        failed_path = tmp_path / "candidates_eth.failed.json"
-        assert failed_path.exists()
+        assert not (tmp_path / "candidates_eth.json").exists()
+        assert not (tmp_path / "candidates_eth.failed.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -465,3 +478,285 @@ class TestValidateFeatureKeys:
         kept, warnings = validate_feature_keys(cands, set())
         assert kept == []
         assert len(warnings) == 2
+
+
+# ---------------------------------------------------------------------------
+# Deterministic discovery + enrichment (stage0-deterministic-discovery change)
+# ---------------------------------------------------------------------------
+
+
+def _write_evidence_fixture(
+    manifests_dir: Path,
+    sym: str = "eth",
+    *,
+    high_ic_feature: str = "stablecoin_supply_z",
+    low_ic_feature: str = "basis_rel",
+) -> None:
+    """Write a small evidence_<sym>.json with one strong + one weak factor.
+
+    The strong factor passes the default thresholds (min_abs_ic=0.05,
+    min_abs_ir=0.10); the weak one does not.
+    """
+    payload = {
+        "caveat": "test fixture",
+        "generated_at": "2026-06-02T00:00:00Z",
+        "symbol": sym,
+        "evidence": [
+            {
+                "feature_key": high_ic_feature,
+                "category": "stablecoin",
+                "ic_by_horizon": {
+                    "8": 0.03,
+                    "24": 0.04,
+                    "72": 0.07,
+                    "168": 0.09,
+                },
+                "ic_eval_transform": None,
+                "ir": 4.43,
+                "sample_size": 35000,
+            },
+            {
+                "feature_key": low_ic_feature,
+                "category": "basis",
+                "ic_by_horizon": {
+                    "8": -0.019,
+                    "24": -0.004,
+                    "72": 0.010,
+                    "168": 0.017,
+                },
+                "ic_eval_transform": None,
+                "ir": -0.84,
+                "sample_size": 35000,
+            },
+        ],
+    }
+    (manifests_dir / f"evidence_{sym}.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+
+def _write_features_fixture(
+    manifests_dir: Path,
+    sym: str = "eth",
+    *,
+    columns: tuple[str, ...] = ("stablecoin_supply_z", "basis_rel"),
+) -> None:
+    """Write a minimal features parquet with the given columns."""
+    import pandas as pd
+
+    df = pd.DataFrame({c: [0.0] for c in columns})
+    df.to_parquet(str(manifests_dir / f"features_{sym}.parquet"), engine="pyarrow")
+
+
+class TestDeterministicDiscovery:
+    """spec scenario: deterministic 全成功 (no swarm) — writes candidates manifest."""
+
+    def test_deterministic_writes_valid_manifest(self, tmp_path: Path):
+        cfg = _make_minimal_cfg()
+        sym_cfg = cfg.symbols[0]
+        _write_evidence_fixture(tmp_path, sym=sym_cfg.name)
+        _write_features_fixture(tmp_path, sym=sym_cfg.name)
+
+        result = _process_symbol(
+            sym_name=sym_cfg.name,
+            okx_swap=sym_cfg.okx_swap,
+            cfg=cfg,
+            manifests_dir=tmp_path,
+            use_swarm=False,
+            min_abs_ic=0.05,
+            min_abs_ir=0.10,
+            max_candidates=6,
+        )
+
+        assert result.ok is True
+        assert result.n_candidates == 1  # only stablecoin_supply_z passes thresholds
+
+        out_path = tmp_path / f"candidates_{sym_cfg.name}.json"
+        assert out_path.exists()
+        from schemas import CandidatesManifest
+
+        manifest = CandidatesManifest.model_validate_json(
+            out_path.read_text(encoding="utf-8")
+        )
+        assert len(manifest.candidates) == 1
+        assert manifest.candidates[0].feature_key == "stablecoin_supply_z"
+        assert manifest.candidates[0].expected_ic_sign == "+"
+        # economic_logic is the deterministic placeholder (no swarm called)
+        assert "deterministic" in manifest.candidates[0].economic_logic.lower()
+
+    def test_no_swarm_subprocess_when_use_swarm_false(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Default mode must not invoke the swarm subprocess at all."""
+        cfg = _make_minimal_cfg()
+        sym_cfg = cfg.symbols[0]
+        _write_evidence_fixture(tmp_path, sym=sym_cfg.name)
+        _write_features_fixture(tmp_path, sym=sym_cfg.name)
+
+        called = {"n": 0}
+
+        def boom(*_a, **_k):  # pragma: no cover - guard
+            called["n"] += 1
+            raise RuntimeError("swarm should not be called in deterministic mode")
+
+        # Patch the swarm entry point on the module so a stray call would fail loudly.
+        from pipeline import stage0_discovery as mod
+
+        monkeypatch.setattr(mod, "run_swarm", boom)
+
+        result = _process_symbol(
+            sym_name=sym_cfg.name,
+            okx_swap=sym_cfg.okx_swap,
+            cfg=cfg,
+            manifests_dir=tmp_path,
+            use_swarm=False,
+            min_abs_ic=0.05,
+            min_abs_ir=0.10,
+            max_candidates=6,
+        )
+
+        assert result.ok is True
+        assert called["n"] == 0
+
+
+class TestZeroFactorsScenario:
+    """spec scenario: 零因子過門檻 → empty manifest, exit 0, schema valid."""
+
+    def test_zero_factors_writes_empty_manifest(self, tmp_path: Path):
+        cfg = _make_minimal_cfg()
+        sym_cfg = cfg.symbols[0]
+
+        # Evidence where all factors are below 0.05 IC threshold.
+        payload = {
+            "generated_at": "2026-06-02T00:00:00Z",
+            "symbol": sym_cfg.name,
+            "evidence": [
+                {
+                    "feature_key": "rsi_14",
+                    "category": "momentum",
+                    "ic_by_horizon": {"8": 0.01, "24": 0.01, "72": 0.01, "168": 0.01},
+                    "ic_eval_transform": None,
+                    "ir": 0.0,
+                    "sample_size": 35000,
+                }
+            ],
+        }
+        (tmp_path / f"evidence_{sym_cfg.name}.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+        _write_features_fixture(tmp_path, sym=sym_cfg.name, columns=("rsi_14",))
+
+        result = _process_symbol(
+            sym_name=sym_cfg.name,
+            okx_swap=sym_cfg.okx_swap,
+            cfg=cfg,
+            manifests_dir=tmp_path,
+            use_swarm=False,
+            min_abs_ic=0.05,
+            min_abs_ir=0.10,
+            max_candidates=6,
+        )
+
+        assert result.ok is True  # empty is not a failure
+        assert result.n_candidates == 0
+
+        out_path = tmp_path / f"candidates_{sym_cfg.name}.json"
+        assert out_path.exists()
+
+        from schemas import CandidatesManifest
+
+        manifest = CandidatesManifest.model_validate_json(
+            out_path.read_text(encoding="utf-8")
+        )
+        assert manifest.candidates == []  # empty list is valid
+
+
+class TestEnrichmentFailSoft:
+    """spec scenario: enrichment 模式 swarm timeout 不中斷."""
+
+    def test_swarm_raise_keeps_deterministic_placeholder(
+        self, tmp_path: Path, monkeypatch
+    ):
+        cfg = _make_minimal_cfg()
+        sym_cfg = cfg.symbols[0]
+        _write_evidence_fixture(tmp_path, sym=sym_cfg.name)
+        _write_features_fixture(tmp_path, sym=sym_cfg.name)
+
+        from pipeline import stage0_discovery as mod
+
+        def boom(*_a, **_k):
+            import subprocess as _sp
+
+            raise _sp.TimeoutExpired(cmd="swarm", timeout=1)
+
+        monkeypatch.setattr(mod, "run_swarm", boom)
+
+        result = _process_symbol(
+            sym_name=sym_cfg.name,
+            okx_swap=sym_cfg.okx_swap,
+            cfg=cfg,
+            manifests_dir=tmp_path,
+            use_swarm=True,  # request enrichment
+            min_abs_ic=0.05,
+            min_abs_ir=0.10,
+            max_candidates=6,
+        )
+
+        # Pipeline must NOT fail because swarm errored.
+        assert result.ok is True
+        assert result.n_candidates == 1
+
+        from schemas import CandidatesManifest
+
+        manifest = CandidatesManifest.model_validate_json(
+            (tmp_path / f"candidates_{sym_cfg.name}.json").read_text(encoding="utf-8")
+        )
+        # economic_logic still contains the deterministic placeholder marker.
+        assert "deterministic" in manifest.candidates[0].economic_logic.lower()
+
+    def test_swarm_success_overwrites_economic_logic(
+        self, tmp_path: Path, monkeypatch
+    ):
+        cfg = _make_minimal_cfg()
+        sym_cfg = cfg.symbols[0]
+        _write_evidence_fixture(tmp_path, sym=sym_cfg.name)
+        _write_features_fixture(tmp_path, sym=sym_cfg.name)
+
+        from pipeline import stage0_discovery as mod
+
+        # Mock swarm stdout with a fenced JSON array that contains the
+        # enrichment payload (feature_key + economic_logic).
+        fake_stdout = (
+            "Some preamble.\n"
+            "```json\n"
+            "[{\"feature_key\": \"stablecoin_supply_z\", "
+            "\"economic_logic\": \"Custom swarm rationale.\"}]\n"
+            "```\n"
+        )
+
+        def fake_swarm(*_a, **_k):
+            return fake_stdout
+
+        monkeypatch.setattr(mod, "run_swarm", fake_swarm)
+
+        result = _process_symbol(
+            sym_name=sym_cfg.name,
+            okx_swap=sym_cfg.okx_swap,
+            cfg=cfg,
+            manifests_dir=tmp_path,
+            use_swarm=True,
+            min_abs_ic=0.05,
+            min_abs_ir=0.10,
+            max_candidates=6,
+        )
+
+        assert result.ok is True
+        from schemas import CandidatesManifest
+
+        manifest = CandidatesManifest.model_validate_json(
+            (tmp_path / f"candidates_{sym_cfg.name}.json").read_text(encoding="utf-8")
+        )
+        assert manifest.candidates[0].economic_logic == "Custom swarm rationale."
+        # Other structural fields must NOT be overwritten by the swarm.
+        assert manifest.candidates[0].feature_key == "stablecoin_supply_z"
+        assert manifest.candidates[0].expected_ic_sign == "+"

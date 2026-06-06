@@ -139,6 +139,7 @@ def build_diagnosis_prompt(
     strategy_id: str,
     metrics_by_run: dict[str, dict],
     optimization_metrics: dict | None = None,
+    walk_forward_metrics: dict | None = None,
 ) -> str:
     """Build the LLM prompt for diagnosis, injecting metrics JSON.
 
@@ -154,6 +155,11 @@ def build_diagnosis_prompt(
                               prompt instructs the LLM that the base_run reflects
                               UNTUNED default params and the stage-4 best is the
                               authoritative concept-level evidence.
+        walk_forward_metrics: Optional walk-forward (held-out OOS) metrics dict.
+                              When present, the prompt is restructured so that
+                              walk-forward is the AUTHORITATIVE signal for the
+                              verdict and the train/stage-4 block is downgraded
+                              to overfit-gap detection only.
 
     Returns:
         The prompt text string.
@@ -172,6 +178,55 @@ def build_diagnosis_prompt(
             f"case.\n\n"
             f"```json\n{opt_json}\n```\n\n"
         )
+
+    # ── OOS-aware branch ──────────────────────────────────────────────────────
+    if walk_forward_metrics is not None:
+        wf_json = json.dumps(walk_forward_metrics, indent=2, ensure_ascii=False)
+        return (
+            f"You are a quantitative trading analyst reviewing backtest results for "
+            f"strategy '{strategy_id}'.\n\n"
+            f"## Train (in-sample, may be overfit)\n\n"
+            f"```json\n{metrics_json}\n```\n\n"
+            f"{opt_section}"
+            f"## Walk-Forward (held-out OOS — AUTHORITATIVE for verdict)\n\n"
+            f"The metrics below come from a held-out walk-forward window not seen "
+            f"during parameter selection. These OOS numbers are the authoritative "
+            f"signal for `recommended_action`.\n\n"
+            f"```json\n{wf_json}\n```\n\n"
+            f"## Task\n\n"
+            f"Based on the metrics above, diagnose this strategy and decide the next "
+            f"recommended action. **Walk-forward (OOS) is authoritative for the "
+            f"verdict.** Use the train / stage-4 block only to detect overfit via "
+            f"the train→OOS sharpe gap; do NOT let strong train metrics override a "
+            f"weak OOS result. Consider:\n"
+            f"  - OOS Sharpe ratio (target >= 1.5, minimum acceptable >= 1.0)\n"
+            f"  - OOS Max drawdown (target <= 10%, critical threshold > 15%)\n"
+            f"  - OOS Trade count (minimum 30 for the OOS window; OOS is typically "
+            f"half the train length so the gate is looser than train's 50)\n"
+            f"  - Train→OOS sharpe gap (large drop indicates overfit)\n"
+            f"  - Any signs of regime dependence between train and OOS\n\n"
+            f"## Required Output\n\n"
+            f"Respond with ONLY a JSON object (no prose outside the JSON block):\n\n"
+            f"```json\n"
+            f"{{\n"
+            f'  "recommended_action": "<proceed|back_to_stage_2|back_to_stage_4>",\n'
+            f'  "summary": "<1-2 sentence summary of the diagnosis>",\n'
+            f'  "findings": ["<finding 1>", "<finding 2>", ...]\n'
+            f"}}\n"
+            f"```\n\n"
+            f"Use:\n"
+            f"  - 'proceed' when OOS sharpe >= 1.0 AND |OOS drawdown| <= 15% "
+            f"AND OOS trade_count >= 30. Sharpe 1.0–1.5 is acceptable for "
+            f"proceed (1.5 is the aspirational target, not the gate); do NOT "
+            f"downgrade to back_to_stage_4 solely because sharpe is below 1.5.\n"
+            f"  - 'back_to_stage_4' if OOS sharpe is in [0, 1.0), OR |OOS "
+            f"drawdown| is in (10%, 15%], OR OOS trade_count is below 30 — "
+            f"these are parameter problems\n"
+            f"  - 'back_to_stage_2' ONLY if OOS sharpe is negative (concept-level "
+            f"failure in held-out data — cannot be tuned away)\n"
+        )
+
+    # ── Legacy (train-only) branch — unchanged ────────────────────────────────
     return (
         f"You are a quantitative trading analyst reviewing backtest results for "
         f"strategy '{strategy_id}'.\n\n"
@@ -276,11 +331,55 @@ def read_optimization_best(
     return read_metrics_csv(metrics_csv)
 
 
+def read_walk_forward_metrics(
+    strategy_runs_entry: dict,
+    runs_root: Path,
+) -> dict | None:
+    """Return the walk-forward holdout run's metrics dict, or None if unavailable.
+
+    Reads ``strategy_runs_entry["walk_forward_runs"]`` (a list of run ids),
+    takes the FIRST element, and reads that run's ``artifacts/metrics.csv``
+    via :func:`read_metrics_csv`.
+
+    Returns ``None`` — never raises — if any of the following holds:
+      - ``strategy_runs_entry`` lacks the ``walk_forward_runs`` key,
+      - ``walk_forward_runs`` is empty / not a list / first element is not a str,
+      - the referenced run directory or metrics.csv does not exist,
+      - the metrics.csv is unparseable.
+
+    Args:
+        strategy_runs_entry: A plain dict (the per-strategy entry from
+                             ``strategy_runs.json``, or any dict-like object
+                             exposing ``walk_forward_runs``).
+        runs_root:           ``<repo_root>/runs/`` directory.
+
+    Returns:
+        Metrics dict (same shape as :func:`read_metrics_csv` output) or None.
+    """
+    try:
+        wf_runs = strategy_runs_entry.get("walk_forward_runs", [])
+    except AttributeError:
+        return None
+    if not wf_runs or not isinstance(wf_runs, (list, tuple)):
+        return None
+    first = wf_runs[0]
+    if not isinstance(first, str) or not first:
+        return None
+    metrics_csv = runs_root / first / "artifacts" / "metrics.csv"
+    return read_metrics_csv(metrics_csv)
+
+
 def rule_based_action(
     metrics_by_run: dict[str, dict],
     optimization_metrics: dict | None = None,
+    walk_forward_metrics: dict | None = None,
 ) -> RecommendedAction:
     """Fallback rule-based diagnosis when the LLM response is unparseable.
+
+    When ``walk_forward_metrics`` is provided, the held-out OOS window is the
+    authoritative signal. The OOS path takes precedence over both train and
+    stage-4 best metrics. The OOS trade gate is looser than the train gate
+    (30 vs 50) because the OOS window is typically half the train length.
 
     When ``optimization_metrics`` is provided AND it has a positive sharpe,
     stage-4 has already proven the strategy concept can produce edge under
@@ -291,13 +390,17 @@ def rule_based_action(
     even though stage 4 already found a profitable combo.
 
     Decision tree:
-      1. If optimization_metrics has sharpe > 0:
+      0. If walk_forward_metrics is not None (OOS-anchored, authoritative):
+            - wf_sharpe < 0                                       -> back_to_stage_2
+            - wf_sharpe < 1.0 OR |wf_dd| > 0.15 OR wf_trades < 30 -> back_to_stage_4
+            - else                                                -> proceed
+      1. Else if optimization_metrics has sharpe > 0:
             - apply standard thresholds to the stage-4 best metrics
             - never returns back_to_stage_2 (concept proven)
       2. Else (or optimization_metrics missing):
-            - sharpe < 0                                  -> back_to_stage_2
+            - sharpe < 0                                       -> back_to_stage_2
             - sharpe < 1.0 OR |drawdown| > 0.15 OR trades < 50 -> back_to_stage_4
-            - else                                        -> proceed
+            - else                                             -> proceed
 
     Low trade count alone is NOT a stage_2 signal — it usually reflects entry
     thresholds being too strict, which is a parameter-tuning problem solvable
@@ -310,6 +413,9 @@ def rule_based_action(
         metrics_by_run:        Dict mapping run_name -> metrics dict.
         optimization_metrics:  Optional stage-4 best combo metrics from
                                read_optimization_best().
+        walk_forward_metrics:  Optional walk-forward (held-out OOS) metrics
+                               from read_walk_forward_metrics(). When present,
+                               OOS-anchored decision wins over all other paths.
 
     Returns:
         RecommendedAction enum value.
@@ -325,6 +431,25 @@ def rule_based_action(
             return float(v)
         except (TypeError, ValueError):
             return None
+
+    # Walk-forward (OOS) override: authoritative — takes precedence over both
+    # train base_run and stage-4 best metrics.
+    if walk_forward_metrics is not None:
+        wf_sharpe = _f(walk_forward_metrics, "sharpe")
+        wf_drawdown = _f(walk_forward_metrics, "max_drawdown")
+        wf_trades = _f(walk_forward_metrics, "trade_count")
+
+        if wf_sharpe is not None and wf_sharpe < 0:
+            return RecommendedAction.BACK_TO_STAGE_2
+
+        if (
+            (wf_sharpe is not None and wf_sharpe < 1.0)
+            or (wf_drawdown is not None and abs(wf_drawdown) > 0.15)
+            or (wf_trades is not None and wf_trades < 30)
+        ):
+            return RecommendedAction.BACK_TO_STAGE_4
+
+        return RecommendedAction.PROCEED
 
     # Stage-4 override: if stage 4 has already produced a positive-sharpe combo,
     # the strategy concept is proven and routing must not regress to stage_2.
@@ -373,6 +498,8 @@ def build_diagnosis_block(
     recommended_action: RecommendedAction,
     summary: str | None,
     findings: list[str],
+    walk_forward_source: str | None = None,
+    walk_forward_metrics: dict | None = None,
 ) -> dict:
     """Build the DiagnosisBlock dict (plain dict, no Pydantic validation here).
 
@@ -380,12 +507,16 @@ def build_diagnosis_block(
     dashboard/server/schemas.py.
 
     Args:
-        strategy_id:        Strategy identifier (not stored in the block itself
-                            but used to build the filename externally).
-        base_run:           The base run name, stored as source_run.
-        recommended_action: One of the RecommendedAction enum values.
-        summary:            1-2 sentence prose summary; may be None.
-        findings:           List of finding strings; may be empty.
+        strategy_id:          Strategy identifier (not stored in the block itself
+                              but used to build the filename externally).
+        base_run:             The base run name, stored as source_run.
+        recommended_action:   One of the RecommendedAction enum values.
+        summary:              1-2 sentence prose summary; may be None.
+        findings:             List of finding strings; may be empty.
+        walk_forward_source:  Optional walk-forward holdout run id whose
+                              metrics drove the OOS-anchored verdict.
+        walk_forward_metrics: Optional metrics dict for the walk-forward run
+                              (sharpe / max_drawdown / trade_count / …).
 
     Returns:
         Plain dict ready for JSON serialization.
@@ -395,6 +526,8 @@ def build_diagnosis_block(
         "recommended_action": recommended_action.value,
         "summary": summary,
         "findings": list(findings),
+        "walk_forward_source": walk_forward_source,
+        "walk_forward_metrics": walk_forward_metrics,
     }
 
 
@@ -604,9 +737,43 @@ def _diagnose_strategy(
             f"(used to authoritatively decide concept-level routing)"
         )
 
+    # Read walk-forward (held-out OOS) metrics if available — OOS-anchored
+    # decision authority. Read once, reuse across prompt / rule-based / block.
+    # read_walk_forward_metrics expects a dict-shaped entry, so wrap the
+    # dataclass attribute in a tiny mapping rather than asdict()-ing the whole
+    # entry (frozen dataclass with mappingproxy fields can fail deepcopy).
+    walk_forward_source: str | None = (
+        entry.walk_forward_runs[0] if entry.walk_forward_runs else None
+    )
+    walk_forward_metrics = read_walk_forward_metrics(
+        {"walk_forward_runs": list(entry.walk_forward_runs)},
+        runs_root,
+    )
+    if walk_forward_metrics is not None:
+        wf_sharpe = walk_forward_metrics.get("sharpe")
+        wf_dd = walk_forward_metrics.get("max_drawdown")
+        wf_trades = walk_forward_metrics.get("trade_count")
+        try:
+            wf_sharpe_str = f"{float(wf_sharpe):.2f}" if wf_sharpe is not None else "?"
+            wf_dd_str = (
+                f"{float(wf_dd) * 100:.1f}%" if wf_dd is not None else "?"
+            )
+            wf_trades_str = str(int(float(wf_trades))) if wf_trades is not None else "?"
+        except (TypeError, ValueError):
+            wf_sharpe_str, wf_dd_str, wf_trades_str = "?", "?", "?"
+        print(
+            f"[stage3d] {strategy_id}: walk_forward sharpe={wf_sharpe_str} "
+            f"dd={wf_dd_str} trades={wf_trades_str}"
+        )
+
     # ── Build LLM prompt ──────────────────────────────────────────────────────
     print("  [2/4] Building diagnosis prompt …")
-    prompt = build_diagnosis_prompt(strategy_id, metrics_by_run, optimization_metrics)
+    prompt = build_diagnosis_prompt(
+        strategy_id,
+        metrics_by_run,
+        optimization_metrics,
+        walk_forward_metrics=walk_forward_metrics,
+    )
 
     # ── Invoke LLM ────────────────────────────────────────────────────────────
     print("  [3/4] Invoking LLM diagnosis …")
@@ -630,13 +797,21 @@ def _diagnose_strategy(
             recommended_action = RecommendedAction(action_str)
             print(f"  [LLM] recommended_action = {recommended_action.value}")
         except ValueError:
-            recommended_action = rule_based_action(metrics_by_run, optimization_metrics)
+            recommended_action = rule_based_action(
+                metrics_by_run,
+                optimization_metrics,
+                walk_forward_metrics=walk_forward_metrics,
+            )
             print(f"  [FALLBACK] invalid action '{action_str}' — rule-based: {recommended_action.value}")
         summary = parsed.get("summary")
         raw_findings = parsed.get("findings", [])
         findings = list(raw_findings) if isinstance(raw_findings, list) else []
     else:
-        recommended_action = rule_based_action(metrics_by_run, optimization_metrics)
+        recommended_action = rule_based_action(
+            metrics_by_run,
+            optimization_metrics,
+            walk_forward_metrics=walk_forward_metrics,
+        )
         print(f"  [FALLBACK] rule-based recommended_action = {recommended_action.value}")
 
     # ── Write diagnosis.json ──────────────────────────────────────────────────
@@ -647,6 +822,8 @@ def _diagnose_strategy(
         recommended_action=recommended_action,
         summary=summary,
         findings=findings,
+        walk_forward_source=walk_forward_source,
+        walk_forward_metrics=walk_forward_metrics,
     )
 
     out_dir = manifests_dir / strategy_id
