@@ -74,7 +74,16 @@ def get_strategy(strategy_id: str) -> StrategyManifest:
 # ---------------------------------------------------------------------------
 
 def _resolve_run_csv(strategy_id: str, run: Optional[str], filename: str) -> Path:
-    """Return path to <run>/<filename>; 404 if not found."""
+    """Return path to <run>/<filename>; 404 if not found.
+
+    Manifests store ``source_run`` under two historical conventions:
+      - full path relative to repo root, e.g. ``runs/btc_s1_base/artifacts``
+        (legacy manifests), and
+      - bare run name, e.g. ``btc_s9_base`` (current emit_manifest output),
+        whose artifacts live at ``runs/<run>/artifacts/``.
+    Try both so every strategy resolves regardless of which convention its
+    manifest used.
+    """
     manifest = artifacts.get_strategy_manifest(REPO_ROOT, strategy_id)
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
@@ -85,13 +94,38 @@ def _resolve_run_csv(strategy_id: str, run: Optional[str], filename: str) -> Pat
     if run_dir is None:
         raise HTTPException(status_code=404, detail="No run specified and no default in manifest")
 
-    path = (REPO_ROOT / run_dir / filename).resolve()
-    # Safety: must stay within repo_root
-    if not path.is_relative_to(REPO_ROOT.resolve()):
-        raise HTTPException(status_code=403, detail="Path outside repo root")
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"{filename} not found in run '{run_dir}'")
-    return path
+    repo_resolved = REPO_ROOT.resolve()
+    candidates = [
+        REPO_ROOT / run_dir / filename,                      # full path (legacy)
+        REPO_ROOT / "runs" / run_dir / "artifacts" / filename,  # bare run name (current)
+        REPO_ROOT / "runs" / run_dir / filename,                # bare run name, no artifacts/
+    ]
+    for cand in candidates:
+        path = cand.resolve()
+        # Safety: must stay within repo_root
+        if not path.is_relative_to(repo_resolved):
+            continue
+        if path.exists():
+            return path
+
+    raise HTTPException(status_code=404, detail=f"{filename} not found in run '{run_dir}'")
+
+
+def _normalize_equity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure each equity row has a ``time`` key (the X-axis the chart reads).
+
+    equity.csv uses ``timestamp`` (live runs) or ``date`` (sample data) for the
+    time column; the dashboard's EquityPoint expects ``time``. Alias it without
+    dropping the other columns.
+    """
+    for row in rows:
+        if "time" not in row or row.get("time") is None:
+            ts = row.get("timestamp")
+            if ts is None:
+                ts = row.get("date")
+            if ts is not None:
+                row["time"] = ts
+    return rows
 
 
 @app.get("/api/strategies/{strategy_id}/equity")
@@ -100,7 +134,7 @@ def get_equity(
     run: Optional[str] = Query(default=None, description="Run directory relative to repo root"),
 ) -> list[dict[str, Any]]:
     path = _resolve_run_csv(strategy_id, run, "equity.csv")
-    return parsers.csv_to_records(path)
+    return _normalize_equity_rows(parsers.csv_to_records(path))
 
 
 @app.get("/api/strategies/{strategy_id}/trades")

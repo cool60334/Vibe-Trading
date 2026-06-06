@@ -95,6 +95,25 @@ class ManifestCheckResult:
 # ─── Pure-logic helpers ────────────────────────────────────────────────────────
 
 
+def canonical_symbol(symbol: str) -> str:
+    """Normalise a trading symbol to its base-coin form for dashboard grouping.
+
+    The pipeline mixes conventions across runs — ``BTC``, ``BTC-USDT-SWAP``,
+    ``BTC/USDT:USDT`` all denote the same coin. The dashboard groups strategies
+    by ``symbol`` and joins them to factor manifests (keyed by base coin, e.g.
+    ``factor_btc.json``), so manifests MUST use the base-coin form to avoid the
+    coin appearing as two separate groups and to make the factor join resolve.
+
+    Examples:
+        ``BTC-USDT-SWAP`` -> ``BTC``;  ``BTC/USDT:USDT`` -> ``BTC``;  ``BTC`` -> ``BTC``.
+    """
+    s = symbol.strip().upper()
+    for sep in ("-", "/"):
+        if sep in s:
+            return s.split(sep, 1)[0]
+    return s
+
+
 def metrics_csv_to_backtest_metrics(
     run_name: str,
     metrics_csv: Path,
@@ -618,6 +637,10 @@ def build_strategy_manifest(
         Plain dict ready for JSON serialisation (via Pydantic model_dump).
     """
     strategy_dir = manifests_dir / strategy_id
+
+    # Canonicalise symbol to base coin (BTC-USDT-SWAP -> BTC) so the dashboard
+    # groups by coin and the factor-manifest join (factor_<coin>.json) resolves.
+    symbol = canonical_symbol(symbol)
 
     # ── SpecBlock ───────────────────────────────────────────────────────────────
     spec_yaml_path = _REPO_ROOT / entry.spec_yaml if entry.spec_yaml else None

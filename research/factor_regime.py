@@ -123,8 +123,12 @@ def classify_stability(cross_regime_ic: dict[str, float]) -> FactorStability:
     Returns:
         FactorStability.REGIME_STABLE or FactorStability.CONDITIONAL.
     """
-    # Collect non-NaN IC values
-    valid_ic = {r: v for r, v in cross_regime_ic.items() if not math.isnan(v)}
+    # Collect usable IC values (skip None and NaN — both mean "no signal here")
+    valid_ic = {
+        r: v
+        for r, v in cross_regime_ic.items()
+        if v is not None and not math.isnan(v)
+    }
 
     if not valid_ic:
         return FactorStability.CONDITIONAL
@@ -231,11 +235,27 @@ def _resolve_manifests_dir() -> Path:
     return _CFG_REPO_ROOT / "research" / "manifests"
 
 
+def _load_factor_values(manifests_dir: Path, sym_name: str) -> pd.DataFrame | None:
+    """Load the stored derived-factor values for a symbol, or None if missing.
+
+    These parquets (``factor_values_<sym>.parquet``) hold the SAME factor
+    columns the manifest reports (e.g. ``funding_z``, ``stablecoin_supply_z``),
+    on the hourly index used for IC evaluation. Reusing them — rather than the
+    old hardcoded ``funding_rate``/``oi_change_24h``/``fng`` recomputation —
+    keeps cross-regime IC aligned with the factors the manifest actually scores.
+    """
+    path = manifests_dir / f"factor_values_{sym_name}.parquet"
+    if not path.exists():
+        print(f"  WARN: factor values parquet not found at {path}, skipping regime IC")
+        return None
+    fv = pd.read_parquet(path)
+    return fv
+
+
 def run_symbol_regime(sym: SymbolConfig, cfg: ResearchConfig, manifests_dir: Path) -> None:
-    """Fetch data, compute regime IC, enrich manifest for one symbol."""
-    from lib.ccxt_data import fetch_oi_history_bybit, fetch_funding_history_multiyear
+    """Compute cross-regime IC for a symbol's STORED factors and enrich its manifest."""
+    from lib.ccxt_data import fetch_funding_history_multiyear
     from lib.okx_data import fetch_candles
-    from lib.sentiment import fetch_fear_greed
 
     period_days = cfg.period
     horizons = list(cfg.horizons_h)
@@ -244,55 +264,46 @@ def run_symbol_regime(sym: SymbolConfig, cfg: ResearchConfig, manifests_dir: Pat
     print(f"[regime] Symbol: {sym.name.upper()}")
     print(f"{'='*60}")
 
-    print(f"[1/4] funding history (last {period_days}d, ccxt multi-year)")
-    funding = fetch_funding_history_multiyear(
-        ccxt_symbol=sym.ccxt_bybit, days=period_days, exchange="binance",
-        okx_swap=sym.okx_swap,
-    )
-    print(f"     rows: {len(funding)}")
+    # ── Stored derived factors (the ones the manifest actually reports) ──────────
+    print(f"[1/3] stored factor values (factor_values_{sym.name}.parquet)")
+    fv = _load_factor_values(manifests_dir, sym.name)
+    if fv is None or fv.empty:
+        return
+    print(f"     factors: {list(fv.columns)}  rows: {len(fv)}")
 
-    print(f"[2/4] hourly candles (last {period_days}d)")
+    # ── Close candles for forward returns + regime detection ─────────────────────
+    print(f"[2/3] hourly candles (last {period_days}d)")
     candles = fetch_candles(sym.okx_swap, period_days, bar="1H", use_history_endpoint=True)
     print(f"     rows: {len(candles)}")
 
-    print(f"[3/4] Bybit OI history (last {period_days}d)")
+    # ── Funding for the regime mania/capitulation override (fail-soft) ───────────
+    print(f"[3/3] funding history (last {period_days}d, ccxt multi-year)")
     try:
-        oi_hist = fetch_oi_history_bybit(sym.ccxt_bybit, days=period_days, timeframe="1h")
-        print(f"     rows: {len(oi_hist)}")
-    except Exception as exc:
-        print(f"     WARN: OI fetch failed ({exc}); continuing without OI")
-        oi_hist = pd.DataFrame(columns=["oi", "oi_usd"])
+        funding = fetch_funding_history_multiyear(
+            ccxt_symbol=sym.ccxt_bybit, days=period_days, exchange="binance",
+            okx_swap=sym.okx_swap,
+        )
+        print(f"     rows: {len(funding)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"     WARN: funding fetch failed ({exc}); regime without funding override")
+        funding = None
 
-    print(f"[4/4] Fear & Greed (last {period_days}d)")
-    fng = fetch_fear_greed(days=period_days)
-    print(f"     rows: {len(fng)}")
+    # Build hourly frame on the stored-factor index; bring in close.
+    df = fv.copy()
+    df["close"] = candles["close"].reindex(df.index, method="ffill")
 
-    # Build hourly DataFrame (same logic as factor_extended.py)
-    df = pd.DataFrame(index=candles.index)
-    df["close"] = candles["close"]
-
-    fund_h = funding.reindex(candles.index, method="ffill").bfill()
-    df["funding_rate"] = fund_h["funding_rate"]
-
-    if not oi_hist.empty:
-        oi_h = oi_hist.reindex(candles.index, method="ffill")
-        df["oi"] = oi_h["oi"]
-        df["oi_change_24h"] = df["oi"].pct_change(24)
-    else:
-        df["oi_change_24h"] = pd.NA
-
-    fng_h = fng.reindex(candles.index, method="ffill").bfill()
-    df["fng"] = fng_h["fng"]
+    fund_h = None
+    if funding is not None and not funding.empty:
+        fund_h = funding.reindex(df.index, method="ffill").bfill()
 
     df = add_forward_returns(df, "close", horizons)
 
     # Compute daily close for regime detection
     daily_close = daily_close_from_hourly(df, col="close")
 
-    # compute_regime needs funding at its native granularity
     regime_df = compute_regime(
         daily_close,
-        funding_rate=fund_h["funding_rate"],
+        funding_rate=fund_h["funding_rate"] if fund_h is not None else None,
     )
 
     # Reindex regime labels back to hourly index (forward-fill daily -> hourly)
@@ -300,26 +311,30 @@ def run_symbol_regime(sym: SymbolConfig, cfg: ResearchConfig, manifests_dir: Pat
 
     print(f"\n[regime] label distribution: {dict(hourly_regime.value_counts())}")
 
-    # Pick the best forward-return horizon per factor for cross-regime IC.
-    # Use the longest horizon available to maximise signal-to-noise (less noise
-    # from microstructure effects). This is consistent with factor_extended.py
-    # using the max |IC| horizon for verdict; here we use the max horizon for
-    # regime IC because stability is about direction, not magnitude ranking.
+    # Pick the longest forward-return horizon for cross-regime IC: stability is
+    # about direction consistency, where the long horizon has the best
+    # signal-to-noise (less microstructure noise).
     best_horizon = max(horizons)
     ret_col = f"ret_{best_horizon}h"
 
     cross_regime_data: dict[str, dict[str, float]] = {}
-    for factor in ["funding_rate", "oi_change_24h", "fng"]:
-        if factor not in df.columns or df[factor].isna().all():
+    for factor in fv.columns:
+        if df[factor].isna().all():
             print(f"  {factor}: all NaN, skipping regime IC")
             continue
         if ret_col not in df.columns:
             print(f"  {factor}: return column {ret_col} missing, skipping")
             continue
         regime_ic = compute_regime_ic(df[factor], df[ret_col], hourly_regime)
+        # NaN (sparse regime, <20 obs) -> None: NaN is invalid JSON and breaks
+        # the dashboard's fetch().json(); the schema allows null per regime.
+        regime_ic = {
+            r: (None if (v is None or math.isnan(v)) else v)
+            for r, v in regime_ic.items()
+        }
         cross_regime_data[factor] = regime_ic
-        print(f"  {factor:>16}: " + "  ".join(
-            f"{r}={v:+.4f}" if not math.isnan(v) else f"{r}=NaN"
+        print(f"  {factor:>20}: " + "  ".join(
+            f"{r}={v:+.4f}" if v is not None else f"{r}=NaN"
             for r, v in regime_ic.items()
         ))
 
