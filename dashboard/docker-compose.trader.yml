@@ -1,0 +1,36 @@
+# Standalone trader — runs INDEPENDENTLY of the dashboard.
+#
+# The trader Manager (trader.manager) watches runs/testnet/<id>/control.json on
+# the shared ../runs bind mount and keeps a trader.loop process running for each
+# control whose desired_state is "running". The dashboard server only writes
+# those control files, so deploying/restarting the dashboard never touches a
+# running dry-run.
+#
+# Lifecycle (kept separate from the dashboard on purpose):
+#   start :  docker compose -f docker-compose.trader.yml up -d --build
+#   logs  :  docker compose -f docker-compose.trader.yml logs -f
+#   stop  :  docker compose -f docker-compose.trader.yml down
+#
+# Only rebuild this when TRADER code changes — not on dashboard deploys.
+
+services:
+  trader:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    working_dir: /app
+    command: ["python", "-m", "trader.manager", "--repo-root", "/repo", "--scan-interval", "5"]
+    environment:
+      REPO_ROOT: /repo
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      PAPER_EQUITY: ${PAPER_EQUITY:-10000}
+      PAPER_TAKER_FEE: ${PAPER_TAKER_FEE:-0.00055}
+      PAPER_SLIPPAGE_BPS: ${PAPER_SLIPPAGE_BPS:-5}
+      # Credentials only needed for testnet/live modes.
+      BYBIT_API_KEY: ${BYBIT_API_KEY:-}
+      BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
+    volumes:
+      # Repo (code + run dirs) read-only; runs/ writable for status/csv/state/control.
+      - ..:/repo:ro
+      - ../runs:/repo/runs
+    restart: unless-stopped

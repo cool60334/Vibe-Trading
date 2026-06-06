@@ -1,42 +1,59 @@
-"""Tests for supervisor mode wiring — credential gating and command build."""
+"""Tests for the control-file Supervisor — start/stop write control.json."""
+
+import json
+from pathlib import Path
 
 import pytest
 
-from supervisor import build_trader_command, require_credentials
+from supervisor import Supervisor
+
+_RUN = dict(run_dir="/repo/runs/strat_oos", symbol="BTC/USDT:USDT")
 
 
-def test_paper_mode_needs_no_credentials():
-    # Must not raise even with an empty environment.
-    require_credentials({}, "paper")
+def _control(tmp_path: Path, testnet_id: str) -> dict:
+    path = tmp_path / "runs" / "testnet" / testnet_id / "control.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_testnet_mode_missing_keys_raises():
+def test_start_writes_running_control(tmp_path):
+    Supervisor(tmp_path).start("strat", "tn1", mode="paper", **_RUN)
+    ctrl = _control(tmp_path, "tn1")
+    assert ctrl["desired_state"] == "running"
+    assert ctrl["mode"] == "paper"
+    assert ctrl["strategy_id"] == "strat"
+    assert ctrl["symbol"] == "BTC/USDT:USDT"
+
+
+def test_start_paper_needs_no_keys(tmp_path, monkeypatch):
+    monkeypatch.delenv("BYBIT_API_KEY", raising=False)
+    monkeypatch.delenv("BYBIT_API_SECRET", raising=False)
+    Supervisor(tmp_path).start("s", "tn", mode="paper", **_RUN)  # must not raise
+
+
+def test_start_testnet_requires_keys(tmp_path, monkeypatch):
+    monkeypatch.delenv("BYBIT_API_KEY", raising=False)
+    monkeypatch.delenv("BYBIT_API_SECRET", raising=False)
     with pytest.raises(EnvironmentError):
-        require_credentials({}, "testnet")
+        Supervisor(tmp_path).start("s", "tn", mode="testnet", **_RUN)
 
 
-def test_live_mode_missing_keys_raises():
-    with pytest.raises(EnvironmentError):
-        require_credentials({"BYBIT_API_KEY": "k"}, "live")
+def test_stop_flips_to_stopped(tmp_path):
+    sup = Supervisor(tmp_path)
+    sup.start("s", "tn1", mode="paper", **_RUN)
+    assert sup.stop("tn1") is True
+    assert _control(tmp_path, "tn1")["desired_state"] == "stopped"
 
 
-def test_testnet_mode_with_keys_ok():
-    require_credentials({"BYBIT_API_KEY": "k", "BYBIT_API_SECRET": "s"}, "testnet")
+def test_stop_unknown_returns_false(tmp_path):
+    assert Supervisor(tmp_path).stop("nope") is False
 
 
-def test_build_command_includes_mode_and_loop_entrypoint():
-    cmd = build_trader_command(
-        "python",
-        mode="paper",
-        strategy_id="s",
-        testnet_id="t",
-        run_dir="d",
-        symbol="BTC/USDT:USDT",
-        interval="1H",
-        repo_root="/repo",
-        qty=0.001,
-    )
-    assert cmd[:3] == ["python", "-m", "trader.loop"]
-    assert "--mode" in cmd
-    assert cmd[cmd.index("--mode") + 1] == "paper"
-    assert cmd[cmd.index("--symbol") + 1] == "BTC/USDT:USDT"
+def test_is_running_and_status_reflect_control(tmp_path):
+    sup = Supervisor(tmp_path)
+    assert sup.is_running("tn1") is False
+    sup.start("s", "tn1", mode="paper", **_RUN)
+    assert sup.is_running("tn1") is True
+    assert sup.status("tn1")["desired_state"] == "running"
+    sup.stop("tn1")
+    assert sup.is_running("tn1") is False
+    assert sup.status("tn1")["running"] is False

@@ -11,7 +11,9 @@ loop, supervisor, and dashboard are agnostic to which one is in use.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable, Optional
 
 # Bybit USDT-perp funding settles every 8h at 00:00 / 08:00 / 16:00 UTC.
@@ -52,6 +54,9 @@ class PaperBroker:
         taker_fee: Taker fee fraction per fill (Bybit USDT-perp ≈ 0.00055).
         slippage_bps: Adverse slippage in basis points applied to each fill.
         clock: Returns the current UTC time; injectable for tests.
+        state_path: When set, cash / position / funding cursor are persisted
+            here and reloaded on construction so the virtual account survives
+            process restarts instead of resetting to *equity*.
     """
 
     def __init__(
@@ -62,6 +67,7 @@ class PaperBroker:
         taker_fee: float = 0.00055,
         slippage_bps: float = 5.0,
         clock: Optional[Callable[[], datetime]] = None,
+        state_path: Optional["str | Path"] = None,
     ) -> None:
         self.exchange = exchange
         self.cash = float(equity)
@@ -70,6 +76,30 @@ class PaperBroker:
         self._clock = clock or (lambda: datetime.now(tz=timezone.utc))
         self.position: Optional[dict] = None  # {side, size, entry_price, symbol}
         self._last_funding_check = _to_utc(self._clock())
+        self.state_path = Path(state_path) if state_path else None
+        if self.state_path is not None and self.state_path.exists():
+            self._load_state()
+
+    # ── State persistence ─────────────────────────────────────────────────────
+
+    def _save_state(self) -> None:
+        if self.state_path is None:
+            return
+        data = {
+            "cash": self.cash,
+            "position": self.position,
+            "last_funding_check": self._last_funding_check.isoformat(),
+        }
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _load_state(self) -> None:
+        data = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.cash = float(data["cash"])
+        self.position = data.get("position")
+        lf = data.get("last_funding_check")
+        if lf:
+            self._last_funding_check = _to_utc(datetime.fromisoformat(lf))
 
     # ── Pricing helpers ───────────────────────────────────────────────────────
 
@@ -117,11 +147,13 @@ class PaperBroker:
         now = _to_utc(now)
         if self.position is None:
             self._last_funding_check = now
+            self._save_state()
             return 0.0
 
         boundaries = _funding_boundaries_between(self._last_funding_check, now)
         self._last_funding_check = now
         if not boundaries:
+            self._save_state()
             return 0.0
 
         rate = float(self.exchange.fetch_funding_rate(self.position["symbol"])["fundingRate"])
@@ -132,6 +164,7 @@ class PaperBroker:
             payment = rate * notional * sign  # long pays when rate>0
             self.cash -= payment
             total += payment
+        self._save_state()
         return total
 
     # ── Orders ───────────────────────────────────────────────────────────────
@@ -174,6 +207,7 @@ class PaperBroker:
                     "symbol": symbol,
                 }
 
+        self._save_state()
         return {"average": fill, "side": side, "amount": qty, "fee": fee}
 
     def close_position(self, symbol: str) -> Optional[dict]:

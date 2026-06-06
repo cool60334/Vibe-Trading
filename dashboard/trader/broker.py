@@ -46,11 +46,12 @@ def _make_exchange(sandbox: bool, *, require_keys: bool = True) -> ccxt.bybit:
     return exchange
 
 
-def make_broker(mode: Optional[str] = None):
+def make_broker(mode: Optional[str] = None, state_path=None):
     """Construct the broker for *mode* (defaults to ``$TRADING_MODE`` or paper).
 
     paper → PaperBroker on mainnet public data; testnet/live → Broker with
-    real order execution on the sandbox / mainnet respectively.
+    real order execution on the sandbox / mainnet respectively. *state_path*
+    (paper only) persists the virtual account so it survives restarts.
     """
     mode = (mode or os.environ.get("TRADING_MODE", "paper")).lower()
     if mode == "paper":
@@ -60,6 +61,7 @@ def make_broker(mode: Optional[str] = None):
             equity=float(os.environ.get("PAPER_EQUITY", "10000")),
             taker_fee=float(os.environ.get("PAPER_TAKER_FEE", "0.00055")),
             slippage_bps=float(os.environ.get("PAPER_SLIPPAGE_BPS", "5")),
+            state_path=state_path,
         )
     if mode == "testnet":
         return Broker(sandbox=True)

@@ -314,14 +314,14 @@ def start_trader(testnet_id: str, body: TraderStartRequest) -> dict:
 
 @app.post("/api/testnet/{testnet_id}/stop", status_code=200)
 def stop_trader(testnet_id: str, strategy_id: str = Query(...)) -> dict:
-    """Stop trader subprocess for a strategy."""
+    """Request the trader for *testnet_id* to stop (flips its control file)."""
     sup = supervisor_module.get_supervisor()
-    stopped = sup.stop(strategy_id)
+    stopped = sup.stop(testnet_id)
     return {"testnet_id": testnet_id, "strategy_id": strategy_id, "stopped": stopped}
 
 
 @app.get("/api/testnet/{testnet_id}/process")
 def trader_process_status(testnet_id: str, strategy_id: str = Query(...)) -> dict:
-    """Return subprocess running status for a strategy."""
+    """Return the control-file state (running/stopped) for *testnet_id*."""
     sup = supervisor_module.get_supervisor()
-    return sup.status(strategy_id)
+    return sup.status(testnet_id)

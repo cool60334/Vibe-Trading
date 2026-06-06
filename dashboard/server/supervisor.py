@@ -1,28 +1,34 @@
-"""Trader process supervisor — start/stop one trader process per strategy.
+"""Trader control writer — the dashboard server's handle on the decoupled trader.
 
-The supervisor is a singleton instantiated at server startup. Each running
-trader is a subprocess running ``python -m trader.loop``.
-
-Environment variables forwarded to the subprocess:
-  BYBIT_API_KEY
-  BYBIT_API_SECRET
+The server no longer spawns trader subprocesses. Instead it writes a control
+file (``runs/testnet/<id>/control.json``) on the shared volume; the standalone
+trader container's Manager (``trader.manager``) reconciles ``trader.loop``
+processes to those files. This keeps the trader lifecycle independent of
+dashboard restarts and deploys.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-import subprocess
-import sys
-from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
 def require_credentials(env: dict, mode: str) -> None:
-    """Raise if real-order modes lack Bybit keys. ``paper`` needs none."""
+    """Raise if real-order modes lack Bybit keys. ``paper`` needs none.
+
+    Server-side pre-check so the UI gets an immediate error; the trader
+    Manager validates again authoritatively before spawning.
+    """
     if mode in ("testnet", "live"):
         for key in ("BYBIT_API_KEY", "BYBIT_API_SECRET"):
             if not env.get(key):
@@ -31,51 +37,33 @@ def require_credentials(env: dict, mode: str) -> None:
                 )
 
 
-def build_trader_command(
-    python_exe: str,
-    *,
-    mode: str,
-    strategy_id: str,
-    testnet_id: str,
-    run_dir: str,
-    symbol: str,
-    interval: str,
-    repo_root: str,
-    qty: float,
-) -> list:
-    """Build the ``python -m trader.loop`` argv, including ``--mode``."""
-    return [
-        python_exe, "-m", "trader.loop",
-        "--strategy-id", strategy_id,
-        "--testnet-id", testnet_id,
-        "--run-dir", run_dir,
-        "--symbol", symbol,
-        "--interval", interval,
-        "--repo-root", repo_root,
-        "--qty", str(qty),
-        "--mode", mode,
-    ]
-
-
-@dataclass
-class TraderProcess:
-    strategy_id: str
-    testnet_id: str
-    proc: subprocess.Popen
-    run_dir: str
-    symbol: str
-    interval: str
-
-
 class Supervisor:
-    """Manages one subprocess per promoted strategy."""
+    """Writes per-strategy control files that the trader Manager reconciles."""
 
-    def __init__(self, repo_root: Path, dashboard_dir: Path) -> None:
-        self.repo_root = repo_root
-        self.dashboard_dir = dashboard_dir
-        self._procs: Dict[str, TraderProcess] = {}
+    def __init__(self, repo_root: Path, dashboard_dir: Optional[Path] = None) -> None:
+        self.repo_root = Path(repo_root)
+        self.dashboard_dir = Path(dashboard_dir) if dashboard_dir else None
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Control file ──────────────────────────────────────────────────────────
+
+    def _control_path(self, testnet_id: str) -> Path:
+        return self.repo_root / "runs" / "testnet" / testnet_id / "control.json"
+
+    def _read_control(self, testnet_id: str) -> Optional[dict]:
+        path = self._control_path(testnet_id)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _write_control(self, testnet_id: str, ctrl: dict) -> None:
+        path = self._control_path(testnet_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(ctrl, indent=2), encoding="utf-8")
+
+    # ── Public API (signatures kept for the API layer) ────────────────────────
 
     def start(
         self,
@@ -87,101 +75,52 @@ class Supervisor:
         qty: float = 0.001,
         mode: Optional[str] = None,
     ) -> None:
-        """Launch a trader subprocess for *strategy_id*.
+        """Request a running trader for *testnet_id* by writing its control file.
 
-        *mode* selects paper / testnet / live (default ``$TRADING_MODE`` or
-        paper). Bybit keys are required only for testnet/live. Does nothing if
-        already running.
+        Bybit keys are required only for testnet/live. Does not spawn anything —
+        the trader Manager picks the control file up.
         """
-        if self.is_running(strategy_id):
-            logger.info("Trader for %s already running", strategy_id)
-            return
+        mode = (mode or os.environ.get("TRADING_MODE", "paper")).lower()
+        require_credentials(os.environ, mode)
+        self._write_control(testnet_id, {
+            "desired_state": "running",
+            "strategy_id": strategy_id,
+            "run_dir": run_dir,
+            "symbol": symbol,
+            "interval": interval,
+            "qty": qty,
+            "mode": mode,
+            "updated_at": _now_iso(),
+        })
+        logger.info("control=running for %s (mode=%s)", testnet_id, mode)
 
-        env = {**os.environ}
-        mode = (mode or env.get("TRADING_MODE", "paper")).lower()
-        require_credentials(env, mode)
-
-        # trader/ package lives next to server/ inside dashboard_dir
-        trader_pkg_dir = self.dashboard_dir / "trader"
-        if not trader_pkg_dir.exists():
-            raise FileNotFoundError(f"trader package not found at {trader_pkg_dir}")
-
-        # Run from dashboard/ so relative imports work
-        cmd = build_trader_command(
-            sys.executable,
-            mode=mode,
-            strategy_id=strategy_id,
-            testnet_id=testnet_id,
-            run_dir=run_dir,
-            symbol=symbol,
-            interval=interval,
-            repo_root=str(self.repo_root),
-            qty=qty,
-        )
-
-        # Add dashboard_dir so ``trader`` package is importable
-        python_path = str(self.dashboard_dir)
-        env["PYTHONPATH"] = python_path + os.pathsep + env.get("PYTHONPATH", "")
-
-        logger.info("Starting trader subprocess: %s", " ".join(cmd))
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        self._procs[strategy_id] = TraderProcess(
-            strategy_id=strategy_id,
-            testnet_id=testnet_id,
-            proc=proc,
-            run_dir=run_dir,
-            symbol=symbol,
-            interval=interval,
-        )
-        logger.info("Trader for %s started (pid %s)", strategy_id, proc.pid)
-
-    def stop(self, strategy_id: str) -> bool:
-        """Send SIGTERM to the trader subprocess.
-
-        Returns True if a process was running and was stopped.
-        """
-        tp = self._procs.get(strategy_id)
-        if tp is None:
+    def stop(self, testnet_id: str) -> bool:
+        """Flip the control file to stopped. Returns False if no control exists."""
+        ctrl = self._read_control(testnet_id)
+        if ctrl is None:
             return False
-        if tp.proc.poll() is not None:
-            del self._procs[strategy_id]
-            return False
-
-        tp.proc.terminate()
-        try:
-            tp.proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            tp.proc.kill()
-        del self._procs[strategy_id]
-        logger.info("Trader for %s stopped", strategy_id)
+        ctrl["desired_state"] = "stopped"
+        ctrl["updated_at"] = _now_iso()
+        self._write_control(testnet_id, ctrl)
+        logger.info("control=stopped for %s", testnet_id)
         return True
 
-    def is_running(self, strategy_id: str) -> bool:
-        tp = self._procs.get(strategy_id)
-        if tp is None:
-            return False
-        if tp.proc.poll() is not None:
-            del self._procs[strategy_id]
-            return False
-        return True
+    def is_running(self, testnet_id: str) -> bool:
+        ctrl = self._read_control(testnet_id)
+        return bool(ctrl and ctrl.get("desired_state") == "running")
 
-    def status(self, strategy_id: str) -> dict:
-        running = self.is_running(strategy_id)
-        tp = self._procs.get(strategy_id)
+    def status(self, testnet_id: str) -> dict:
+        ctrl = self._read_control(testnet_id)
+        desired = ctrl.get("desired_state") if ctrl else None
         return {
-            "running": running,
-            "pid": tp.proc.pid if running and tp else None,
-            "testnet_id": tp.testnet_id if running and tp else None,
+            "running": desired == "running",
+            "desired_state": desired,
+            "testnet_id": testnet_id,
         }
 
     def stop_all(self) -> None:
-        for sid in list(self._procs.keys()):
-            self.stop(sid)
+        """No-op: the trader runs independently; server shutdown must not stop it."""
+        return
 
 
 # Module-level singleton — populated by main.py on startup
@@ -194,7 +133,7 @@ def get_supervisor() -> Supervisor:
     return _supervisor
 
 
-def init_supervisor(repo_root: Path, dashboard_dir: Path) -> Supervisor:
+def init_supervisor(repo_root: Path, dashboard_dir: Optional[Path] = None) -> Supervisor:
     global _supervisor
     _supervisor = Supervisor(repo_root, dashboard_dir)
     return _supervisor

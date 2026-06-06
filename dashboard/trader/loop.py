@@ -158,9 +158,12 @@ def run(args: argparse.Namespace) -> None:
     logger.info("Starting trader: strategy=%s testnet_id=%s symbol=%s interval=%s mode=%s",
                 strategy_id, testnet_id, symbol, interval, mode)
 
-    broker = make_broker(mode)
+    broker = make_broker(mode, state_path=out_dir / "paper_state.json")
     initial_equity = broker.get_equity()
-    ks = KillSwitch(initial_equity, pause_dd=0.05, terminate_dd=0.07)
+    ks = KillSwitch(
+        initial_equity, pause_dd=0.05, terminate_dd=0.07,
+        state_path=out_dir / "killswitch_state.json",
+    )
 
     live_status = "running"
     ks_triggered = False
