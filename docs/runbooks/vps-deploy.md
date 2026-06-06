@@ -114,10 +114,12 @@ PY
 crontab -e
 ```
 
-Add this line (runs 00:30 UTC daily; absolute paths required in cron):
+Add this line (runs 00:30 UTC daily; absolute paths required in cron). Invoke
+via `bash` rather than executing the script directly — a fresh clone may not
+carry the executable bit, and `bash <script>` does not depend on it:
 
 ```cron
-30 0 * * *  RESEARCH_VENV=REPO/.venv REPO/scripts/refresh_factors.sh >> REPO/research/refresh_factors.log 2>&1
+30 0 * * *  RESEARCH_VENV=REPO/.venv bash REPO/scripts/refresh_factors.sh >> REPO/research/refresh_factors.log 2>&1
 ```
 
 ## 6. Bring up the dashboard (server + web)
@@ -244,6 +246,13 @@ virtual fills are recorded automatically when the signal fires.
   ```
   The trader stack is a different compose project (`vibe-trader`), so it keeps
   running. This is the whole point of the split — deploy freely.
+
+  > **Caveat — running strategies read their code from the live repo.** Unlike
+  > the trader's own code (baked into the image at build), each loop reloads its
+  > strategy logic from `runs/<run_dir>/code/signal_engine.py` on the `/repo:ro`
+  > mount every tick. A `git pull` that changes a committed run dir's code
+  > alters a *running* dry-run mid-flight. Run dirs are normally frozen — don't
+  > edit committed `runs/.../code/` while a dry-run is live.
 - **Update TRADER code (brief restart, state preserved):**
   ```bash
   cd REPO && git pull
