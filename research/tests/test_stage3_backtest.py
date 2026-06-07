@@ -43,6 +43,7 @@ for _p in (_RESEARCH_DIR, _REPO_ROOT):
 
 from pipeline.stage3_backtest import (   # noqa: E402
     BacktestRunResult,
+    _setup_run_dir,
     build_run_config,
     build_stub_signal_engine,
     compute_exit_code,
@@ -308,6 +309,43 @@ class TestVerifyRunArtifacts:
 
 
 # ---------------------------------------------------------------------------
+# (e2) _setup_run_dir clears stale artifacts (stale-PASS guard)
+# ---------------------------------------------------------------------------
+
+class TestSetupRunDirClearsStaleArtifacts:
+    """_setup_run_dir must wipe a prior run's artifacts/ before re-running.
+
+    Bug: _setup_run_dir did mkdir(exist_ok=True) and never cleared artifacts/.
+    If the backtest runner then failed AFTER setup, verify_run_artifacts() would
+    find the PREVIOUS run's stale .csv and report a false PASS.
+    """
+
+    def test_clears_stale_artifacts(self, tmp_path, monkeypatch):
+        # _setup_run_dir prints paths relative to _REPO_ROOT; point it at tmp_path
+        # so the cosmetic logging does not crash on an out-of-repo path.
+        monkeypatch.setattr("pipeline.stage3_backtest._REPO_ROOT", tmp_path)
+        run_dir = tmp_path / "btc_s1_base"
+        stale = run_dir / "artifacts"
+        stale.mkdir(parents=True)
+        (stale / "metrics.csv").write_text("sharpe,9.9\n")  # leftover from a prior run
+
+        code_src = tmp_path / "code_src"  # no signal_engine for this id -> stub path
+        _setup_run_dir(run_dir, {"codes": ["BTC-USDT-SWAP"]}, code_src, "btc_test")
+
+        # Stale artifact must be gone so a later-failing runner can't falsely PASS.
+        assert not (run_dir / "artifacts" / "metrics.csv").exists()
+
+    def test_still_writes_config_and_signal_engine(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("pipeline.stage3_backtest._REPO_ROOT", tmp_path)
+        run_dir = tmp_path / "btc_s1_base"
+        code_src = tmp_path / "code_src"
+        _setup_run_dir(run_dir, {"codes": ["BTC-USDT-SWAP"]}, code_src, "btc_test")
+
+        assert (run_dir / "config.json").exists()
+        assert (run_dir / "code" / "signal_engine.py").exists()
+
+
+# ---------------------------------------------------------------------------
 # (f) compute_exit_code
 # ---------------------------------------------------------------------------
 
@@ -402,7 +440,7 @@ class TestListPendingRuns:
     def test_each_run_tuple_has_strategy_id_and_symbol(self):
         entry = _make_strategy_entry(base_run="btc_s1_base", symbol="BTC-USDT-SWAP")
         runs = list_pending_runs("btc_s1_test", entry)
-        for run_name, strategy_id, symbol in runs:
+        for run_name, strategy_id, symbol, _role in runs:
             assert strategy_id == "btc_s1_test"
             assert symbol == "BTC-USDT-SWAP"
 

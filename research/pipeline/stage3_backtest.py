@@ -435,6 +435,10 @@ def _setup_run_dir(
     """
     # Create run directory and code subdirectory
     run_dir.mkdir(parents=True, exist_ok=True)
+    # Wipe any prior run's artifacts/ BEFORE re-running. Otherwise a backtest
+    # runner that fails after setup leaves the previous run's stale .csv in place,
+    # and verify_run_artifacts() reports a false PASS on that leftover data.
+    shutil.rmtree(run_dir / "artifacts", ignore_errors=True)
     code_dir = run_dir / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
 
