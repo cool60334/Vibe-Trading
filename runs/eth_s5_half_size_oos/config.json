@@ -1,0 +1,8 @@
+{
+  "codes": ["ETH-USDT-SWAP"],
+  "start_date": "2025-01-01",
+  "end_date": "2026-06-02",
+  "source": "okx",
+  "interval": "1H",
+  "engine": "daily"
+}

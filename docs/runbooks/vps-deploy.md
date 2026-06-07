@@ -129,6 +129,35 @@ carry the executable bit, and `bash <script>` does not depend on it:
 30 0 * * *  RESEARCH_VENV=REPO/.venv bash REPO/scripts/refresh_factors.sh >> REPO/research/refresh_factors.log 2>&1
 ```
 
+## 5b. Deploy artifacts ship via git (no manual copy)
+
+A promoted strategy needs three things present in the clone that are otherwise
+gitignored pipeline output. For `eth_s5_half_size` they are already tracked
+(via `.gitignore` negations), so a plain `git pull` brings them:
+
+| File | Why the VPS needs it |
+|------|----------------------|
+| `research/manifests/<id>/manifest.json`     | dashboard `/api/strategies` list + promote |
+| `runs/<run_dir>/config.json`                | run parameters |
+| `runs/<run_dir>/code/signal_engine.py`      | the strategy code the trader loads each tick |
+| `research/manifests/candidates_<sym>.json`  | makes the nightly refresh emit DYNAMIC factors (the strategy's engineered factors), not LEGACY ones |
+
+Heavy `runs/<run_dir>/artifacts/` (parquet/csv) stays out of git — the dashboard
+degrades gracefully without the historical curve.
+
+**Promoting a NEW strategy later?** Add its files to git the same way, or the
+VPS deploy will 404 the strategy / crash the loop with a missing-factor
+`KeyError`:
+
+```bash
+# add gitignore negations for the new strategy (mirror the eth_s5 block), then:
+git add -f research/manifests/<id>/manifest.json \
+           runs/<run_dir>/config.json \
+           runs/<run_dir>/code/signal_engine.py \
+           research/manifests/candidates_<sym>.json
+git commit -m "Track <id> deploy artifacts" && git push
+```
+
 ## 6. Bring up the dashboard (server + web)
 
 ```bash

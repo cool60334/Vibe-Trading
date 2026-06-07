@@ -90,7 +90,19 @@ wiki/alpha-library/manifest.json
 wiki/alpha-library/content/
 
 # Pipeline-generated artifacts (do not commit)
-runs/
+runs/*
+# ...but track the runtime-essential files of PROMOTED strategies so the live
+# trader can load them after a plain `git pull` (no manual scp). Heavy
+# artifacts/ (parquet/csv) and __pycache__ stay out. Per-strategy block:
+#   git rule needs each parent dir re-included before a nested file can be.
+# --- eth_s5_half_size ---
+!runs/eth_s5_half_size_oos/
+runs/eth_s5_half_size_oos/*
+!runs/eth_s5_half_size_oos/config.json
+!runs/eth_s5_half_size_oos/code/
+runs/eth_s5_half_size_oos/code/*
+!runs/eth_s5_half_size_oos/code/signal_engine.py
+
 research/manifests/candidates_*.json
 # ...except the curated candidate selections — these are the deployable
 # factor-selection seed. Without them stage1 falls back to LEGACY factors and a
@@ -107,6 +119,8 @@ research/manifests/*/generation.json
 research/manifests/*/diagnosis.json
 research/manifests/*/optimization.json
 research/manifests/*/manifest.json
+# ...but track promoted strategies' manifest.json (dashboard list + promote).
+!research/manifests/eth_s5_half_size/manifest.json
 research/strategies/strategy_btc_*.yaml
 research/strategies/strategy_eth_*.yaml
 research/strategies/strategy_sol_*.yaml

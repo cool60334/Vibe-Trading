@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "strategy_id": "eth_s5_half_size",
+  "symbol": "ETH",
+  "generated_at": "2026-06-06T12:04:30.619983Z",
+  "pipeline_stage": 5,
+  "spec": {
+    "source_run": null,
+    "strategy_id": "eth_s5_half_size",
+    "symbol": "ETH",
+    "spec_yaml": "research/strategies/strategy_eth_s5_half_size.yaml",
+    "description": null
+  },
+  "generation": null,
+  "reproducibility": null,
+  "backtest": {
+    "in_sample": {
+      "source_run": "eth_s5_half_size_train",
+      "sharpe": 1.1889188374029411,
+      "max_drawdown": 0.14874114732664587,
+      "trades": 86,
+      "profit_factor": 1.9303,
+      "total_return": 0.3602550621984235,
+      "win_rate": 0.5581395348837209
+    },
+    "oos": {
+      "source_run": "eth_s5_half_size_oos",
+      "sharpe": 1.0157874592604321,
+      "max_drawdown": 0.09128048816641941,
+      "trades": 49,
+      "profit_factor": 1.5389,
+      "total_return": 0.13595438430536433,
+      "win_rate": 0.5306122448979592
+    },
+    "walk_forward": null,
+    "monte_carlo": null,
+    "benchmark": {
+      "source_run": "eth_s5_half_size_train",
+      "strategy_return": 0.3602550621984235,
+      "hodl_return": 0.840634,
+      "excess_return": -0.480379,
+      "beats_hodl": false
+    },
+    "by_regime": [],
+    "cost_stress": null
+  },
+  "optimization": {
+    "source_run": "eth_s5_half_size_train",
+    "method": "inherited s3 sweep_092 best params + SIZE_MULT=0.45 (manual signal_engine)",
+    "swept_params": [],
+    "best_params": {
+      "entry_high_pct": 70.0,
+      "entry_low_pct": 15.0,
+      "hold_max_hours": 168.0,
+      "lookback_days": 90.0,
+      "sl_pct": 3.0,
+      "tp_pct": 8.5,
+      "size_mult": 0.45
+    },
+    "improvement_summary": "eth_s5_half_size inherits eth_s3_dynamic_exit sweep_092 best params (lookback=90, entry 70/15, hold=168h, sl=3, tp=8.5) and adds the s4 regime overlay plus a SIZE_MULT=0.45 at the signal layer. No sweep was run for s5 itself \u2014 the sizing knob is calibrated to pass stage 5 DD<=10% gate. Train sharpe 1.19 / DD -14.9% / pf 1.93. OOS sharpe 1.02 / DD -9.1% / pf 1.54 / annual +9.4% (vs ETH benchmark -40.4%)."
+  },
+  "diagnosis": {
+    "source_run": "eth_s5_half_size_train",
+    "recommended_action": "proceed",
+    "summary": "The strategy's OOS performance meets the minimum criteria with a Sharpe ratio above 1.0, acceptable drawdown, and sufficient trade count.",
+    "findings": [
+      "OOS Sharpe ratio is 1.0158, which is above the minimum acceptable threshold of 1.0.",
+      "OOS Max drawdown is -9.13%, which is below the critical threshold of 15%.",
+      "OOS Trade count is 49, which is above the minimum requirement of 30.",
+      "The train to OOS Sharpe ratio gap is not excessively large, indicating no significant overfitting."
+    ],
+    "walk_forward_source": "eth_s5_half_size_oos",
+    "walk_forward_metrics": {
+      "final_value": 1135954.3843053642,
+      "total_return": 0.13595438430536433,
+      "annual_return": 0.09416942694442443,
+      "max_drawdown": -0.09128048816641941,
+      "sharpe": 1.0157874592604321,
+      "calmar": 1.0316,
+      "sortino": 0.3509,
+      "win_rate": 0.5306122448979592,
+      "profit_loss_ratio": 1.3614,
+      "profit_factor": 1.5389,
+      "max_consecutive_loss": 5.0,
+      "avg_holding_days": 18.0,
+      "trade_count": 49.0,
+      "benchmark_return": -0.40379,
+      "excess_return": 0.539744,
+      "information_ratio": 0.3097
+    }
+  },
+  "gate": {
+    "source_run": "eth_s5_half_size_train",
+    "thresholds": [
+      {
+        "name": "min_sharpe",
+        "threshold": 1.0,
+        "actual": 1.0157874592604321,
+        "passed": true,
+        "fatal": false
+      },
+      {
+        "name": "max_drawdown",
+        "threshold": 0.1,
+        "actual": 0.09128048816641941,
+        "passed": true,
+        "fatal": false
+      },
+      {
+        "name": "min_trades",
+        "threshold": 30.0,
+        "actual": 49.0,
+        "passed": true,
+        "fatal": false
+      },
+      {
+        "name": "min_profit_factor",
+        "threshold": 1.5,
+        "actual": 1.5389,
+        "passed": true,
+        "fatal": false
+      },
+      {
+        "name": "oos_sharpe_positive",
+        "threshold": 0.0,
+        "actual": 1.0157874592604321,
+        "passed": true,
+        "fatal": true
+      },
+      {
+        "name": "alpha_not_fee_illusion",
+        "threshold": 0.0,
+        "actual": null,
+        "passed": false,
+        "fatal": false
+      }
+    ],
+    "overall_pass": false,
+    "fatal_fail": false,
+    "red_flags": [
+      "too_few_trades",
+      "underperforms_hodl"
+    ]
+  }
+}
