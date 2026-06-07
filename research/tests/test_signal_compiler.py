@@ -297,8 +297,8 @@ def test_indicator_load_no_smoothing():
     spec = IndicatorSpec(source="stage1:funding_rate", smoothing="none")
     code = _render_indicator_load("funding_rate", spec)
     assert 'funding_rate = _factors["funding_rate"]' in code
-    # No extra line for smoothing
-    assert code.count("\n") == 0
+    # One newline: reindex line appended after assignment (no smoothing line)
+    assert code.count("\n") == 1
 
 
 def test_indicator_load_sma():
