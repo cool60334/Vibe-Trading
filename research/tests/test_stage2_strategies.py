@@ -57,6 +57,7 @@ from pipeline.stage2_strategies import (  # noqa: E402
     verify_outputs,
 )
 from schemas import FactorManifest, GenerationBlock  # noqa: E402
+from pipeline.lib.archetype_router import ArchetypePlan  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -668,3 +669,403 @@ class TestPrintSummary:
         print_summary([])
         out = capsys.readouterr().out
         assert "0" in out
+
+
+# ---------------------------------------------------------------------------
+# Per-archetype spec builders (Task 2: TestBuildStrategySpecArchetype)
+# ---------------------------------------------------------------------------
+
+
+def _factor_pos_ic(name: str) -> dict:
+    """Factor with positive IC at all horizons (trend direction)."""
+    return {
+        "name": name,
+        "ic_by_horizon": {"8": 0.10, "24": 0.09, "72": 0.12, "168": 0.08},
+        "ir": 0.6,
+        "sample_size": 5000,
+        "cross_regime_ic": None,
+        "stability": None,
+        "verdict": "single_use",
+    }
+
+
+def _factor_neg_ic(name: str) -> dict:
+    """Factor with negative IC at all horizons (contrarian / gate direction)."""
+    return {
+        "name": name,
+        "ic_by_horizon": {"8": -0.08, "24": -0.07, "72": -0.10, "168": -0.06},
+        "ir": 0.5,
+        "sample_size": 5000,
+        "cross_regime_ic": None,
+        "stability": None,
+        "verdict": "single_use",
+    }
+
+
+def _make_factor_entry(d: dict):
+    """Validate a factor dict into a FactorEntry object."""
+    from schemas import FactorEntry
+    return FactorEntry.model_validate(d)
+
+
+_REQUIRED_YAML_KEYS = (
+    "name", "archetype", "hypothesis", "symbol", "timeframe_signal",
+    "hold_period", "indicators", "entry_long", "entry_short",
+    "exit_rules", "position_sizing", "parameter_search_ranges",
+    "expected_behavior", "caveats",
+)
+
+
+class TestBuildStrategySpecArchetype:
+    """Tests for build_strategy_spec() with ArchetypePlan (Task 2 per-archetype builders)."""
+
+    # ── 1. trend_with_gate builder ─────────────────────────────────────────
+
+    def test_trend_with_gate_strategy_id_suffix(self):
+        """strategy_id ends with _trend_with_gate."""
+        trend_f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        gate_f = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        plan = ArchetypePlan(
+            archetype="trend_with_gate",
+            factors=[(trend_f, "trend"), (gate_f, "gate")],
+        )
+        sid, _ = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        assert sid.endswith("_trend_with_gate"), (
+            f"Expected strategy_id to end with '_trend_with_gate', got: {sid}"
+        )
+
+    def test_trend_with_gate_long_entry_conditions(self):
+        """Long entry: trend >= 80 AND gate <= 20; logic=all."""
+        trend_f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        gate_f = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        plan = ArchetypePlan(
+            archetype="trend_with_gate",
+            factors=[(trend_f, "trend"), (gate_f, "gate")],
+        )
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        doc = yaml.safe_load(yaml_text)
+        entry_long = doc["entry_long"]
+        assert entry_long["logic"] == "all"
+        conditions = entry_long["conditions"]
+        # Trend factor should be >= 80 in long entry (positive IC -> high extreme)
+        assert any(">= 80" in c and "stablecoin_supply_z" in c for c in conditions), (
+            f"Expected trend factor condition '>= 80' in entry_long, got: {conditions}"
+        )
+        # Gate factor should be <= 20 in long entry (negative IC -> low extreme)
+        assert any("<= 20" in c and "funding_rate" in c for c in conditions), (
+            f"Expected gate factor condition '<= 20' in entry_long, got: {conditions}"
+        )
+
+    def test_trend_with_gate_short_entry_conditions(self):
+        """Short entry: trend <= 20 AND gate >= 80; logic=all."""
+        trend_f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        gate_f = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        plan = ArchetypePlan(
+            archetype="trend_with_gate",
+            factors=[(trend_f, "trend"), (gate_f, "gate")],
+        )
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        doc = yaml.safe_load(yaml_text)
+        entry_short = doc["entry_short"]
+        assert entry_short["logic"] == "all"
+        conditions = entry_short["conditions"]
+        # Trend factor should be <= 20 in short entry (positive IC -> low extreme for short)
+        assert any("<= 20" in c and "stablecoin_supply_z" in c for c in conditions), (
+            f"Expected trend factor condition '<= 20' in entry_short, got: {conditions}"
+        )
+        # Gate factor should be >= 80 in short entry (negative IC -> high extreme for short)
+        assert any(">= 80" in c and "funding_rate" in c for c in conditions), (
+            f"Expected gate factor condition '>= 80' in entry_short, got: {conditions}"
+        )
+
+    def test_trend_with_gate_hypothesis_mentions_capital_inflowing(self):
+        """Hypothesis mentions 'capital inflowing AND longs not crowded'."""
+        trend_f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        gate_f = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        plan = ArchetypePlan(
+            archetype="trend_with_gate",
+            factors=[(trend_f, "trend"), (gate_f, "gate")],
+        )
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        doc = yaml.safe_load(yaml_text)
+        hypothesis = doc["hypothesis"]
+        assert "capital inflowing" in hypothesis.lower() or "capital inflowing" in yaml_text.lower(), (
+            "Expected 'capital inflowing' in hypothesis"
+        )
+        assert "longs not crowded" in hypothesis.lower() or "longs not crowded" in yaml_text.lower(), (
+            "Expected 'longs not crowded' in hypothesis"
+        )
+
+    # ── 2. single_factor builder ──────────────────────────────────────────
+
+    def test_single_factor_strategy_id_suffix(self):
+        """strategy_id ends with _single_factor."""
+        f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        plan = ArchetypePlan(archetype="single_factor", factors=[(f, "signal")])
+        sid, _ = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        assert sid.endswith("_single_factor"), (
+            f"Expected strategy_id to end with '_single_factor', got: {sid}"
+        )
+
+    def test_single_factor_exactly_one_condition_in_entries(self):
+        """Exactly 1 condition in entry_long and entry_short."""
+        f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        plan = ArchetypePlan(archetype="single_factor", factors=[(f, "signal")])
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        doc = yaml.safe_load(yaml_text)
+        assert len(doc["entry_long"]["conditions"]) == 1, (
+            "single_factor must produce exactly 1 condition in entry_long"
+        )
+        assert len(doc["entry_short"]["conditions"]) == 1, (
+            "single_factor must produce exactly 1 condition in entry_short"
+        )
+
+    def test_single_factor_logic_is_all(self):
+        """Logic is 'all' for single_factor."""
+        f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        plan = ArchetypePlan(archetype="single_factor", factors=[(f, "signal")])
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        doc = yaml.safe_load(yaml_text)
+        assert doc["entry_long"]["logic"] == "all"
+        assert doc["entry_short"]["logic"] == "all"
+
+    # ── 3. consensus_all 2-factor builder ────────────────────────────────
+
+    def test_consensus_all_2factor_strategy_id_suffix(self):
+        """strategy_id ends with _consensus_all."""
+        f1 = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        f2 = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        plan = ArchetypePlan(
+            archetype="consensus_all",
+            factors=[(f1, "consensus"), (f2, "consensus")],
+        )
+        sid, _ = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        assert sid.endswith("_consensus_all"), (
+            f"Expected strategy_id to end with '_consensus_all', got: {sid}"
+        )
+
+    def test_consensus_all_2factor_logic_is_all(self):
+        """2-factor consensus uses logic=all (strict AND)."""
+        f1 = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        f2 = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        plan = ArchetypePlan(
+            archetype="consensus_all",
+            factors=[(f1, "consensus"), (f2, "consensus")],
+        )
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        doc = yaml.safe_load(yaml_text)
+        assert doc["entry_long"]["logic"] == "all", (
+            "2-factor consensus must use logic=all"
+        )
+
+    # ── 4. consensus_all 3-factor builder ────────────────────────────────
+
+    def test_consensus_all_3factor_logic_is_any(self):
+        """3-factor consensus uses logic=any (sparsity rule)."""
+        f1 = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        f2 = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        f3 = _make_factor_entry(_factor_pos_ic("basis_rel"))
+        plan = ArchetypePlan(
+            archetype="consensus_all",
+            factors=[(f1, "consensus"), (f2, "consensus"), (f3, "consensus")],
+        )
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=2,
+        )
+        doc = yaml.safe_load(yaml_text)
+        assert doc["entry_long"]["logic"] == "any", (
+            "3-factor consensus must use logic=any (sparsity rule)"
+        )
+
+    def test_consensus_all_3factor_strategy_id_suffix(self):
+        """strategy_id ends with _consensus_all for 3 factors."""
+        f1 = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        f2 = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        f3 = _make_factor_entry(_factor_pos_ic("basis_rel"))
+        plan = ArchetypePlan(
+            archetype="consensus_all",
+            factors=[(f1, "consensus"), (f2, "consensus"), (f3, "consensus")],
+        )
+        sid, _ = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=2,
+        )
+        assert sid.endswith("_consensus_all"), (
+            f"Expected strategy_id to end with '_consensus_all', got: {sid}"
+        )
+
+    # ── 5. Required YAML keys for all archetypes ──────────────────────────
+
+    def test_required_yaml_keys_single_factor(self):
+        """single_factor spec has all required YAML keys."""
+        f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        plan = ArchetypePlan(archetype="single_factor", factors=[(f, "signal")])
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        doc = yaml.safe_load(yaml_text)
+        for key in _REQUIRED_YAML_KEYS:
+            assert key in doc, f"single_factor spec missing required key: {key}"
+
+    def test_required_yaml_keys_trend_with_gate(self):
+        """trend_with_gate spec has all required YAML keys."""
+        trend_f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        gate_f = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        plan = ArchetypePlan(
+            archetype="trend_with_gate",
+            factors=[(trend_f, "trend"), (gate_f, "gate")],
+        )
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        doc = yaml.safe_load(yaml_text)
+        for key in _REQUIRED_YAML_KEYS:
+            assert key in doc, f"trend_with_gate spec missing required key: {key}"
+
+    def test_required_yaml_keys_consensus_all(self):
+        """consensus_all spec has all required YAML keys."""
+        f1 = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        f2 = _make_factor_entry(_factor_neg_ic("funding_rate"))
+        plan = ArchetypePlan(
+            archetype="consensus_all",
+            factors=[(f1, "consensus"), (f2, "consensus")],
+        )
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=1,
+        )
+        doc = yaml.safe_load(yaml_text)
+        for key in _REQUIRED_YAML_KEYS:
+            assert key in doc, f"consensus_all spec missing required key: {key}"
+
+    # ── strategy_id format ─────────────────────────────────────────────────
+
+    def test_strategy_id_format_coin_seq_archetype(self):
+        """strategy_id follows <coin>_s<seq>_<archetype> for all archetypes."""
+        f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        plan = ArchetypePlan(archetype="single_factor", factors=[(f, "signal")])
+        sid, _ = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="x", seq=7,
+        )
+        assert sid == "btc_s7_single_factor", (
+            f"Expected 'btc_s7_single_factor', got: {sid}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Integration test: compile each archetype through stage-2b
+# (Task 2: TestArchetypeSpecCompilesToSignalEngine)
+# ---------------------------------------------------------------------------
+
+import importlib.util
+import textwrap
+from unittest.mock import MagicMock, patch
+
+from pipeline.stage2b_compile_signal import _compile_one  # noqa: E402
+
+
+def _make_entry_for_yaml(strat_id: str, yaml_text: str, tmp_path: Path) -> dict:
+    """Write a YAML to a temp strategies dir and return a strategy_runs entry dict."""
+    strategies_dir = tmp_path / "research" / "strategies"
+    strategies_dir.mkdir(parents=True, exist_ok=True)
+    yaml_path = strategies_dir / f"strategy_{strat_id}.yaml"
+    yaml_path.write_text(yaml_text, encoding="utf-8")
+    return {
+        "symbol": "BTC-USDT-SWAP",
+        "spec_yaml": f"research/strategies/strategy_{strat_id}.yaml",
+        "base_run": None,
+        "regime_runs": {},
+        "stress_runs": {},
+        "oos_runs": [],
+        "sweep_run": None,
+    }
+
+
+@pytest.mark.integration
+class TestArchetypeSpecCompilesToSignalEngine:
+    """End-to-end: each archetype spec (built by build_strategy_spec) compiles via stage-2b."""
+
+    def _build_and_compile(self, plan: ArchetypePlan, strat_id: str, tmp_path: Path):
+        """Helper: build spec for plan, then compile via _compile_one."""
+        _, yaml_text = build_strategy_spec(
+            symbol="btc", ticker="BTC-USDT-SWAP",
+            plan=plan, swarm_rationale="test rationale", seq=1,
+        )
+        entry = _make_entry_for_yaml(strat_id, yaml_text, tmp_path)
+        with (
+            patch("pipeline.stage2b_compile_signal._REPO_ROOT", tmp_path),
+            patch("pipeline.stage2b_compile_signal.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="1 passed", stderr="")
+            result = _compile_one(strat_id, entry)
+        return result
+
+    def test_single_factor_compiles_without_error(self, tmp_path: Path):
+        """single_factor spec compiles through stage-2b without schema/AST error."""
+        f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        plan = ArchetypePlan(archetype="single_factor", factors=[(f, "signal")])
+        result = self._build_and_compile(plan, "btc_s1_single_factor", tmp_path)
+        assert result.status == "ok", (
+            f"single_factor spec failed stage-2b compilation: {result.message}"
+        )
+
+    def test_trend_with_gate_compiles_without_error(self, tmp_path: Path):
+        """trend_with_gate spec compiles through stage-2b without schema/AST error."""
+        trend_f = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        # Use a non-special factor name (not in _KNOWN_SOURCES) so the source
+        # resolves to "stage1:basis_rel" which satisfies StrategySpec validation.
+        gate_f = _make_factor_entry(_factor_neg_ic("basis_rel"))
+        plan = ArchetypePlan(
+            archetype="trend_with_gate",
+            factors=[(trend_f, "trend"), (gate_f, "gate")],
+        )
+        result = self._build_and_compile(plan, "btc_s1_trend_with_gate", tmp_path)
+        assert result.status == "ok", (
+            f"trend_with_gate spec failed stage-2b compilation: {result.message}"
+        )
+
+    def test_consensus_all_2factor_compiles_without_error(self, tmp_path: Path):
+        """consensus_all (2 factors) spec compiles through stage-2b without error."""
+        f1 = _make_factor_entry(_factor_pos_ic("stablecoin_supply_z"))
+        # Use a non-special factor name so the source resolves to "stage1:oi_change"
+        # which satisfies StrategySpec validation (avoids okx: prefix special case).
+        f2 = _make_factor_entry(_factor_neg_ic("oi_change_z"))
+        plan = ArchetypePlan(
+            archetype="consensus_all",
+            factors=[(f1, "consensus"), (f2, "consensus")],
+        )
+        result = self._build_and_compile(plan, "btc_s1_consensus_all", tmp_path)
+        assert result.status == "ok", (
+            f"consensus_all spec failed stage-2b compilation: {result.message}"
+        )

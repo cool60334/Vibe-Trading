@@ -115,6 +115,7 @@ if str(_DASHBOARD_SCHEMAS) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_SCHEMAS))
 
 from schemas import FactorEntry, FactorManifest, FactorVerdict, GenerationBlock  # noqa: E402
+from pipeline.lib.archetype_router import ArchetypePlan  # noqa: E402
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -341,77 +342,40 @@ def _archetype_for(usable_factors: list[FactorEntry]) -> str:
     return "factor_based"  # unreachable: build_strategy_spec rejects empty input
 
 
-def build_strategy_spec(
+def _build_spec_single_factor(
     symbol: str,
     ticker: str,
-    usable_factors: list[FactorEntry],
+    plan: "ArchetypePlan",
     swarm_rationale: str,
     seq: int,
 ) -> tuple[str, str]:
-    """Synthesise a strategy id + strategy YAML scaffold (see module docstring B).
+    """Build spec for a single_factor archetype.
 
-    The YAML matches the schema of research/strategies/strategy_S*.yaml. The
-    swarm's prose desk analysis is embedded as the ``hypothesis`` rationale so
-    the qualitative reasoning is preserved for the dashboard.
-
-    Args:
-        symbol: Short lowercase symbol name, e.g. "btc".
-        ticker: Exchange ticker the strategy trades, e.g. "BTC-USDT-SWAP".
-        usable_factors: Non-rejected factors from stage 1 (must be non-empty).
-        swarm_rationale: The swarm's prose desk analysis (final report text).
-        seq: 1-based strategy sequence number within this symbol (-> s<seq>).
-
-    Returns:
-        (strategy_id, yaml_text). strategy_id follows <coin>_s<N>_<archetype>.
-
-    Raises:
-        ValueError: If usable_factors is empty (a zero-factor strategy is
-            meaningless and must not be emitted).
+    The single factor drives both long and short entries via its IC-sign-aware
+    condition. Logic is always ``all`` (only one condition).
     """
-    if not usable_factors:
-        raise ValueError(
-            f"cannot build a strategy for {symbol!r}: no usable factors "
-            "(every stage-1 factor had verdict=reject)"
-        )
+    factor, _role = plan.factors[0]
+    strategy_id = f"{symbol.lower()}_s{seq}_single_factor"
+    factor_names = [factor.name]
 
-    archetype = _archetype_for(usable_factors)
-    strategy_id = f"{symbol.lower()}_s{seq}_{archetype}"
+    rationale = (swarm_rationale or "").strip() or (
+        "Swarm desk analysis was unavailable; strategy scaffold derived "
+        "from stage-1 factor verdicts only."
+    )
 
-    factor_names = [f.name for f in usable_factors]
-
-    # Entry combine-logic: AND (`all`) requires every factor at its extreme
-    # simultaneously, which gets very sparse (near-zero trades) once 3+ factors
-    # are involved — see archetype-switch finding. Use OR (`any`) for 3+ factors
-    # so the strategy actually trades; 2-factor consensus stays AND.
-    entry_logic = "any" if len(factor_names) >= 3 else "all"
-
-    # Indicators block — one entry per usable factor. funding_rate / fng have
-    # canonical sources in the S1-S4 files (see module-level _KNOWN_SOURCES);
-    # anything else gets a generic stub.
-    indicators: dict[str, dict] = {}
-    for f in usable_factors:
-        indicators[f.name] = {
-            "source": _KNOWN_SOURCES.get(f.name, f"stage1:{f.name}"),
+    indicators: dict[str, dict] = {
+        factor.name: {
+            "source": _KNOWN_SOURCES.get(factor.name, f"stage1:{factor.name}"),
             "smoothing": "sma_3",
         }
-
-    # Hypothesis: the swarm prose desk analysis, trimmed. This is the channel
-    # through which the LLM's qualitative reasoning reaches the strategy.
-    rationale = (swarm_rationale or "").strip()
-    if not rationale:
-        rationale = (
-            "Swarm desk analysis was unavailable; strategy scaffold derived "
-            "from stage-1 factor verdicts only."
-        )
+    }
 
     spec: dict = {
         "name": strategy_id,
-        "archetype": archetype,
-        # block-literal style for multi-line readability, like S1-S4.
+        "archetype": "single_factor",
         "hypothesis": (
-            f"Stage-1 screening retained these factors with a tradable edge: "
-            f"{', '.join(factor_names)}. Crypto-trading-desk swarm rationale "
-            f"(post-hoc, see generation.json):\n{rationale}"
+            f"Single-factor strategy based on {factor.name}. "
+            f"Crypto-trading-desk swarm rationale (post-hoc, see generation.json):\n{rationale}"
         ),
         "symbol": ticker,
         "timeframe_signal": "8h",
@@ -419,38 +383,24 @@ def build_strategy_spec(
         "indicators": indicators,
         "entry_long": {
             "description": (
-                "Enter long when each retained factor sits at the extreme that "
-                "its measured IC sign says precedes a rise (trend factors high, "
-                "contrarian factors low), with persistence. "
-                f"{_entry_logic_note(len(factor_names))}"
+                f"Enter long when {factor.name} is at the extreme that precedes a rise, "
+                "with persistence. AND-logic (logic=all) — single factor."
             ),
-            "logic": entry_logic,
-            "conditions": [
-                _entry_condition(f, direction="long")
-                for f in usable_factors
-            ],
+            "logic": "all",
+            "conditions": [_entry_condition(factor, direction="long")],
         },
         "entry_short": {
             "description": (
-                "Enter short when each retained factor sits at the opposite "
-                "extreme (trend factors low, contrarian factors high), with "
-                "persistence. "
-                f"{_entry_logic_note(len(factor_names))}"
+                f"Enter short when {factor.name} is at the opposite extreme, "
+                "with persistence. AND-logic (logic=all) — single factor."
             ),
-            "logic": entry_logic,
-            "conditions": [
-                _entry_condition(f, direction="short")
-                for f in usable_factors
-            ],
+            "logic": "all",
+            "conditions": [_entry_condition(factor, direction="short")],
         },
         "exit_rules": [
             {"condition": "time_based", "max_hold_hours": 120},
             {"condition": "take_profit_pct", "value": 6.0},
             {"condition": "stop_loss_pct", "value": 3.0},
-            # NOTE: signal_invalidation DSL only supports one indicator per rule.
-            # Emitting one rule per retained factor approximates the AND-band
-            # semantics with OR semantics (any factor reverting to mid-band
-            # triggers exit). Stage-4 sweep can tune the band per factor.
             *[
                 {
                     "condition": "signal_invalidation",
@@ -490,8 +440,478 @@ def build_strategy_spec(
         ],
     }
 
-    # default_flow_style=False -> block style, matching the existing S*.yaml.
-    # allow_unicode keeps any CJK in the swarm prose readable.
+    yaml_text = yaml.safe_dump(
+        spec,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+        width=100,
+    )
+    return strategy_id, yaml_text
+
+
+def _build_spec_trend_with_gate(
+    symbol: str,
+    ticker: str,
+    plan: "ArchetypePlan",
+    swarm_rationale: str,
+    seq: int,
+) -> tuple[str, str]:
+    """Build spec for a trend_with_gate archetype.
+
+    The trend factor (positive IC) enters at its HIGH extreme (trend direction);
+    the gate factor (negative IC/contrarian) validates by sitting at its LOW
+    extreme (capital inflowing, longs not crowded). Logic is always ``all``.
+
+    Long entry:  trend >= 80  AND  gate <= 20
+    Short entry: trend <= 20  AND  gate >= 80
+    """
+    # Extract trend and gate factors from the plan
+    trend_factor = None
+    gate_factor = None
+    for factor, role in plan.factors:
+        if role == "trend":
+            trend_factor = factor
+        elif role == "gate":
+            gate_factor = factor
+
+    if trend_factor is None or gate_factor is None:
+        raise ValueError(
+            "trend_with_gate plan must have exactly one 'trend' and one 'gate' factor"
+        )
+
+    strategy_id = f"{symbol.lower()}_s{seq}_trend_with_gate"
+    factor_names = [trend_factor.name, gate_factor.name]
+
+    rationale = (swarm_rationale or "").strip() or (
+        "Swarm desk analysis was unavailable; strategy scaffold derived "
+        "from stage-1 factor verdicts only."
+    )
+
+    indicators: dict[str, dict] = {}
+    for f in [trend_factor, gate_factor]:
+        indicators[f.name] = {
+            "source": _KNOWN_SOURCES.get(f.name, f"stage1:{f.name}"),
+            "smoothing": "sma_3",
+        }
+
+    spec: dict = {
+        "name": strategy_id,
+        "archetype": "trend_with_gate",
+        "hypothesis": (
+            f"Trend-with-gate strategy: {trend_factor.name} (positive IC, trend signal) "
+            f"gated by {gate_factor.name} (negative IC, capital inflowing AND longs not crowded). "
+            f"Enter only when both conditions align. "
+            f"Crypto-trading-desk swarm rationale (post-hoc, see generation.json):\n{rationale}"
+        ),
+        "symbol": ticker,
+        "timeframe_signal": "8h",
+        "hold_period": {"min_hours": 24, "max_hours": 120},
+        "indicators": indicators,
+        "entry_long": {
+            "description": (
+                f"Enter long when {trend_factor.name} is high (trend in upward regime) "
+                f"AND {gate_factor.name} is low (gate confirms capital inflowing, longs not crowded). "
+                "AND-logic (logic=all) — trend with gate."
+            ),
+            "logic": "all",
+            "conditions": [
+                # Trend factor: long fires when HIGH (positive IC -> trend)
+                f"{trend_factor.name}_percentile_90d >= 80 persist 2/3",
+                # Gate factor: long fires when LOW (negative IC -> contrarian gate)
+                f"{gate_factor.name}_percentile_90d <= 20 persist 2/3",
+            ],
+        },
+        "entry_short": {
+            "description": (
+                f"Enter short when {trend_factor.name} is low (trend in downward regime) "
+                f"AND {gate_factor.name} is high (gate confirms capital inflowing, shorts not crowded). "
+                "AND-logic (logic=all) — trend with gate."
+            ),
+            "logic": "all",
+            "conditions": [
+                # Trend factor: short fires when LOW (positive IC -> trend)
+                f"{trend_factor.name}_percentile_90d <= 20 persist 2/3",
+                # Gate factor: short fires when HIGH (negative IC -> contrarian gate)
+                f"{gate_factor.name}_percentile_90d >= 80 persist 2/3",
+            ],
+        },
+        "exit_rules": [
+            {"condition": "time_based", "max_hold_hours": 120},
+            {"condition": "take_profit_pct", "value": 6.0},
+            {"condition": "stop_loss_pct", "value": 3.0},
+            *[
+                {
+                    "condition": "signal_invalidation",
+                    "expression": f"{name}_percentile_90d between 40,60",
+                }
+                for name in factor_names
+            ],
+        ],
+        "position_sizing": {
+            "method": "fixed_risk",
+            "risk_per_trade_pct": 1.5,
+            "leverage": 1.5,
+        },
+        "parameter_search_ranges": {
+            "lookback_days": [60, 120, 30],
+            "entry_high_pct": [75, 90, 5],
+            "entry_low_pct": [10, 25, 5],
+            "persistence_last_n": [3, 5, 1],
+            "persistence_min_hits": [2, 3, 1],
+            "hold_max_hours": [96, 144, 24],
+            "tp_pct": [4.0, 7.0, 1.5],
+            "sl_pct": [2.5, 4.0, 0.5],
+        },
+        "expected_behavior": {
+            "trades_per_year_estimate": 80,
+            "expected_sharpe": 1.0,
+            "expected_max_dd_pct": 8.0,
+            "expected_win_rate_pct": 51,
+        },
+        "caveats": [
+            "Quantitative thresholds in this spec are a deterministic scaffold "
+            "derived from stage-1 factor verdicts, NOT authored by the LLM "
+            "swarm (see stage2_strategies.py module docstring, decision B). "
+            "Calibrate via the stage-4 parameter sweep before trusting them.",
+            "Factor edges can decay across market regimes; re-run stage 1 "
+            "periodically and watch cross_regime_ic / stability.",
+        ],
+    }
+
+    yaml_text = yaml.safe_dump(
+        spec,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+        width=100,
+    )
+    return strategy_id, yaml_text
+
+
+def _build_spec_consensus_all(
+    symbol: str,
+    ticker: str,
+    plan: "ArchetypePlan",
+    swarm_rationale: str,
+    seq: int,
+) -> tuple[str, str]:
+    """Build spec for a consensus_all archetype.
+
+    All factors must agree simultaneously. Logic is ``all`` for 2 factors (tight
+    consensus) and ``any`` for 3 factors (sparsity relief — see archetype-switch
+    finding).
+    """
+    usable_factors = [factor for factor, _role in plan.factors]
+    strategy_id = f"{symbol.lower()}_s{seq}_consensus_all"
+    factor_names = [f.name for f in usable_factors]
+
+    # 2-factor AND; 3-factor OR (sparsity rule)
+    entry_logic = "any" if len(factor_names) >= 3 else "all"
+
+    rationale = (swarm_rationale or "").strip() or (
+        "Swarm desk analysis was unavailable; strategy scaffold derived "
+        "from stage-1 factor verdicts only."
+    )
+
+    indicators: dict[str, dict] = {}
+    for f in usable_factors:
+        indicators[f.name] = {
+            "source": _KNOWN_SOURCES.get(f.name, f"stage1:{f.name}"),
+            "smoothing": "sma_3",
+        }
+
+    spec: dict = {
+        "name": strategy_id,
+        "archetype": "consensus_all",
+        "hypothesis": (
+            f"Consensus strategy across all retained factors: "
+            f"{', '.join(factor_names)}. "
+            f"Crypto-trading-desk swarm rationale (post-hoc, see generation.json):\n{rationale}"
+        ),
+        "symbol": ticker,
+        "timeframe_signal": "8h",
+        "hold_period": {"min_hours": 24, "max_hours": 120},
+        "indicators": indicators,
+        "entry_long": {
+            "description": (
+                "Enter long when each retained factor sits at the extreme that "
+                "its measured IC sign says precedes a rise (trend factors high, "
+                "contrarian factors low), with persistence. "
+                f"{_entry_logic_note(len(factor_names))}"
+            ),
+            "logic": entry_logic,
+            "conditions": [
+                _entry_condition(f, direction="long")
+                for f in usable_factors
+            ],
+        },
+        "entry_short": {
+            "description": (
+                "Enter short when each retained factor sits at the opposite "
+                "extreme (trend factors low, contrarian factors high), with "
+                "persistence. "
+                f"{_entry_logic_note(len(factor_names))}"
+            ),
+            "logic": entry_logic,
+            "conditions": [
+                _entry_condition(f, direction="short")
+                for f in usable_factors
+            ],
+        },
+        "exit_rules": [
+            {"condition": "time_based", "max_hold_hours": 120},
+            {"condition": "take_profit_pct", "value": 6.0},
+            {"condition": "stop_loss_pct", "value": 3.0},
+            *[
+                {
+                    "condition": "signal_invalidation",
+                    "expression": f"{name}_percentile_90d between 40,60",
+                }
+                for name in factor_names
+            ],
+        ],
+        "position_sizing": {
+            "method": "fixed_risk",
+            "risk_per_trade_pct": 1.5,
+            "leverage": 1.5,
+        },
+        "parameter_search_ranges": {
+            "lookback_days": [60, 120, 30],
+            "entry_high_pct": [75, 90, 5],
+            "entry_low_pct": [10, 25, 5],
+            "persistence_last_n": [3, 5, 1],
+            "persistence_min_hits": [2, 3, 1],
+            "hold_max_hours": [96, 144, 24],
+            "tp_pct": [4.0, 7.0, 1.5],
+            "sl_pct": [2.5, 4.0, 0.5],
+        },
+        "expected_behavior": {
+            "trades_per_year_estimate": 80,
+            "expected_sharpe": 1.0,
+            "expected_max_dd_pct": 8.0,
+            "expected_win_rate_pct": 51,
+        },
+        "caveats": [
+            "Quantitative thresholds in this spec are a deterministic scaffold "
+            "derived from stage-1 factor verdicts, NOT authored by the LLM "
+            "swarm (see stage2_strategies.py module docstring, decision B). "
+            "Calibrate via the stage-4 parameter sweep before trusting them.",
+            "Factor edges can decay across market regimes; re-run stage 1 "
+            "periodically and watch cross_regime_ic / stability.",
+        ],
+    }
+
+    yaml_text = yaml.safe_dump(
+        spec,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+        width=100,
+    )
+    return strategy_id, yaml_text
+
+
+def build_strategy_spec(
+    symbol: str,
+    ticker: str,
+    plan: "ArchetypePlan | None" = None,
+    swarm_rationale: str = "",
+    seq: int = 1,
+    # Backward-compat shim: old callers pass usable_factors as positional or keyword.
+    # Task 3 will remove this once the emit loop is rewired.
+    usable_factors: "list[FactorEntry] | None" = None,
+) -> tuple[str, str]:
+    """Synthesise a strategy id + strategy YAML scaffold (see module docstring B).
+
+    The YAML matches the schema of research/strategies/strategy_S*.yaml. The
+    swarm's prose desk analysis is embedded as the ``hypothesis`` rationale so
+    the qualitative reasoning is preserved for the dashboard.
+
+    New call signature (preferred):
+        build_strategy_spec(symbol, ticker, plan=<ArchetypePlan>, swarm_rationale=..., seq=N)
+
+    Legacy call signature (backward compat, deprecated — Task 3 will remove):
+        build_strategy_spec(symbol, ticker, usable_factors=[...], swarm_rationale=..., seq=N)
+
+    Args:
+        symbol: Short lowercase symbol name, e.g. "btc".
+        ticker: Exchange ticker the strategy trades, e.g. "BTC-USDT-SWAP".
+        plan: An ArchetypePlan from archetype_router.pick_archetypes() (new API).
+        swarm_rationale: The swarm's prose desk analysis (final report text).
+        seq: 1-based strategy sequence number within this symbol (-> s<seq>).
+        usable_factors: Deprecated. Non-rejected factors from stage 1 (old API).
+            If ``plan`` is None and ``usable_factors`` is provided, a legacy
+            ArchetypePlan is constructed from them for backward compatibility.
+
+    Returns:
+        (strategy_id, yaml_text). strategy_id follows <coin>_s<N>_<archetype>.
+
+    Raises:
+        ValueError: If neither plan nor usable_factors is provided, or if
+            usable_factors is empty (a zero-factor strategy is meaningless).
+    """
+    # ── Resolve ArchetypePlan ─────────────────────────────────────────────────
+    if plan is None and usable_factors is not None:
+        # Backward-compat path: construct a legacy plan that mimics old behaviour.
+        if not usable_factors:
+            raise ValueError(
+                f"cannot build a strategy for {symbol!r}: no usable factors "
+                "(every stage-1 factor had verdict=reject)"
+            )
+        archetype = _archetype_for(usable_factors)
+        if archetype == "multi_factor_consensus":
+            # Map to consensus_all for the new API
+            plan = ArchetypePlan(
+                archetype="consensus_all",
+                factors=[(f, "consensus") for f in usable_factors],
+            )
+        else:
+            # Single-factor: use the old archetype label directly via a shim plan
+            plan = _LegacyPlan(archetype=archetype, factors=[(usable_factors[0], "signal")])
+    elif plan is None:
+        raise ValueError(
+            f"cannot build a strategy for {symbol!r}: either 'plan' or "
+            "'usable_factors' must be provided"
+        )
+
+    # ── Route to per-archetype builder ────────────────────────────────────────
+    if plan.archetype == "single_factor":
+        return _build_spec_single_factor(symbol, ticker, plan, swarm_rationale, seq)
+    elif plan.archetype == "trend_with_gate":
+        return _build_spec_trend_with_gate(symbol, ticker, plan, swarm_rationale, seq)
+    elif plan.archetype == "consensus_all":
+        return _build_spec_consensus_all(symbol, ticker, plan, swarm_rationale, seq)
+    else:
+        # Legacy / unknown archetype: fall back to the old monolithic builder so
+        # backward-compat callers (e.g. the old <factor>_mean_reversion path)
+        # still work without modification until Task 3 removes this path.
+        return _build_spec_legacy(symbol, ticker, plan, swarm_rationale, seq)
+
+
+@dataclasses.dataclass
+class _LegacyPlan:
+    """Shim: holds a legacy archetype label + single factor pair for the old code path."""
+
+    archetype: str
+    factors: list  # list of (FactorEntry, role_str)
+
+
+def _build_spec_legacy(
+    symbol: str,
+    ticker: str,
+    plan: "_LegacyPlan | ArchetypePlan",
+    swarm_rationale: str,
+    seq: int,
+) -> tuple[str, str]:
+    """Build spec for a legacy / unknown archetype (backward-compat code path).
+
+    Used for the old ``<factor>_mean_reversion`` archetype that existed before the
+    archetype factory. Kept to ensure old-call-site backward compatibility until
+    Task 3 rewires the emit loop.
+    """
+    usable_factors = [factor for factor, _role in plan.factors]
+    archetype = plan.archetype
+    strategy_id = f"{symbol.lower()}_s{seq}_{archetype}"
+    factor_names = [f.name for f in usable_factors]
+
+    entry_logic = "any" if len(factor_names) >= 3 else "all"
+
+    indicators: dict[str, dict] = {}
+    for f in usable_factors:
+        indicators[f.name] = {
+            "source": _KNOWN_SOURCES.get(f.name, f"stage1:{f.name}"),
+            "smoothing": "sma_3",
+        }
+
+    rationale = (swarm_rationale or "").strip()
+    if not rationale:
+        rationale = (
+            "Swarm desk analysis was unavailable; strategy scaffold derived "
+            "from stage-1 factor verdicts only."
+        )
+
+    spec: dict = {
+        "name": strategy_id,
+        "archetype": archetype,
+        "hypothesis": (
+            f"Stage-1 screening retained these factors with a tradable edge: "
+            f"{', '.join(factor_names)}. Crypto-trading-desk swarm rationale "
+            f"(post-hoc, see generation.json):\n{rationale}"
+        ),
+        "symbol": ticker,
+        "timeframe_signal": "8h",
+        "hold_period": {"min_hours": 24, "max_hours": 120},
+        "indicators": indicators,
+        "entry_long": {
+            "description": (
+                "Enter long when each retained factor sits at the extreme that "
+                "its measured IC sign says precedes a rise (trend factors high, "
+                "contrarian factors low), with persistence. "
+                f"{_entry_logic_note(len(factor_names))}"
+            ),
+            "logic": entry_logic,
+            "conditions": [
+                _entry_condition(f, direction="long")
+                for f in usable_factors
+            ],
+        },
+        "entry_short": {
+            "description": (
+                "Enter short when each retained factor sits at the opposite "
+                "extreme (trend factors low, contrarian factors high), with "
+                "persistence. "
+                f"{_entry_logic_note(len(factor_names))}"
+            ),
+            "logic": entry_logic,
+            "conditions": [
+                _entry_condition(f, direction="short")
+                for f in usable_factors
+            ],
+        },
+        "exit_rules": [
+            {"condition": "time_based", "max_hold_hours": 120},
+            {"condition": "take_profit_pct", "value": 6.0},
+            {"condition": "stop_loss_pct", "value": 3.0},
+            *[
+                {
+                    "condition": "signal_invalidation",
+                    "expression": f"{name}_percentile_90d between 40,60",
+                }
+                for name in factor_names
+            ],
+        ],
+        "position_sizing": {
+            "method": "fixed_risk",
+            "risk_per_trade_pct": 1.5,
+            "leverage": 1.5,
+        },
+        "parameter_search_ranges": {
+            "lookback_days": [60, 120, 30],
+            "entry_high_pct": [75, 90, 5],
+            "entry_low_pct": [10, 25, 5],
+            "persistence_last_n": [3, 5, 1],
+            "persistence_min_hits": [2, 3, 1],
+            "hold_max_hours": [96, 144, 24],
+            "tp_pct": [4.0, 7.0, 1.5],
+            "sl_pct": [2.5, 4.0, 0.5],
+        },
+        "expected_behavior": {
+            "trades_per_year_estimate": 80,
+            "expected_sharpe": 1.0,
+            "expected_max_dd_pct": 8.0,
+            "expected_win_rate_pct": 51,
+        },
+        "caveats": [
+            "Quantitative thresholds in this spec are a deterministic scaffold "
+            "derived from stage-1 factor verdicts, NOT authored by the LLM "
+            "swarm (see stage2_strategies.py module docstring, decision B). "
+            "Calibrate via the stage-4 parameter sweep before trusting them.",
+            "Factor edges can decay across market regimes; re-run stage 1 "
+            "periodically and watch cross_regime_ic / stability.",
+        ],
+    }
+
     yaml_text = yaml.safe_dump(
         spec,
         default_flow_style=False,
