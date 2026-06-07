@@ -79,6 +79,7 @@ DESIGN NOTES — the two genuinely under-specified decisions, made explicit.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -115,7 +116,7 @@ if str(_DASHBOARD_SCHEMAS) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_SCHEMAS))
 
 from schemas import FactorEntry, FactorManifest, FactorVerdict, GenerationBlock  # noqa: E402
-from pipeline.lib.archetype_router import ArchetypePlan  # noqa: E402
+from pipeline.lib.archetype_router import ArchetypePlan, pick_archetypes  # noqa: E402
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -127,16 +128,18 @@ SWARM_PRESET = "crypto_trading_desk"
 #: multi-day swing horizon is the natural default for generated strategies.
 DEFAULT_TIMEFRAME = "swing 3-7 days"
 
-#: Method string recorded in GenerationBlock.method.
-GENERATION_METHOD = f"{SWARM_PRESET} swarm (stage 2 strategy generation)"
+#: Method string for deterministic scaffold path (no swarm involved).
+GENERATION_METHOD_DETERMINISTIC = "deterministic scaffold (stage 2 archetype factory)"
+
+#: Method string for swarm-assisted path.
+GENERATION_METHOD_SWARM = f"{SWARM_PRESET} swarm (stage 2 strategy generation)"
+
+#: Backward-compat alias — some older tests reference GENERATION_METHOD directly.
+GENERATION_METHOD = GENERATION_METHOD_SWARM
 
 #: Run id shape emitted by the swarm runtime — swarm-YYYYMMDD-HHMMSS-<hex8>.
 #: See agent/src/swarm/presets.py:build_run_from_preset.
 _RUN_ID_RE = re.compile(r"\bswarm-\d{8}-\d{6}-[0-9a-f]{8}\b")
-
-#: How many strategies stage 2 emits per symbol. The swarm delivers ONE
-#: integrated desk plan per run, so the runner emits one strategy per run.
-STRATEGIES_PER_SYMBOL = 1
 
 #: Maximum wall-clock seconds to wait for a swarm subprocess. A trading-desk
 #: swarm with several agents typically completes in under 2 minutes, but
@@ -1110,6 +1113,149 @@ def _generate_for_symbol(
     )
 
 
+def _generate_for_symbol_multi(
+    sym: SymbolConfig,
+    strategies_dir: Path,
+    manifests_dir: Path,
+    use_swarm: bool = False,
+    seq_start: int = 1,
+) -> list[GeneratedStrategy]:
+    """Run stage-2 for one symbol and emit one strategy per archetype plan.
+
+    Replaces the legacy ``_generate_for_symbol()`` single-emit path.  For each
+    ``ArchetypePlan`` returned by ``pick_archetypes(usable)``, one strategy YAML
+    and one ``generation.json`` are written.
+
+    Swarm behaviour:
+      * ``use_swarm=False`` (default): swarm is never called; a deterministic
+        rationale string is used for all plans.
+      * ``use_swarm=True``: ``run_swarm()`` is attempted ONCE for the symbol.
+        On any failure (CalledProcessError, TimeoutExpired, Exception), the
+        error is logged and deterministic rationale is used instead; no
+        exception is propagated.
+
+    Args:
+        sym: The SymbolConfig for this symbol.
+        strategies_dir: research/strategies/ — where YAMLs are written.
+        manifests_dir: research/manifests/ — generation.json goes under <id>/.
+        use_swarm: Whether to attempt the swarm subprocess.
+        seq_start: Starting sequence number for strategy ids (default 1).
+
+    Returns:
+        List of GeneratedStrategy handles, one per archetype plan.
+
+    Raises:
+        FileNotFoundError: If the stage-1 factor manifest is absent.
+        ValueError: If the manifest has no usable (non-rejected) factors.
+    """
+    manifest_path = manifests_dir / f"factor_{sym.name}.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"stage-1 factor manifest not found: {manifest_path}\n"
+            "Run stage 1 (stage1_factors.py) before stage 2."
+        )
+
+    manifest = FactorManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    usable = select_usable_factors(manifest)
+    print(
+        f"[stage2] {sym.name}: {len(usable)}/{len(manifest.factors)} factors "
+        f"usable (non-reject): {[f.name for f in usable]}"
+    )
+    if not usable:
+        raise ValueError(
+            f"{sym.name}: every stage-1 factor had verdict=reject — "
+            "nothing to build a strategy from."
+        )
+
+    # ── Route to archetype plans ──────────────────────────────────────────────
+    plans = pick_archetypes(usable)
+    print(
+        f"[stage2] {sym.name}: {len(plans)} archetype plan(s): "
+        f"{[p.archetype for p in plans]}"
+    )
+
+    # ── Optional swarm run (once per symbol) ─────────────────────────────────
+    swarm_rationale: str | None = None
+    run_id: str | None = None
+
+    if use_swarm:
+        target = swarm_target_from_ticker(sym.okx_swap)
+        vars_dict = build_swarm_vars(target, usable)
+        try:
+            swarm_stdout = run_swarm(vars_dict)
+            run_id = parse_swarm_result(swarm_stdout)
+            swarm_rationale = extract_swarm_report(swarm_stdout)
+            print(f"[stage2] {sym.name}: swarm run id = {run_id}")
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[stage2] {sym.name}: swarm failed ({type(exc).__name__}: {exc}); "
+                "falling back to deterministic rationale.",
+                file=sys.stderr,
+            )
+            swarm_rationale = None
+            run_id = None
+
+    # ── Emit one strategy per plan ───────────────────────────────────────────
+    generated: list[GeneratedStrategy] = []
+    strategies_dir.mkdir(parents=True, exist_ok=True)
+
+    for seq_offset, plan in enumerate(plans):
+        seq = seq_start + seq_offset
+
+        # Choose rationale
+        if swarm_rationale:
+            rationale = swarm_rationale
+            method = GENERATION_METHOD_SWARM
+        else:
+            factor_names = [f.name for f, _ in plan.factors]
+            rationale = (
+                f"Deterministic scaffold from stage-1 IC evidence; "
+                f"archetype={plan.archetype}; "
+                f"factors={factor_names}."
+            )
+            method = GENERATION_METHOD_DETERMINISTIC
+
+        strategy_id, yaml_text = build_strategy_spec(
+            symbol=sym.name,
+            ticker=sym.okx_swap,
+            plan=plan,
+            swarm_rationale=rationale,
+            seq=seq,
+        )
+
+        # Write strategy YAML
+        yaml_path = strategies_dir / f"strategy_{strategy_id}.yaml"
+        yaml_path.write_text(yaml_text, encoding="utf-8")
+        print(f"[stage2] {sym.name}: wrote {yaml_path.name}")
+
+        # Write generation.json with correct method
+        gen_dir = manifests_dir / strategy_id
+        gen_dir.mkdir(parents=True, exist_ok=True)
+        gen_block: dict = {
+            "source_run": run_id if (use_swarm and swarm_rationale) else None,
+            "method": method,
+            "model": None,
+            "rationale": rationale or None,
+            "factors_used": [f.name for f in usable],
+        }
+        gen_path = gen_dir / "generation.json"
+        gen_path.write_text(
+            json.dumps(gen_block, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"[stage2] {sym.name}: wrote {gen_path}")
+
+        generated.append(GeneratedStrategy(
+            strategy_id=strategy_id,
+            symbol=sym.name,
+            yaml_path=yaml_path,
+            generation_path=gen_path,
+        ))
+
+    return generated
+
+
 def extract_swarm_report(stdout: str) -> str:
     """Best-effort extraction of the swarm's prose final report from stdout.
 
@@ -1142,6 +1288,20 @@ def extract_swarm_report(stdout: str) -> str:
 
 def main() -> None:
     """Stage-2 entry point: orchestrate, verify, report, exit."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Stage 2 — Strategy Generation")
+    parser.add_argument(
+        "--use-swarm",
+        action="store_true",
+        default=False,
+        help="Invoke the crypto_trading_desk swarm for rationale (off by default).",
+    )
+    args = parser.parse_args()
+    use_swarm = args.use_swarm or os.environ.get(
+        "RESEARCH_STAGE2_USE_SWARM", ""
+    ).lower() in ("1", "true", "yes")
+
     cfg: ResearchConfig = load_config()
     strategies_dir = _REPO_ROOT / "research" / "strategies"
     manifests_dir = _REPO_ROOT / "research" / "manifests"
@@ -1149,7 +1309,10 @@ def main() -> None:
     print("=" * 60)
     print("Stage 2 — Strategy Generation")
     print("=" * 60)
-    print(f"Config: symbols={cfg.symbol_names()}  preset={SWARM_PRESET}")
+    print(
+        f"Config: symbols={cfg.symbol_names()}  preset={SWARM_PRESET}  "
+        f"use_swarm={use_swarm}"
+    )
     print(f"Strategy output:   {strategies_dir}")
     print(f"Generation output: {manifests_dir}")
 
@@ -1157,10 +1320,10 @@ def main() -> None:
     for sym in cfg.symbols:
         print(f"\n[stage2] ── symbol: {sym.name} ──")
         try:
-            # STRATEGIES_PER_SYMBOL is 1; seq starts at 1 (-> _s1_).
-            for seq in range(1, STRATEGIES_PER_SYMBOL + 1):
-                gen = _generate_for_symbol(sym, strategies_dir, manifests_dir, seq)
-                generated.append(gen)
+            sym_strategies = _generate_for_symbol_multi(
+                sym, strategies_dir, manifests_dir, use_swarm=use_swarm
+            )
+            generated.extend(sym_strategies)
         except Exception as exc:  # noqa: BLE001
             # One symbol failing must not abort the others; verify_outputs
             # below will surface the gap as a non-zero exit code.

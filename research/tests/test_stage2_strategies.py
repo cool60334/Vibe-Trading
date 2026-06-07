@@ -41,9 +41,12 @@ for _p in (_RESEARCH_DIR, _DASHBOARD_SCHEMAS):
 
 from pipeline.stage2_strategies import (  # noqa: E402
     DEFAULT_TIMEFRAME,
+    GENERATION_METHOD_DETERMINISTIC,
+    GENERATION_METHOD_SWARM,
     SWARM_TIMEOUT_S,
     GeneratedStrategy,
     StrategyCheckResult,
+    _generate_for_symbol_multi,
     build_generation_block,
     build_strategy_spec,
     build_swarm_vars,
@@ -52,6 +55,7 @@ from pipeline.stage2_strategies import (  # noqa: E402
     extract_swarm_report,
     parse_swarm_result,
     print_summary,
+    run_swarm,
     select_usable_factors,
     swarm_target_from_ticker,
     verify_outputs,
@@ -1069,3 +1073,238 @@ class TestArchetypeSpecCompilesToSignalEngine:
         assert result.status == "ok", (
             f"consensus_all spec failed stage-2b compilation: {result.message}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 3: TestStage2MultiEmit — multi-emit archetype fan-out + swarm demotion
+# ---------------------------------------------------------------------------
+
+import os
+import subprocess
+from unittest.mock import patch, MagicMock
+
+from pipeline.lib.archetype_router import pick_archetypes  # noqa: E402
+
+
+def _sym_config(name: str = "btc", okx_swap: str = "BTC-USDT-SWAP", ccxt_bybit: str = "BTC/USDT:USDT"):
+    """Return a minimal SymbolConfig-like object for _generate_for_symbol_multi tests."""
+    from pipeline.config import SymbolConfig
+    return SymbolConfig(name=name, okx_swap=okx_swap, ccxt_bybit=ccxt_bybit)
+
+
+def _write_factor_manifest(manifests_dir: Path, sym_name: str, factors: list[dict]) -> Path:
+    """Write a stage-1 factor manifest JSON for a symbol and return its path."""
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": 1,
+        "symbol": sym_name.upper(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "period_days": 730,
+        "horizons_h": [8, 24, 72, 168],
+        "factors": factors,
+    }
+    path = manifests_dir / f"factor_{sym_name}.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path
+
+
+class TestStage2MultiEmit:
+    """Task 3: _generate_for_symbol_multi — archetype fan-out and swarm demotion."""
+
+    # Two mixed-sign factors -> pick_archetypes returns 3 plans:
+    # single_factor + trend_with_gate + consensus_all
+    _MIXED_FACTORS = [
+        _factor("stablecoin_supply_z", "single_use", ic8=0.10),   # positive IC
+        _factor("funding_rate",        "single_use", ic8=-0.08),  # negative IC
+    ]
+
+    # ── Test 1: Default run produces all routed archetypes, no swarm ──────
+
+    def test_default_run_no_swarm_called(self, tmp_path: Path):
+        """_generate_for_symbol_multi() in default mode never calls run_swarm."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        with patch("pipeline.stage2_strategies.run_swarm") as mock_swarm:
+            results = _generate_for_symbol_multi(
+                sym, strategies_dir, manifests_dir, use_swarm=False
+            )
+
+        mock_swarm.assert_not_called()
+        assert len(results) > 0
+
+    def test_default_run_emits_all_routed_archetypes(self, tmp_path: Path):
+        """N strategies returned = len(pick_archetypes(usable_factors))."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        # Compute expected number of plans from the router itself
+        from schemas import FactorManifest, FactorEntry
+        manifest = FactorManifest.model_validate(
+            json.loads((manifests_dir / "factor_btc.json").read_text())
+        )
+        usable = select_usable_factors(manifest)
+        expected_plans = pick_archetypes(usable)
+
+        results = _generate_for_symbol_multi(
+            sym, strategies_dir, manifests_dir, use_swarm=False
+        )
+
+        assert len(results) == len(expected_plans), (
+            f"Expected {len(expected_plans)} strategies (one per archetype plan), "
+            f"got {len(results)}"
+        )
+
+    # ── Test 2: Swarm failure still writes specs and returns strategies ───
+
+    def test_swarm_failure_still_returns_strategies(self, tmp_path: Path):
+        """When use_swarm=True and run_swarm raises CalledProcessError, still returns strategies."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        def _raise(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, ["vibe-trading"], output="", stderr="timeout")
+
+        with patch("pipeline.stage2_strategies.run_swarm", side_effect=_raise):
+            results = _generate_for_symbol_multi(
+                sym, strategies_dir, manifests_dir, use_swarm=True
+            )
+
+        # Must still produce strategies (no raise propagated)
+        assert len(results) > 0
+
+    def test_swarm_failure_strategies_are_valid_yaml(self, tmp_path: Path):
+        """Strategies written after swarm failure have valid YAML with required keys."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        def _raise(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, ["vibe-trading"])
+
+        with patch("pipeline.stage2_strategies.run_swarm", side_effect=_raise):
+            results = _generate_for_symbol_multi(
+                sym, strategies_dir, manifests_dir, use_swarm=True
+            )
+
+        _REQUIRED = (
+            "name", "archetype", "hypothesis", "symbol", "timeframe_signal",
+            "hold_period", "indicators", "entry_long", "entry_short",
+            "exit_rules", "position_sizing", "parameter_search_ranges",
+            "expected_behavior", "caveats",
+        )
+        for gen in results:
+            assert gen.yaml_path.exists(), f"YAML not written: {gen.yaml_path}"
+            doc = yaml.safe_load(gen.yaml_path.read_text(encoding="utf-8"))
+            for key in _REQUIRED:
+                assert key in doc, f"Missing key {key!r} in {gen.strategy_id}"
+
+    # ── Test 3: strategy_id uniqueness ────────────────────────────────────
+
+    def test_strategy_ids_are_unique(self, tmp_path: Path):
+        """All strategies for one symbol have distinct strategy_ids."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        results = _generate_for_symbol_multi(
+            sym, strategies_dir, manifests_dir, use_swarm=False
+        )
+
+        ids = [g.strategy_id for g in results]
+        assert len(ids) == len(set(ids)), (
+            f"Duplicate strategy_ids found: {ids}"
+        )
+
+    def test_strategy_ids_have_sequential_seq_numbers(self, tmp_path: Path):
+        """strategy_ids contain _s1_, _s2_, ... in order."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        results = _generate_for_symbol_multi(
+            sym, strategies_dir, manifests_dir, use_swarm=False
+        )
+
+        for i, gen in enumerate(results, start=1):
+            assert f"_s{i}_" in gen.strategy_id, (
+                f"Expected _s{i}_ in strategy_id at position {i}, got: {gen.strategy_id}"
+            )
+
+    # ── Test 4: RESEARCH_STAGE2_USE_SWARM env var default is off ─────────
+
+    def test_env_var_default_is_off(self, monkeypatch):
+        """RESEARCH_STAGE2_USE_SWARM env var must not be set by default (off)."""
+        monkeypatch.delenv("RESEARCH_STAGE2_USE_SWARM", raising=False)
+        val = os.environ.get("RESEARCH_STAGE2_USE_SWARM", "")
+        use_swarm = val.lower() in ("1", "true", "yes")
+        assert not use_swarm, (
+            "RESEARCH_STAGE2_USE_SWARM should be unset/empty by default — swarm off"
+        )
+
+    def test_env_var_true_enables_swarm(self, monkeypatch):
+        """RESEARCH_STAGE2_USE_SWARM=true evaluates to use_swarm=True."""
+        monkeypatch.setenv("RESEARCH_STAGE2_USE_SWARM", "true")
+        val = os.environ.get("RESEARCH_STAGE2_USE_SWARM", "")
+        use_swarm = val.lower() in ("1", "true", "yes")
+        assert use_swarm
+
+    def test_env_var_1_enables_swarm(self, monkeypatch):
+        """RESEARCH_STAGE2_USE_SWARM=1 evaluates to use_swarm=True."""
+        monkeypatch.setenv("RESEARCH_STAGE2_USE_SWARM", "1")
+        val = os.environ.get("RESEARCH_STAGE2_USE_SWARM", "")
+        use_swarm = val.lower() in ("1", "true", "yes")
+        assert use_swarm
+
+    # ── Test 5: generation.json uses correct method constant ─────────────
+
+    def test_deterministic_mode_writes_deterministic_method(self, tmp_path: Path):
+        """generation.json uses GENERATION_METHOD_DETERMINISTIC when swarm is off."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        results = _generate_for_symbol_multi(
+            sym, strategies_dir, manifests_dir, use_swarm=False
+        )
+
+        for gen in results:
+            raw = json.loads(gen.generation_path.read_text(encoding="utf-8"))
+            assert raw["method"] == GENERATION_METHOD_DETERMINISTIC, (
+                f"Expected deterministic method in generation.json for {gen.strategy_id}"
+            )
+            assert raw["source_run"] is None, (
+                "source_run must be None in deterministic mode"
+            )
+
+    def test_generation_constants_exist(self):
+        """GENERATION_METHOD_DETERMINISTIC and GENERATION_METHOD_SWARM are exported."""
+        assert isinstance(GENERATION_METHOD_DETERMINISTIC, str) and GENERATION_METHOD_DETERMINISTIC
+        assert isinstance(GENERATION_METHOD_SWARM, str) and GENERATION_METHOD_SWARM
+        assert "deterministic" in GENERATION_METHOD_DETERMINISTIC.lower()
+        assert "swarm" in GENERATION_METHOD_SWARM.lower()
+
+    def test_deterministic_rationale_mentions_archetype(self, tmp_path: Path):
+        """Deterministic rationale in hypothesis mentions the archetype name."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        results = _generate_for_symbol_multi(
+            sym, strategies_dir, manifests_dir, use_swarm=False
+        )
+
+        for gen in results:
+            raw = json.loads(gen.generation_path.read_text(encoding="utf-8"))
+            assert raw["rationale"] is not None, f"rationale is None for {gen.strategy_id}"
