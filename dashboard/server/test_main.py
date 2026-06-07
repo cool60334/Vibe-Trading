@@ -82,6 +82,35 @@ def test_list_strategies_empty(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/strategies/{id}/promote — promotion status
+# ---------------------------------------------------------------------------
+
+def test_promote_status_roundtrip(repo_root, tmp_path):
+    """GET reports promotion state; reflects promote then demote."""
+    os.environ["REPO_ROOT"] = str(repo_root)
+    os.environ["DASHBOARD_DIR"] = str(tmp_path / "dash")
+    import importlib, main as main_module
+    importlib.reload(main_module)
+    from main import app
+    try:
+        with TestClient(app) as c:
+            # initially not promoted
+            r = c.get("/api/strategies/strat_btc_001/promote")
+            assert r.status_code == 200
+            assert r.json() == {"strategy_id": "strat_btc_001", "promoted": False}
+
+            # promote → status flips true
+            assert c.post("/api/strategies/strat_btc_001/promote", json={}).status_code == 201
+            assert c.get("/api/strategies/strat_btc_001/promote").json()["promoted"] is True
+
+            # demote → status flips back false
+            c.request("DELETE", "/api/strategies/strat_btc_001/promote")
+            assert c.get("/api/strategies/strat_btc_001/promote").json()["promoted"] is False
+    finally:
+        os.environ.pop("DASHBOARD_DIR", None)
+
+
+# ---------------------------------------------------------------------------
 # GET /api/strategies/{id}
 # ---------------------------------------------------------------------------
 

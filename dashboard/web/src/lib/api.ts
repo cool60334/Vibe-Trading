@@ -330,6 +330,8 @@ export const api = {
     get(`/testnet/${encodeURIComponent(id)}/equity`),
   testnetTrades: (id: string): Promise<TestnetTradeRow[]> =>
     get(`/testnet/${encodeURIComponent(id)}/trades`),
+  promoteStatus: (id: string): Promise<{ strategy_id: string; promoted: boolean }> =>
+    get(`/strategies/${id}/promote`),
   promote: (id: string, body: { override_reason?: string }) =>
     fetch(`${BASE}/strategies/${id}/promote`, {
       method: "POST",

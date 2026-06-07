@@ -16,8 +16,9 @@ from schemas import FATAL_GATE_CHECKS, StrategyManifest
 
 # Repo root — override with REPO_ROOT env var for Docker / Linux deployment.
 REPO_ROOT = Path(os.environ.get("REPO_ROOT", Path(__file__).parent.parent.parent))
-# Dashboard data dir — one level up from server/
-DASHBOARD_DIR = Path(__file__).parent.parent
+# Dashboard data dir — one level up from server/ (override with DASHBOARD_DIR
+# env var; used by tests to isolate promote state).
+DASHBOARD_DIR = Path(os.environ.get("DASHBOARD_DIR", Path(__file__).parent.parent))
 
 app = FastAPI(title="Quant Strategy Dashboard API", version="0.1.0")
 
@@ -257,6 +258,15 @@ def promote_strategy(strategy_id: str, body: PromoteRequest = PromoteRequest()) 
         override_reason=body.override_reason,
     )
     return {"strategy_id": strategy_id, **record}
+
+
+@app.get("/api/strategies/{strategy_id}/promote")
+def get_promote_status(strategy_id: str) -> dict:
+    """Whether *strategy_id* is currently promoted (drives the UI button)."""
+    return {
+        "strategy_id": strategy_id,
+        "promoted": state_module.is_promoted(DASHBOARD_DIR, strategy_id),
+    }
 
 
 @app.delete("/api/strategies/{strategy_id}/promote", status_code=200)

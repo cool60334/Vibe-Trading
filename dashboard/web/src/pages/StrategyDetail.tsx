@@ -563,13 +563,15 @@ export default function StrategyDetail() {
       api.equity(id).catch(() => [] as EquityPoint[]),
       api.trades(id).catch(() => [] as Record<string, unknown>[]),
       api.factorAnalysis().catch(() => [] as FactorManifest[]),
+      api.promoteStatus(id).catch(() => ({ promoted: false })),
     ])
-      .then(([m, eq, tr, factors]) => {
+      .then(([m, eq, tr, factors, promote]) => {
         setManifest(m);
         setEquity(eq);
         setTrades(tr);
         const fm = (factors as FactorManifest[]).find((f) => f.symbol === m.symbol) ?? null;
         setFactorManifest(fm);
+        setIsPromoted((promote as { promoted: boolean }).promoted);
         setLoading(false);
       })
       .catch((e: Error) => {
