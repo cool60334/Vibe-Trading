@@ -37,21 +37,7 @@ access) so they can be unit-tested without any external fixtures.
 from __future__ import annotations
 
 import dataclasses
-import sys
-from pathlib import Path
 from typing import Any, Sequence
-
-# ── Path bootstrap ───────────────────────────────────────────────────────────
-# Lives at <repo>/research/pipeline/lib/archetype_router.py.
-_THIS = Path(__file__).resolve()
-_RESEARCH_DIR = _THIS.parents[2]          # research/
-_REPO_ROOT = _RESEARCH_DIR.parent         # repo root
-_DASHBOARD_SCHEMAS = _REPO_ROOT / "dashboard" / "server"
-
-for _p in (_RESEARCH_DIR, _DASHBOARD_SCHEMAS):
-    _ps = str(_p)
-    if _ps not in sys.path:
-        sys.path.insert(0, _ps)
 
 # ─── Maximum number of plans returned ────────────────────────────────────────
 
@@ -245,5 +231,5 @@ def pick_archetypes(factors: Sequence[Any]) -> list[ArchetypePlan]:
     if ca is not None:
         plans.append(ca)
 
-    # Hard cap
+    # Hard cap (no-op today; guards against future archetype additions)
     return plans[:MAX_PLANS]
