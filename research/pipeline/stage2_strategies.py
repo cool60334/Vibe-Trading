@@ -342,6 +342,58 @@ def _archetype_for(usable_factors: list[FactorEntry]) -> str:
     return "factor_based"  # unreachable: build_strategy_spec rejects empty input
 
 
+def _default_spec_scaffold(factor_names: list[str]) -> dict:
+    """Return the shared scaffold fields (exit/sizing/search/behavior/caveats).
+
+    These five keys are identical across all four builder functions
+    (single_factor, trend_with_gate, consensus_all, legacy). Centralising them
+    here ensures any future change is made in one place.
+    """
+    return {
+        "exit_rules": [
+            {"condition": "time_based", "max_hold_hours": 120},
+            {"condition": "take_profit_pct", "value": 6.0},
+            {"condition": "stop_loss_pct", "value": 3.0},
+            *[
+                {
+                    "condition": "signal_invalidation",
+                    "expression": f"{name}_percentile_90d between 40,60",
+                }
+                for name in factor_names
+            ],
+        ],
+        "position_sizing": {
+            "method": "fixed_risk",
+            "risk_per_trade_pct": 1.5,
+            "leverage": 1.5,
+        },
+        "parameter_search_ranges": {
+            "lookback_days": [60, 120, 30],
+            "entry_high_pct": [75, 90, 5],
+            "entry_low_pct": [10, 25, 5],
+            "persistence_last_n": [3, 5, 1],
+            "persistence_min_hits": [2, 3, 1],
+            "hold_max_hours": [96, 144, 24],
+            "tp_pct": [4.0, 7.0, 1.5],
+            "sl_pct": [2.5, 4.0, 0.5],
+        },
+        "expected_behavior": {
+            "trades_per_year_estimate": 80,
+            "expected_sharpe": 1.0,
+            "expected_max_dd_pct": 8.0,
+            "expected_win_rate_pct": 51,
+        },
+        "caveats": [
+            "Quantitative thresholds in this spec are a deterministic scaffold "
+            "derived from stage-1 factor verdicts, NOT authored by the LLM "
+            "swarm (see stage2_strategies.py module docstring, decision B). "
+            "Calibrate via the stage-4 parameter sweep before trusting them.",
+            "Factor edges can decay across market regimes; re-run stage 1 "
+            "periodically and watch cross_regime_ic / stability.",
+        ],
+    }
+
+
 def _build_spec_single_factor(
     symbol: str,
     ticker: str,
@@ -397,48 +449,8 @@ def _build_spec_single_factor(
             "logic": "all",
             "conditions": [_entry_condition(factor, direction="short")],
         },
-        "exit_rules": [
-            {"condition": "time_based", "max_hold_hours": 120},
-            {"condition": "take_profit_pct", "value": 6.0},
-            {"condition": "stop_loss_pct", "value": 3.0},
-            *[
-                {
-                    "condition": "signal_invalidation",
-                    "expression": f"{name}_percentile_90d between 40,60",
-                }
-                for name in factor_names
-            ],
-        ],
-        "position_sizing": {
-            "method": "fixed_risk",
-            "risk_per_trade_pct": 1.5,
-            "leverage": 1.5,
-        },
-        "parameter_search_ranges": {
-            "lookback_days": [60, 120, 30],
-            "entry_high_pct": [75, 90, 5],
-            "entry_low_pct": [10, 25, 5],
-            "persistence_last_n": [3, 5, 1],
-            "persistence_min_hits": [2, 3, 1],
-            "hold_max_hours": [96, 144, 24],
-            "tp_pct": [4.0, 7.0, 1.5],
-            "sl_pct": [2.5, 4.0, 0.5],
-        },
-        "expected_behavior": {
-            "trades_per_year_estimate": 80,
-            "expected_sharpe": 1.0,
-            "expected_max_dd_pct": 8.0,
-            "expected_win_rate_pct": 51,
-        },
-        "caveats": [
-            "Quantitative thresholds in this spec are a deterministic scaffold "
-            "derived from stage-1 factor verdicts, NOT authored by the LLM "
-            "swarm (see stage2_strategies.py module docstring, decision B). "
-            "Calibrate via the stage-4 parameter sweep before trusting them.",
-            "Factor edges can decay across market regimes; re-run stage 1 "
-            "periodically and watch cross_regime_ic / stability.",
-        ],
     }
+    spec.update(_default_spec_scaffold(factor_names))
 
     yaml_text = yaml.safe_dump(
         spec,
@@ -516,10 +528,8 @@ def _build_spec_trend_with_gate(
             ),
             "logic": "all",
             "conditions": [
-                # Trend factor: long fires when HIGH (positive IC -> trend)
-                f"{trend_factor.name}_percentile_90d >= 80 persist 2/3",
-                # Gate factor: long fires when LOW (negative IC -> contrarian gate)
-                f"{gate_factor.name}_percentile_90d <= 20 persist 2/3",
+                _entry_condition(trend_factor, direction="long"),
+                _entry_condition(gate_factor, direction="long"),
             ],
         },
         "entry_short": {
@@ -530,54 +540,12 @@ def _build_spec_trend_with_gate(
             ),
             "logic": "all",
             "conditions": [
-                # Trend factor: short fires when LOW (positive IC -> trend)
-                f"{trend_factor.name}_percentile_90d <= 20 persist 2/3",
-                # Gate factor: short fires when HIGH (negative IC -> contrarian gate)
-                f"{gate_factor.name}_percentile_90d >= 80 persist 2/3",
+                _entry_condition(trend_factor, direction="short"),
+                _entry_condition(gate_factor, direction="short"),
             ],
         },
-        "exit_rules": [
-            {"condition": "time_based", "max_hold_hours": 120},
-            {"condition": "take_profit_pct", "value": 6.0},
-            {"condition": "stop_loss_pct", "value": 3.0},
-            *[
-                {
-                    "condition": "signal_invalidation",
-                    "expression": f"{name}_percentile_90d between 40,60",
-                }
-                for name in factor_names
-            ],
-        ],
-        "position_sizing": {
-            "method": "fixed_risk",
-            "risk_per_trade_pct": 1.5,
-            "leverage": 1.5,
-        },
-        "parameter_search_ranges": {
-            "lookback_days": [60, 120, 30],
-            "entry_high_pct": [75, 90, 5],
-            "entry_low_pct": [10, 25, 5],
-            "persistence_last_n": [3, 5, 1],
-            "persistence_min_hits": [2, 3, 1],
-            "hold_max_hours": [96, 144, 24],
-            "tp_pct": [4.0, 7.0, 1.5],
-            "sl_pct": [2.5, 4.0, 0.5],
-        },
-        "expected_behavior": {
-            "trades_per_year_estimate": 80,
-            "expected_sharpe": 1.0,
-            "expected_max_dd_pct": 8.0,
-            "expected_win_rate_pct": 51,
-        },
-        "caveats": [
-            "Quantitative thresholds in this spec are a deterministic scaffold "
-            "derived from stage-1 factor verdicts, NOT authored by the LLM "
-            "swarm (see stage2_strategies.py module docstring, decision B). "
-            "Calibrate via the stage-4 parameter sweep before trusting them.",
-            "Factor edges can decay across market regimes; re-run stage 1 "
-            "periodically and watch cross_regime_ic / stability.",
-        ],
     }
+    spec.update(_default_spec_scaffold(factor_names))
 
     yaml_text = yaml.safe_dump(
         spec,
@@ -659,48 +627,8 @@ def _build_spec_consensus_all(
                 for f in usable_factors
             ],
         },
-        "exit_rules": [
-            {"condition": "time_based", "max_hold_hours": 120},
-            {"condition": "take_profit_pct", "value": 6.0},
-            {"condition": "stop_loss_pct", "value": 3.0},
-            *[
-                {
-                    "condition": "signal_invalidation",
-                    "expression": f"{name}_percentile_90d between 40,60",
-                }
-                for name in factor_names
-            ],
-        ],
-        "position_sizing": {
-            "method": "fixed_risk",
-            "risk_per_trade_pct": 1.5,
-            "leverage": 1.5,
-        },
-        "parameter_search_ranges": {
-            "lookback_days": [60, 120, 30],
-            "entry_high_pct": [75, 90, 5],
-            "entry_low_pct": [10, 25, 5],
-            "persistence_last_n": [3, 5, 1],
-            "persistence_min_hits": [2, 3, 1],
-            "hold_max_hours": [96, 144, 24],
-            "tp_pct": [4.0, 7.0, 1.5],
-            "sl_pct": [2.5, 4.0, 0.5],
-        },
-        "expected_behavior": {
-            "trades_per_year_estimate": 80,
-            "expected_sharpe": 1.0,
-            "expected_max_dd_pct": 8.0,
-            "expected_win_rate_pct": 51,
-        },
-        "caveats": [
-            "Quantitative thresholds in this spec are a deterministic scaffold "
-            "derived from stage-1 factor verdicts, NOT authored by the LLM "
-            "swarm (see stage2_strategies.py module docstring, decision B). "
-            "Calibrate via the stage-4 parameter sweep before trusting them.",
-            "Factor edges can decay across market regimes; re-run stage 1 "
-            "periodically and watch cross_regime_ic / stability.",
-        ],
     }
+    spec.update(_default_spec_scaffold(factor_names))
 
     yaml_text = yaml.safe_dump(
         spec,
@@ -869,48 +797,8 @@ def _build_spec_legacy(
                 for f in usable_factors
             ],
         },
-        "exit_rules": [
-            {"condition": "time_based", "max_hold_hours": 120},
-            {"condition": "take_profit_pct", "value": 6.0},
-            {"condition": "stop_loss_pct", "value": 3.0},
-            *[
-                {
-                    "condition": "signal_invalidation",
-                    "expression": f"{name}_percentile_90d between 40,60",
-                }
-                for name in factor_names
-            ],
-        ],
-        "position_sizing": {
-            "method": "fixed_risk",
-            "risk_per_trade_pct": 1.5,
-            "leverage": 1.5,
-        },
-        "parameter_search_ranges": {
-            "lookback_days": [60, 120, 30],
-            "entry_high_pct": [75, 90, 5],
-            "entry_low_pct": [10, 25, 5],
-            "persistence_last_n": [3, 5, 1],
-            "persistence_min_hits": [2, 3, 1],
-            "hold_max_hours": [96, 144, 24],
-            "tp_pct": [4.0, 7.0, 1.5],
-            "sl_pct": [2.5, 4.0, 0.5],
-        },
-        "expected_behavior": {
-            "trades_per_year_estimate": 80,
-            "expected_sharpe": 1.0,
-            "expected_max_dd_pct": 8.0,
-            "expected_win_rate_pct": 51,
-        },
-        "caveats": [
-            "Quantitative thresholds in this spec are a deterministic scaffold "
-            "derived from stage-1 factor verdicts, NOT authored by the LLM "
-            "swarm (see stage2_strategies.py module docstring, decision B). "
-            "Calibrate via the stage-4 parameter sweep before trusting them.",
-            "Factor edges can decay across market regimes; re-run stage 1 "
-            "periodically and watch cross_regime_ic / stability.",
-        ],
     }
+    spec.update(_default_spec_scaffold(factor_names))
 
     yaml_text = yaml.safe_dump(
         spec,
@@ -1185,6 +1073,7 @@ def _generate_for_symbol(
 
     rationale = extract_swarm_report(swarm_stdout)
 
+    # TODO(Task 3): replace with loop over pick_archetypes(); this legacy path removed in stage2 wiring
     strategy_id, yaml_text = build_strategy_spec(
         symbol=sym.name,
         ticker=sym.okx_swap,
