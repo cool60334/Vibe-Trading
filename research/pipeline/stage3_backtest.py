@@ -79,6 +79,7 @@ class BacktestRunResult:
     run_name: str
     ok: bool
     error: str | None = None  # description if ok=False
+    archetype_misfit: bool = False  # True when the fail-fast guard triggered
 
 
 # ─── Pure-logic helpers (testable, network-free) ──────────────────────────────
@@ -238,6 +239,166 @@ def verify_run_artifacts(run_dir: Path) -> BacktestRunResult:
         )
 
     return BacktestRunResult(run_name=run_name, ok=True)
+
+
+def check_archetype_misfit(run_dir: Path) -> bool:
+    """Check whether a completed base run is a hopeless archetype misfit.
+
+    A run is flagged as misfit if:
+      - sharpe < -2  (deeply negative, concept-level failure unlikely fixable)
+      - trades_per_year > 1000  (hyper-active regime incompatible with this archetype)
+
+    Fail-open: if metrics cannot be read (run failed, no artifacts), returns False
+    so that the caller does NOT skip downstream runs due to missing data.
+
+    Args:
+        run_dir: Path to the completed base run directory.  Must contain:
+                 - artifacts/metrics.csv  (produced by backtest runner)
+                 - config.json            (written by _setup_run_dir; has start/end dates)
+
+    Returns:
+        True if the run is a confirmed misfit; False otherwise (including when
+        metrics are absent or cannot be parsed).
+    """
+    # ── Read metrics.csv ──────────────────────────────────────────────────────
+    metrics_csv = run_dir / "artifacts" / "metrics.csv"
+    if not metrics_csv.exists():
+        return False  # fail-open: missing artifacts → not misfit
+
+    try:
+        import csv as _csv
+        with metrics_csv.open(newline="", encoding="utf-8") as fh:
+            reader = _csv.DictReader(fh)
+            rows = list(reader)
+        if not rows:
+            return False
+        row = rows[0]
+    except Exception:  # noqa: BLE001
+        return False  # fail-open on any read error
+
+    def _float(key: str) -> float | None:
+        v = row.get(key)
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
+    sharpe = _float("sharpe")
+    trade_count = _float("trade_count")
+
+    # ── Check sharpe threshold ────────────────────────────────────────────────
+    if sharpe is not None and sharpe < -2:
+        return True
+
+    # ── Annualise trade_count and check threshold ─────────────────────────────
+    if trade_count is not None:
+        # Read date range from config.json to compute the run duration.
+        config_path = run_dir / "config.json"
+        period_years: float | None = None
+        if config_path.exists():
+            try:
+                config_data = json.loads(config_path.read_text(encoding="utf-8"))
+                start_str = config_data.get("start_date")
+                end_str = config_data.get("end_date")
+                if start_str and end_str:
+                    from datetime import date as _date
+                    start_d = _date.fromisoformat(start_str)
+                    end_d = _date.fromisoformat(end_str)
+                    period_days = (end_d - start_d).days
+                    if period_days > 0:
+                        period_years = period_days / 365.25
+            except Exception:  # noqa: BLE001
+                period_years = None
+
+        if period_years is not None and period_years > 0:
+            trades_per_year = trade_count / period_years
+        else:
+            # No date range available: treat raw trade_count as trades_per_year
+            # (conservative fallback — avoids false positives for very long runs).
+            trades_per_year = trade_count
+
+        if trades_per_year > 1000:
+            return True
+
+    return False
+
+
+def write_archetype_misfit_sentinel(
+    manifests_dir: Path,
+    strategy_id: str,
+    run_dir: Path,
+) -> None:
+    """Write manifests/<strategy_id>/archetype_misfit.json sentinel.
+
+    Called when ``check_archetype_misfit`` fires so downstream stages (stage 4)
+    can skip the strategy without re-reading metrics.
+
+    Args:
+        manifests_dir: research/manifests/ directory.
+        strategy_id:   Strategy identifier (directory name under manifests/).
+        run_dir:       The base run directory (used to read sharpe/trades for
+                       the sentinel payload).
+    """
+    # Read metrics for the sentinel payload (best-effort; sentinel is still
+    # written even if we cannot read the exact values).
+    sharpe: float | None = None
+    trades_per_year: float | None = None
+    reason_parts: list[str] = []
+
+    metrics_csv = run_dir / "artifacts" / "metrics.csv"
+    if metrics_csv.exists():
+        try:
+            import csv as _csv
+            with metrics_csv.open(newline="", encoding="utf-8") as fh:
+                rows = list(_csv.DictReader(fh))
+            if rows:
+                row = rows[0]
+                try:
+                    sharpe = float(row.get("sharpe") or "nan")
+                except (ValueError, TypeError):
+                    sharpe = None
+                trade_count_raw = row.get("trade_count")
+                try:
+                    trade_count = float(trade_count_raw or "nan")
+                except (ValueError, TypeError):
+                    trade_count = None
+
+                # Annualise
+                config_path = run_dir / "config.json"
+                if config_path.exists() and trade_count is not None:
+                    try:
+                        cfg_data = json.loads(config_path.read_text(encoding="utf-8"))
+                        from datetime import date as _date
+                        start_d = _date.fromisoformat(cfg_data["start_date"])
+                        end_d = _date.fromisoformat(cfg_data["end_date"])
+                        period_days = (end_d - start_d).days
+                        if period_days > 0:
+                            trades_per_year = trade_count / (period_days / 365.25)
+                    except Exception:  # noqa: BLE001
+                        trades_per_year = trade_count  # fallback
+        except Exception:  # noqa: BLE001
+            pass
+
+    if sharpe is not None and sharpe < -2:
+        reason_parts.append(f"sharpe {sharpe:.3f} < -2")
+    if trades_per_year is not None and trades_per_year > 1000:
+        reason_parts.append(f"trades_per_year {trades_per_year:.0f} > 1000")
+    reason = "; ".join(reason_parts) if reason_parts else "archetype_misfit detected"
+
+    sentinel: dict = {
+        "archetype_misfit": True,
+        "reason": reason,
+        "sharpe": sharpe,
+        "trades_per_year": round(trades_per_year, 1) if trades_per_year is not None else None,
+    }
+
+    out_dir = manifests_dir / strategy_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "archetype_misfit.json"
+    out_path.write_text(json.dumps(sentinel, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"  [misfit] wrote sentinel: {out_path}")
 
 
 def compute_exit_code(results: list[BacktestRunResult]) -> int:
@@ -588,7 +749,24 @@ def main() -> None:
             print(f"\n[skip] {strategy_id}: no pending runs")
             continue
 
+        strategy_misfit = False
+
         for run_name, sid, symbol, role in pending:
+            # ── Fail-fast guard ───────────────────────────────────────────────
+            # After the base run completes (ok=True), check whether the run is
+            # a hopeless archetype misfit. If so, skip all remaining runs for
+            # this strategy and write a sentinel file for stage 4.
+            if strategy_misfit:
+                print(f"\n[stage3] {strategy_id}: skipping {run_name} (archetype_misfit)")
+                all_results.append(
+                    BacktestRunResult(
+                        run_name=run_name,
+                        ok=True,  # not a failure; deliberately skipped
+                        archetype_misfit=True,
+                    )
+                )
+                continue
+
             try:
                 result = _run_backtest_for_run(
                     run_name=run_name,
@@ -607,6 +785,19 @@ def main() -> None:
                     error=f"unexpected error: {exc}",
                 )
                 print(f"  [ERROR] {run_name}: {exc}")
+
+            # After a successful base run, evaluate the misfit guard.
+            if role == "base" and result.ok:
+                base_run_dir = runs_root / run_name
+                if check_archetype_misfit(base_run_dir):
+                    strategy_misfit = True
+                    result = dataclasses.replace(result, archetype_misfit=True)
+                    print(
+                        f"\n[stage3] {strategy_id}: archetype_misfit — "
+                        f"skipping regime/oos runs"
+                    )
+                    write_archetype_misfit_sentinel(manifests_dir, strategy_id, base_run_dir)
+
             all_results.append(result)
 
     print_summary(all_results)

@@ -46,6 +46,7 @@ from pipeline.stage3_backtest import (   # noqa: E402
     _setup_run_dir,
     build_run_config,
     build_stub_signal_engine,
+    check_archetype_misfit,
     compute_exit_code,
     find_signal_engine,
     list_pending_runs,
@@ -483,3 +484,113 @@ class TestSymbolToShort:
 
     def test_symbol_to_short_no_hyphen(self):
         assert symbol_to_short("BTC") == "btc"
+
+
+# ---------------------------------------------------------------------------
+# (i) check_archetype_misfit (fail-fast guard after base run)
+# ---------------------------------------------------------------------------
+
+class TestArchetypeMisfitGuard:
+    """check_archetype_misfit(run_dir) -> bool.
+
+    Returns True when base run is hopeless (sharpe < -2 OR trades_per_year > 1000).
+    Returns False (fail-open) when metrics are absent.
+    """
+
+    def _write_metrics(self, run_dir: Path, sharpe: float, trade_count: int,
+                       start: str = "2023-01-01", end: str = "2024-01-01") -> None:
+        """Write minimal metrics.csv and config.json to a run directory."""
+        artifacts = run_dir / "artifacts"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        header = "final_value,total_return,annual_return,max_drawdown,sharpe,calmar,sortino,win_rate,profit_loss_ratio,profit_factor,max_consecutive_loss,avg_holding_days,trade_count,benchmark_return,excess_return,information_ratio"
+        row = f"1000.0,0.1,0.1,-0.05,{sharpe},1.0,1.2,0.55,1.1,1.2,3,2.0,{trade_count},0.05,0.05,0.5"
+        (artifacts / "metrics.csv").write_text(f"{header}\n{row}\n", encoding="utf-8")
+        config = {
+            "codes": ["BTC-USDT-SWAP"],
+            "start_date": start,
+            "end_date": end,
+            "source": "okx",
+            "interval": "1H",
+            "engine": "daily",
+        }
+        (run_dir / "config.json").write_text(
+            json.dumps(config, indent=2), encoding="utf-8"
+        )
+
+    def test_guard_fires_negative_sharpe(self, tmp_path):
+        """sharpe < -2 => archetype_misfit=True."""
+        run_dir = tmp_path / "btc_test_base"
+        run_dir.mkdir()
+        self._write_metrics(run_dir, sharpe=-3.0, trade_count=50)
+        assert check_archetype_misfit(run_dir) is True
+
+    def test_guard_fires_high_trades(self, tmp_path):
+        """trades_per_year > 1000 => archetype_misfit=True."""
+        run_dir = tmp_path / "btc_test_base"
+        run_dir.mkdir()
+        # 1 year window, 1500 trades => 1500 per year
+        self._write_metrics(run_dir, sharpe=0.5, trade_count=1500,
+                            start="2023-01-01", end="2024-01-01")
+        assert check_archetype_misfit(run_dir) is True
+
+    def test_guard_passes_normal(self, tmp_path):
+        """sharpe=0.5, trades=80 => archetype_misfit=False."""
+        run_dir = tmp_path / "btc_test_base"
+        run_dir.mkdir()
+        self._write_metrics(run_dir, sharpe=0.5, trade_count=80)
+        assert check_archetype_misfit(run_dir) is False
+
+    def test_guard_passes_negative_but_within_threshold(self, tmp_path):
+        """sharpe=-1.5 (not < -2) => archetype_misfit=False."""
+        run_dir = tmp_path / "btc_test_base"
+        run_dir.mkdir()
+        self._write_metrics(run_dir, sharpe=-1.5, trade_count=50)
+        assert check_archetype_misfit(run_dir) is False
+
+    def test_guard_passes_many_trades_not_over_1000(self, tmp_path):
+        """999 trades/year => archetype_misfit=False."""
+        run_dir = tmp_path / "btc_test_base"
+        run_dir.mkdir()
+        # 1 year window, 999 trades => 999 per year
+        self._write_metrics(run_dir, sharpe=0.5, trade_count=999,
+                            start="2023-01-01", end="2024-01-01")
+        assert check_archetype_misfit(run_dir) is False
+
+    def test_guard_passes_missing_metrics(self, tmp_path):
+        """Missing metrics => fail-open (not misfit), do not skip runs."""
+        run_dir = tmp_path / "btc_test_base"
+        run_dir.mkdir()
+        # No artifacts dir, no metrics.csv
+        assert check_archetype_misfit(run_dir) is False
+
+    def test_guard_passes_missing_artifacts_dir(self, tmp_path):
+        """artifacts/ dir absent => fail-open."""
+        run_dir = tmp_path / "btc_test_base"
+        run_dir.mkdir()
+        assert check_archetype_misfit(run_dir) is False
+
+    def test_guard_fires_exact_boundary_sharpe(self, tmp_path):
+        """sharpe exactly -2 is NOT a misfit (guard fires on strictly < -2)."""
+        run_dir = tmp_path / "btc_test_base"
+        run_dir.mkdir()
+        self._write_metrics(run_dir, sharpe=-2.0, trade_count=50)
+        assert check_archetype_misfit(run_dir) is False
+
+    def test_guard_fires_exact_boundary_trades(self, tmp_path):
+        """trades_per_year exactly 1000 is NOT a misfit (guard fires on strictly > 1000)."""
+        run_dir = tmp_path / "btc_test_base"
+        run_dir.mkdir()
+        # 2 year window (~730 days), 2000 trades => ~1000/year => NOT misfit
+        self._write_metrics(run_dir, sharpe=0.5, trade_count=2000,
+                            start="2022-01-01", end="2024-01-01")
+        # 2000 trades / (730/365.25 years) ≈ 1000.68 => still slightly over;
+        # use 1990 trades (< 1000/yr) to confirm boundary is not misfit
+        (run_dir / "artifacts" / "metrics.csv").write_text(
+            "final_value,total_return,annual_return,max_drawdown,sharpe,calmar,sortino,"
+            "win_rate,profit_loss_ratio,profit_factor,max_consecutive_loss,avg_holding_days,"
+            "trade_count,benchmark_return,excess_return,information_ratio\n"
+            "1000.0,0.1,0.1,-0.05,0.5,1.0,1.2,0.55,1.1,1.2,3,2.0,1990,0.05,0.05,0.5\n",
+            encoding="utf-8",
+        )
+        # 1990 trades / (730/365.25 ≈ 1.998 years) ≈ 996 trades/year => not misfit
+        assert check_archetype_misfit(run_dir) is False

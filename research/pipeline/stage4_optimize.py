@@ -507,6 +507,25 @@ def _optimize_strategy(
 ) -> OptimizationCheckResult:
     print(f"\n{'='*60}\n[stage4] Strategy: {strategy_id}\n{'='*60}")
 
+    # ── Archetype-misfit guard ────────────────────────────────────────────────
+    # If stage 3 flagged this strategy as a hopeless base run, skip the sweep
+    # entirely to avoid wasting compute on a concept that stage 3 already
+    # marked as fundamentally unsuitable.
+    misfit_path = manifests_dir / strategy_id / "archetype_misfit.json"
+    if misfit_path.exists():
+        try:
+            misfit_data = json.loads(misfit_path.read_text(encoding="utf-8"))
+            if misfit_data.get("archetype_misfit"):
+                reason = misfit_data.get("reason", "see archetype_misfit.json")
+                msg = (
+                    f"archetype_misfit sentinel present ({reason}) — "
+                    f"skipping sweep (re-run stage 3 after redesigning the strategy)"
+                )
+                print(f"  [SKIP] {msg}")
+                return OptimizationCheckResult(strategy_id=strategy_id, ok=False, error=msg)
+        except (OSError, json.JSONDecodeError):
+            pass  # Unreadable sentinel: proceed normally (fail-open)
+
     diagnosis_path = manifests_dir / strategy_id / "diagnosis.json"
     if not diagnosis_path.exists():
         msg = f"diagnosis.json not found at {diagnosis_path} — run stage 3 first"
