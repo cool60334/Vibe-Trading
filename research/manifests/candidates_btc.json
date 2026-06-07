@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "symbol": "btc",
+  "generated_at": "2026-06-02T12:20:32.562289Z",
+  "source_swarm_run": null,
+  "candidates": [
+    {
+      "name": "stablecoin_supply_z",
+      "formula": "feature_store column 'stablecoin_supply_z' (no transform)",
+      "feature_key": "stablecoin_supply_z",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "+",
+      "economic_logic": "(deterministic selection) stablecoin_supply_z top |IC|=+0.0879@8h, IR=+3.264. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        8,
+        24,
+        72,
+        168
+      ],
+      "category": "stablecoin"
+    },
+    {
+      "name": "funding_z",
+      "formula": "feature_store column 'funding_z' (no transform)",
+      "feature_key": "funding_z",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "-",
+      "economic_logic": "(deterministic selection) funding_z top |IC|=-0.0510@72h, IR=-0.559. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        8,
+        24,
+        72,
+        168
+      ],
+      "category": "funding"
+    }
+  ]
+}

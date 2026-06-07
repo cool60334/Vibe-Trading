@@ -92,6 +92,13 @@ wiki/alpha-library/content/
 # Pipeline-generated artifacts (do not commit)
 runs/
 research/manifests/candidates_*.json
+# ...except the curated candidate selections — these are the deployable
+# factor-selection seed. Without them stage1 falls back to LEGACY factors and a
+# live strategy's required factors (e.g. eth_s5 funding_z/stablecoin_supply_z)
+# are never produced. Track them so VPS deploys run DYNAMIC selection.
+!research/manifests/candidates_btc.json
+!research/manifests/candidates_eth.json
+!research/manifests/candidates_sol.json
 research/manifests/factor_*.json
 research/manifests/factor_*.md
 research/manifests/regime_*.json

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "symbol": "eth",
+  "generated_at": "2026-06-02T12:20:32.574290Z",
+  "source_swarm_run": null,
+  "candidates": [
+    {
+      "name": "atr_14",
+      "formula": "feature_store column 'atr_14' (no transform)",
+      "feature_key": "atr_14",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "-",
+      "economic_logic": "(deterministic selection) atr_14 top |IC|=-0.0973@168h, IR=-0.228. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        72,
+        168
+      ],
+      "category": "volatility"
+    },
+    {
+      "name": "stablecoin_supply_z",
+      "formula": "feature_store column 'stablecoin_supply_z' (no transform)",
+      "feature_key": "stablecoin_supply_z",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "+",
+      "economic_logic": "(deterministic selection) stablecoin_supply_z top |IC|=+0.0912@168h, IR=+4.429. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        8,
+        24,
+        72,
+        168
+      ],
+      "category": "stablecoin"
+    },
+    {
+      "name": "rolling_std_20",
+      "formula": "feature_store column 'rolling_std_20' (no transform)",
+      "feature_key": "rolling_std_20",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "-",
+      "economic_logic": "(deterministic selection) rolling_std_20 top |IC|=-0.0607@168h, IR=-0.177. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        72,
+        168
+      ],
+      "category": "volatility"
+    },
+    {
+      "name": "funding_z",
+      "formula": "feature_store column 'funding_z' (no transform)",
+      "feature_key": "funding_z",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "-",
+      "economic_logic": "(deterministic selection) funding_z top |IC|=-0.0565@72h, IR=-0.767. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        24,
+        72
+      ],
+      "category": "funding"
+    }
+  ]
+}
