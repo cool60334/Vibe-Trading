@@ -249,9 +249,20 @@ Stage 0 已**無「失敗」概念**（除非 0a 產物缺失）：
 
 ### 這階段在做什麼（白話）
 
-把 Stage 1 存活的因子組成可回測的買賣規則（`strategy_<id>.yaml`）。
+把 Stage 1 存活的因子組成可回測的買賣規則，透過**archetype 工廠**確定性地產生。
 
-**關鍵：策略骨架是程式確定性產生的，不是 LLM 寫的。** LLM swarm（`crypto_trading_desk`）只負責產出「交易理由」散文（存進 `generation.rationale`）；門檻、進出場條件是 `stage2_strategies.py` 依因子 verdict + IC 確定性 scaffold 出來的（design decision B）。swarm 掛了也不影響 YAML 生成。
+**關鍵變更**：Stage 2 現已改為 **archetype-driven scaffolder**（取代 stage 2-old 手寫 YAML）。三種 archetype 可選：`single_factor`（單因子）、`trend_with_gate`（趨勢+閘控因子）、`consensus_all`（全因子共識多數決）。每個 symbol 最多產 3 個 archetype plan，各自生成獨立的 `strategy_<coin>_s<seq>_<archetype>.yaml` + `generation.json`。LLM swarm（`crypto_trading_desk`）僅提供經濟邏輯散文，掛了也不影響 YAML 生成（fail-soft）。
+
+### Archetype 選擇
+
+`research/pipeline/lib/archetype_router.py::pick_archetypes()` 依 candidates 個數確定性挑選：
+- **≤2 因子** → `single_factor`
+- **2~4 因子** → `trend_with_gate`（主因子 + gate 因子）
+- **≥3 因子** → `consensus_all`（多因子 OR）
+
+### Fan-out 與策略 ID
+
+每個 archetype 產一份完整策略 YAML 與 `generation.json`。策略 ID = `<coin>_s<seq>_<archetype>`（例 `btc_s1_single_factor`、`eth_s2_trend_with_gate`）。
 
 ### 進場方向（重要）
 
@@ -259,14 +270,23 @@ Stage 0 已**無「失敗」概念**（除非 0a 產物缺失）：
 - **正 IC → trend**：因子值高時做多（`>= 80`）、低時做空（`<= 20`）
 - **負 IC → contrarian**：因子值低時做多（`<= 20`）、高時做空（`>= 80`）
 
-用實測 IC（`ic_by_horizon` 在 max-|IC| horizon 的符號）而非 LLM 的 `expected_ic_sign`（後者會標錯）。**早期 bug：scaffold 對所有因子寫死 contrarian，把正 IC 的 stablecoin 因子做反 → 回測 -99%；修正後同因子 trend 方向轉正。**
+### Auto-registration
 
-### 多/單因子組合
-≥3 因子自動 `logic: any`（AND 太稀疏會 0 交易）；2 因子用 `all`。
+每個產出的策略自動在 `strategy_runs.json` 註冊（透過 `register_strategy()`，冪等、累加）。不需手動建檔。
+
+### Swarm enrichment（opt-in）
+
+預設路徑為 **swarm-free deterministic**。加 `--use-swarm` 或設 `RESEARCH_STAGE2_USE_SWARM=1` 開啟 LLM enrichment，fail-soft 掛時保留 placeholder。
 
 ### 用法
 ```bash
+# 預設：deterministic 無 swarm
 python -m research.pipeline.stage2_strategies
+
+# 啟用 swarm enrichment（fail-soft）
+python -m research.pipeline.stage2_strategies --use-swarm
+# 或
+RESEARCH_STAGE2_USE_SWARM=1 python -m research.pipeline.stage2_strategies
 ```
 
 ---
@@ -284,6 +304,16 @@ python -m research.pipeline.stage3_backtest
 ### train/OOS 行為
 - **未設 `oos_start`**：base = 全期（legacy）。
 - **設 `oos_start`**：base = **train 窗** `[start, oos_start)`，regime 切片也夾在 train 內 → in-sample 不偷看 OOS。真 OOS 由 Stage 4 的 holdout 負責。
+
+### Fail-fast guard（架構貼合檢驗）
+
+Base run 完成後，檢驗策略是否「適合此 archetype」。若：
+- **sharpe < -2** OR
+- **trades_per_year > 1000**
+
+→ 策略標記 `archetype_misfit`，寫 sentinel `manifests/<id>/archetype_misfit.json`；regime / OOS runs 全部 SKIP。
+
+**作用**：早期偵測 archetype 選錯，不浪費時間跑 stage 4 參數掃描。Stage 4 在消費 optimization.json 時會檢查此 sentinel，misfit 策略直接跳過 sweep。
 
 > ⚠️ base 失敗時舊 artifacts 還在會被誤判 PASS（同 stage0）；要重跑先刪 `runs/<run>/`。
 
