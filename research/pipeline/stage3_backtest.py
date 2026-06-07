@@ -555,12 +555,12 @@ def print_summary(results: list[BacktestRunResult]) -> None:
         print("  (no backtest runs were attempted)")
 
     for r in results:
-        status = "OK" if r.ok else "FAIL"
-        if r.ok:
-            msg = "artifacts present"
+        if r.ok and r.archetype_misfit:
+            print(f"  [SKIP] {r.run_name}: skipped (archetype_misfit)")
+        elif r.ok:
+            print(f"  [OK] {r.run_name}: artifacts present")
         else:
-            msg = f"FAILED — {r.error}"
-        print(f"  [{status}] {r.run_name}: {msg}")
+            print(f"  [FAIL] {r.run_name}: FAILED — {r.error}")
 
     total = len(results)
     passed = sum(1 for r in results if r.ok)
