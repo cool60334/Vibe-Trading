@@ -87,6 +87,10 @@ python -c "import pandas, ccxt, pyarrow, scipy; print('deps ok')"
 deactivate
 ```
 
+> If `pip install -e .` fails with a `pandas-ta` ↔ `numpy` ResolutionImpossible
+> on an older clone, the fix is pinned in pyproject (`pandas-ta<0.4`) — `git
+> pull` and retry. To unblock without pulling: `pip install -e . "pandas-ta<0.4"`.
+
 ## 4. Seed factors + regime once (before first trade)
 
 `refresh_factors.sh` runs stage0a + stage1 + **stage2.5 regime**, so it produces

@@ -37,7 +37,9 @@ dependencies = [
     # Pin to <2 until upstream ships a numpy-2-clean release.
     "numpy>=1.24.0,<2",
     # pandas-ta: pure-Python TA library (no TA-Lib C compilation required).
-    "pandas-ta>=0.3.14b",
+    # Cap below 0.4: pandas-ta 0.4.x betas require numpy>=2.2.6, which collides
+    # with the numpy<2 pin above (np.NaN). 0.3.14b0 is the last numpy<2 release.
+    "pandas-ta>=0.3.14b,<0.4",
     "scipy>=1.10.0",
     "duckdb>=1.2.0",
     "scikit-learn>=1.3.0",
