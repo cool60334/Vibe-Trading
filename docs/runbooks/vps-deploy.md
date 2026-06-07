@@ -101,7 +101,9 @@ file — stale regime silently decays the overlay (its alpha). Generate fresh no
 
 ```bash
 cd REPO
-RESEARCH_VENV="REPO/.venv" bash scripts/refresh_factors.sh
+# $PWD/.venv is the absolute venv path — do NOT pass a relative "REPO/.venv",
+# it resolves against the current dir and you get REPO/REPO/.venv (not found).
+RESEARCH_VENV="$PWD/.venv" bash scripts/refresh_factors.sh
 # Confirm it ends with: refresh_factors: OK
 python - <<'PY'
 import json, datetime as dt
