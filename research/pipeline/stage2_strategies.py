@@ -1188,7 +1188,7 @@ def _generate_for_symbol_multi(
             run_id = parse_swarm_result(swarm_stdout)
             swarm_rationale = extract_swarm_report(swarm_stdout)
             print(f"[stage2] {sym.name}: swarm run id = {run_id}")
-        except Exception as exc:  # noqa: BLE001
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             print(
                 f"[stage2] {sym.name}: swarm failed ({type(exc).__name__}: {exc}); "
                 "falling back to deterministic rationale.",
