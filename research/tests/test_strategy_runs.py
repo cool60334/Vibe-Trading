@@ -23,6 +23,7 @@ from pipeline.strategy_runs import (
     StrategyRunsEntry,
     StrategyRunsMap,
     load_strategy_runs,
+    register_strategy,
     update_sweep_run,
 )
 
@@ -559,3 +560,254 @@ class TestUpdateSweepRun:
         # Re-parse raw to confirm _comment survived (load_strategy_runs strips it).
         raw = json.loads(p.read_text(encoding="utf-8"))
         assert raw.get("_comment") == "this is metadata, do not delete"
+
+
+# ─── register_strategy() tests ───────────────────────────────────────────────
+
+
+class TestRegisterStrategy:
+    """register_strategy() adds new entries to strategy_runs.json, idempotently."""
+
+    def _empty_file(self, tmp_path: Path) -> Path:
+        """Write an empty JSON object and return its path."""
+        p = tmp_path / "strategy_runs.json"
+        p.write_text("{}", encoding="utf-8")
+        return p
+
+    def _file_with_entry(self, tmp_path: Path) -> Path:
+        """Write a file with one existing entry and return its path."""
+        return write_json(tmp_path, dict(MINIMAL_VALID_MAP))
+
+    # 1. Register new entry adds the key with all required fields ──────────────
+
+    def test_register_new_entry_creates_key(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        assert "btc_s10_single_factor" in raw
+
+    def test_register_new_entry_has_all_required_keys(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        entry = raw["btc_s10_single_factor"]
+        required_keys = {"symbol", "spec_yaml", "base_run", "regime_runs",
+                         "stress_runs", "oos_runs", "sweep_run", "walk_forward_runs"}
+        missing = required_keys - entry.keys()
+        assert not missing, f"Entry is missing required keys: {missing}"
+
+    def test_register_new_entry_field_defaults(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        entry = raw["btc_s10_single_factor"]
+        assert entry["symbol"] == "BTC-USDT-SWAP"
+        assert entry["spec_yaml"] == "research/strategies/strategy_btc_s10_single_factor.yaml"
+        assert entry["base_run"] == "btc_s10_single_factor_base"
+        assert entry["regime_runs"] == {}
+        assert entry["stress_runs"] == {}
+        assert entry["oos_runs"] == []
+        assert entry["sweep_run"] is None
+        assert entry["walk_forward_runs"] == []
+
+    # 2. Idempotent — second call with same id is a no-op ─────────────────────
+
+    def test_idempotent_second_call_no_duplicate(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        for _ in range(2):
+            register_strategy(
+                "btc_s10_single_factor",
+                "BTC-USDT-SWAP",
+                "research/strategies/strategy_btc_s10_single_factor.yaml",
+                path=p,
+            )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        # Key appears exactly once (JSON object keys are unique)
+        assert list(raw.keys()).count("btc_s10_single_factor") == 1
+
+    def test_idempotent_second_call_does_not_change_entry(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        first_raw = json.loads(p.read_text(encoding="utf-8"))
+
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        second_raw = json.loads(p.read_text(encoding="utf-8"))
+        assert first_raw == second_raw
+
+    # 3. Additive — does not touch existing entries ───────────────────────────
+
+    def test_additive_existing_entry_not_modified(self, tmp_path: Path) -> None:
+        p = self._file_with_entry(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        # Original entry should be completely unchanged
+        assert raw["btc_s1_multifactor_contrarian"] == MINIMAL_VALID_ENTRY
+
+    def test_additive_new_entry_added_alongside_existing(self, tmp_path: Path) -> None:
+        p = self._file_with_entry(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        assert "btc_s1_multifactor_contrarian" in raw
+        assert "btc_s10_single_factor" in raw
+
+    # 4. Preserves existing data — does not overwrite set fields ──────────────
+
+    def test_preserves_existing_base_run_when_already_set(self, tmp_path: Path) -> None:
+        """If an entry already exists with base_run set, re-calling must NOT reset it."""
+        p = self._empty_file(tmp_path)
+        # First call creates the entry with default base_run
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        # Manually set base_run to a known value (simulating a hand-written edit)
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        raw["btc_s10_single_factor"]["base_run"] = "btc_s10_base"
+        p.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+        # Second call should NOT overwrite base_run
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw2 = json.loads(p.read_text(encoding="utf-8"))
+        assert raw2["btc_s10_single_factor"]["base_run"] == "btc_s10_base"
+
+    # 5. Multiple strategies — 3 distinct entries ─────────────────────────────
+
+    def test_multiple_strategies_registered_independently(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        ids = [
+            "btc_s10_single_factor",
+            "btc_s11_trend_with_gate",
+            "btc_s12_consensus_all",
+        ]
+        for sid in ids:
+            register_strategy(
+                sid,
+                "BTC-USDT-SWAP",
+                f"research/strategies/strategy_{sid}.yaml",
+                path=p,
+            )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        assert len(raw) == 3
+        for sid in ids:
+            assert sid in raw
+
+    # 6. Generated run names follow convention ────────────────────────────────
+
+    def test_base_run_is_strategy_id_plus_base_suffix(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        assert raw["btc_s10_single_factor"]["base_run"] == "btc_s10_single_factor_base"
+
+    def test_sweep_run_is_null_by_default(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        assert raw["btc_s10_single_factor"]["sweep_run"] is None
+
+    def test_regime_runs_empty_dict_by_default(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        assert raw["btc_s10_single_factor"]["regime_runs"] == {}
+
+    def test_walk_forward_runs_empty_list_by_default(self, tmp_path: Path) -> None:
+        p = self._empty_file(tmp_path)
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        assert raw["btc_s10_single_factor"]["walk_forward_runs"] == []
+
+    # 7. Works when file does not exist yet (creates it) ──────────────────────
+
+    def test_creates_file_when_missing(self, tmp_path: Path) -> None:
+        p = tmp_path / "strategy_runs_new.json"
+        assert not p.exists()
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        assert p.exists()
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        assert "btc_s10_single_factor" in raw
+
+    def test_created_file_is_loadable_by_load_strategy_runs(self, tmp_path: Path) -> None:
+        """File created by register_strategy() must pass load_strategy_runs() validation."""
+        p = tmp_path / "strategy_runs_new.json"
+        register_strategy(
+            "btc_s10_single_factor",
+            "BTC-USDT-SWAP",
+            "research/strategies/strategy_btc_s10_single_factor.yaml",
+            path=p,
+        )
+        result = load_strategy_runs(p)
+        assert "btc_s10_single_factor" in result.entries
+        entry = result.entries["btc_s10_single_factor"]
+        assert entry.base_run == "btc_s10_single_factor_base"
+        assert entry.sweep_run is None
+        assert entry.regime_runs == {}
+        assert entry.oos_runs == ()
+        assert entry.walk_forward_runs == ()

@@ -284,6 +284,69 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
 
 # ─── Writer ──────────────────────────────────────────────────────────────────
 
+def register_strategy(
+    strategy_id: str,
+    symbol: str,
+    spec_yaml: str,
+    path: Path | str | None = None,
+) -> None:
+    """Register a new strategy in strategy_runs.json, idempotent per strategy_id.
+
+    If the strategy_id already exists, the entry is NOT modified (additive only).
+    Creates a new entry with sensible defaults: base_run=<id>_base, everything
+    else null/empty.
+
+    If the JSON file does not exist yet it is created with the new entry as the
+    only item.
+
+    Parameters
+    ----------
+    strategy_id:
+        e.g. "btc_s10_single_factor"
+    symbol:
+        Exchange ticker, e.g. "BTC-USDT-SWAP"
+    spec_yaml:
+        Repo-relative path, e.g.
+        "research/strategies/strategy_btc_s10_single_factor.yaml"
+    path:
+        Optional override for the strategy_runs.json path.  Defaults to
+        ``<repo-root>/research/strategy_runs.json``.
+    """
+    resolved = Path(path) if path is not None else _DEFAULT_JSON_PATH
+
+    # Load existing data (or start fresh if the file doesn't exist yet).
+    if resolved.exists():
+        with resolved.open("r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, dict):
+            raise TypeError(
+                f"strategy_runs.json must be a JSON mapping at the top level, "
+                f"got {type(raw).__name__}."
+            )
+    else:
+        raw = {}
+
+    # Idempotent guard: if the strategy_id is already present, do nothing.
+    if strategy_id in raw:
+        return
+
+    # Build default entry.
+    raw[strategy_id] = {
+        "symbol": symbol,
+        "spec_yaml": spec_yaml,
+        "base_run": f"{strategy_id}_base",
+        "regime_runs": {},
+        "stress_runs": {},
+        "oos_runs": [],
+        "sweep_run": None,
+        "walk_forward_runs": [],
+    }
+
+    payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(payload, encoding="utf-8")
+
+
 def update_sweep_run(
     strategy_id: str,
     sweep_run: str | None,

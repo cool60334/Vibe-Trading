@@ -110,6 +110,7 @@ import yaml
 # Per the stage-1 code review: import _REPO_ROOT from pipeline.config rather
 # than recomputing it, so all stages agree on one repo-root definition.
 from pipeline.config import _REPO_ROOT, ResearchConfig, SymbolConfig, load_config
+from pipeline.strategy_runs import register_strategy
 
 _DASHBOARD_SCHEMAS = _REPO_ROOT / "dashboard" / "server"
 if str(_DASHBOARD_SCHEMAS) not in sys.path:
@@ -1245,6 +1246,13 @@ def _generate_for_symbol_multi(
             json.dumps(gen_block, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(f"[stage2] {sym.name}: wrote {gen_path}")
+
+        # Auto-register in strategy_runs.json (idempotent).
+        register_strategy(
+            strategy_id=strategy_id,
+            symbol=sym.okx_swap,
+            spec_yaml=f"research/strategies/strategy_{strategy_id}.yaml",
+        )
 
         generated.append(GeneratedStrategy(
             strategy_id=strategy_id,
