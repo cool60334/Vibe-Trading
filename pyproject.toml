@@ -33,13 +33,15 @@ dependencies = [
     "python-pptx>=0.6.23",
     "pypdfium2>=4.0.0",
     "Pillow>=10.0.0",
-    # pandas-ta uses np.NaN which was removed in numpy 2.0 (see twopirllc/pandas-ta#860).
-    # Pin to <2 until upstream ships a numpy-2-clean release.
+    # Kept <2 for the rest of the stack (legacy np.NaN / np.float_ usages).
     "numpy>=1.24.0,<2",
-    # pandas-ta: pure-Python TA library (no TA-Lib C compilation required).
-    # Cap below 0.4: pandas-ta 0.4.x betas require numpy>=2.2.6, which collides
-    # with the numpy<2 pin above (np.NaN). 0.3.14b0 is the last numpy<2 release.
-    "pandas-ta>=0.3.14b,<0.4",
+    # TA indicators: use `ta` (pure-Python, numpy<2-and-2 compatible). pandas-ta
+    # is NOT a hard dep — PyPI yanked its last numpy<2 release (0.3.14b0); only
+    # numpy>=2.2.6 betas remain, which collide with the numpy<2 pin above.
+    # research/lib/indicators.py already prefers pandas_ta if present and falls
+    # back to `ta`, so dropping pandas-ta changes nothing functionally. Install
+    # pandas-ta yourself only if you specifically need it (and can take numpy 2).
+    "ta>=0.11.0",
     "scipy>=1.10.0",
     "duckdb>=1.2.0",
     "scikit-learn>=1.3.0",

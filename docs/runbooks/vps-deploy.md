@@ -87,9 +87,10 @@ python -c "import pandas, ccxt, pyarrow, scipy; print('deps ok')"
 deactivate
 ```
 
-> If `pip install -e .` fails with a `pandas-ta` ↔ `numpy` ResolutionImpossible
-> on an older clone, the fix is pinned in pyproject (`pandas-ta<0.4`) — `git
-> pull` and retry. To unblock without pulling: `pip install -e . "pandas-ta<0.4"`.
+> If `pip install -e .` fails with a `pandas-ta` ↔ `numpy` conflict (PyPI yanked
+> pandas-ta's last numpy<2 release, leaving only numpy≥2 betas), pull the latest
+> branch: pandas-ta was dropped from the deps in favour of `ta`, which the
+> indicator code already falls back to. `git pull` then retry `pip install -e .`.
 
 ## 4. Seed factors + regime once (before first trade)
 
