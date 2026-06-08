@@ -177,3 +177,21 @@ def test_strategy_stage_stale_when_older_than_seed(tmp_path):
     strat = full.symbols[0].strategies[0]
     by_id = {s.stage_id: s for s in strat.stages}
     assert by_id["3"].state == "stale"
+
+
+def test_endpoint_returns_status(tmp_path, monkeypatch):
+    import importlib
+    md = tmp_path / "research" / "manifests"
+    _seed_symbol_manifests(md)
+    _write(md / "btc_s1_single_factor" / "generation.json", {"method": "deterministic"})
+
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    import main as main_module
+    importlib.reload(main_module)
+    from fastapi.testclient import TestClient
+    with TestClient(main_module.app) as c:
+        r = c.get("/api/pipeline/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["symbols"][0]["symbol"] == "btc"
+        assert any(s["stage_id"] == "0a" for s in body["symbols"][0]["stages"])

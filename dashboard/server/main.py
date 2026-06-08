@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 import artifacts
 import parsers
+import pipeline_status
 import state as state_module
 import supervisor as supervisor_module
 from schemas import FATAL_GATE_CHECKS, StrategyManifest
@@ -200,6 +201,25 @@ def get_pipeline() -> list[dict]:
         }
         for m in manifests
     ]
+
+
+def _config_symbols() -> list[str]:
+    """Best-effort read of research_config.yaml symbol names; [] on any failure."""
+    try:
+        cfg = parsers.load_yaml(REPO_ROOT / "research" / "research_config.yaml")
+        out: list[str] = []
+        for s in cfg.get("symbols") or []:
+            name = s.get("name") if isinstance(s, dict) else None
+            if name:
+                out.append(str(name))
+        return out
+    except Exception:
+        return []
+
+
+@app.get("/api/pipeline/status")
+def get_pipeline_status():
+    return pipeline_status.build_pipeline_status(REPO_ROOT, _config_symbols())
 
 
 # ---------------------------------------------------------------------------
