@@ -310,6 +310,37 @@ export interface EquityPoint {
 }
 
 // ---------------------------------------------------------------------------
+// Pipeline status — GET /api/pipeline/status
+// ---------------------------------------------------------------------------
+
+export type StageState = "done" | "stale" | "missing";
+
+export interface StageStatus {
+  stage_id: string;
+  label: string;
+  state: StageState;
+  generated_at: string | null;
+  metric_label: string | null;
+  metric_value: string | null;
+}
+
+export interface StrategyPipeline {
+  strategy_id: string;
+  stages: StageStatus[];
+}
+
+export interface SymbolPipeline {
+  symbol: string;
+  stages: StageStatus[];
+  strategies: StrategyPipeline[];
+}
+
+export interface PipelineStatus {
+  generated_at: string;
+  symbols: SymbolPipeline[];
+}
+
+// ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
 
@@ -362,4 +393,5 @@ export const api = {
     }),
   traderProcess: (testnetId: string, strategyId: string): Promise<{ running: boolean; pid: number | null }> =>
     get(`/testnet/${testnetId}/process?strategy_id=${encodeURIComponent(strategyId)}`),
+  getPipelineStatus: () => get<PipelineStatus>("/pipeline/status"),
 };
