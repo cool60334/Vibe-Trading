@@ -122,3 +122,39 @@ def test_symbol_stages_missing(tmp_path):
     md.mkdir(parents=True)
     stages = ps_mod.build_symbol_stages(md, "btc")
     assert all(s.state == "missing" for s in stages)
+
+
+def test_strategy_stages_and_full_build(tmp_path):
+    md = tmp_path / "research" / "manifests"
+    _seed_symbol_manifests(md)
+    sid = "btc_s1_single_factor"
+    _write(md / sid / "generation.json", {"method": "deterministic"})
+    _write(md / sid / "diagnosis.json",
+           {"generated_at": "2026-06-05T00:00:00+00:00",
+            "recommended_action": "proceed"})
+    _write(md / sid / "optimization.json",
+           {"generated_at": "2026-06-06T00:00:00+00:00",
+            "best_params": {}, "best_metrics": {"sharpe": 1.23}})
+    _write(md / "selection.json",
+           {"generated_at": "2026-06-07T00:00:00+00:00",
+            "ranking": [{"strategy_id": sid, "score": 0.72, "selected": True}]})
+
+    full = ps_mod.build_pipeline_status(tmp_path, config_symbols=["btc"])
+    assert full.symbols[0].symbol == "btc"
+    strat = full.symbols[0].strategies[0]
+    assert strat.strategy_id == sid
+    by_id = {s.stage_id: s for s in strat.stages}
+    assert by_id["3"].metric_value == "proceed"
+    assert by_id["4"].metric_value == "1.23"          # best sharpe
+    assert by_id["5"].metric_value == "✓ 0.72"        # selected + score
+    assert all(s.state == "done" for s in strat.stages)
+
+
+def test_strategy_stage_missing_when_no_artifacts(tmp_path):
+    md = tmp_path / "research" / "manifests"
+    _seed_symbol_manifests(md)
+    sid = "btc_s1_single_factor"
+    _write(md / sid / "generation.json", {"method": "deterministic"})
+    full = ps_mod.build_pipeline_status(tmp_path, config_symbols=["btc"])
+    strat = full.symbols[0].strategies[0]
+    assert [s.state for s in strat.stages] == ["missing", "missing", "missing"]

@@ -179,6 +179,79 @@ def build_symbol_stages(md: Path, sym: str) -> list[StageStatus]:
     return _apply_staleness(raws, seed_time=None)
 
 
+def _raw_3(md: Path, sid: str) -> _Raw:
+    p = md / sid / "diagnosis.json"
+    raw = _load_json(p)
+    if raw is None:
+        return _Raw("3", "Backtest+Diag", None, None, None, False)
+    action = raw.get("recommended_action")
+    return _Raw("3", "Backtest+Diag", _artifact_time(p, raw),
+                "action" if action else None, action, True)
+
+
+def _raw_4(md: Path, sid: str) -> _Raw:
+    p = md / sid / "optimization.json"
+    raw = _load_json(p)
+    if raw is None:
+        return _Raw("4", "Optimize", None, None, None, False)
+    metrics = raw.get("best_metrics") or {}
+    sharpe = metrics.get("sharpe")
+    val = f"{sharpe:.2f}" if isinstance(sharpe, (int, float)) else None
+    return _Raw("4", "Optimize", _artifact_time(p, raw),
+                "best sharpe" if val else None, val, True)
+
+
+def _raw_5(md: Path, sid: str, selection: Optional[dict],
+           selection_time: Optional[str]) -> _Raw:
+    if selection is None:
+        return _Raw("5", "Select", None, None, None, False)
+    entry = None
+    for row in selection.get("ranking") or []:
+        if row.get("strategy_id") == sid:
+            entry = row
+            break
+    if entry is None:
+        return _Raw("5", "Select", None, None, None, False)
+    score = entry.get("score")
+    mark = "✓" if entry.get("selected") else "✗"
+    val = f"{mark} {score:.2f}" if isinstance(score, (int, float)) else mark
+    return _Raw("5", "Select", selection_time, "selected", val, True)
+
+
+def build_strategy_pipeline(md: Path, sid: str, seed_time: Optional[str],
+                            selection: Optional[dict],
+                            selection_time: Optional[str]) -> StrategyPipeline:
+    raws = [_raw_3(md, sid), _raw_4(md, sid),
+            _raw_5(md, sid, selection, selection_time)]
+    stages = _apply_staleness(raws, seed_time=None)
+    return StrategyPipeline(strategy_id=sid, stages=stages)
+
+
+def build_pipeline_status(repo_root: Path, config_symbols: list[str]) -> PipelineStatus:
+    md = repo_root / "research" / "manifests"
+    now = datetime.now(tz=timezone.utc).isoformat()
+    if not md.is_dir():
+        return PipelineStatus(generated_at=now, symbols=[])
+
+    sel_p = md / "selection.json"
+    selection = _load_json(sel_p)
+    selection_time = _artifact_time(sel_p, selection) if selection is not None else None
+
+    symbols: list[SymbolPipeline] = []
+    for sym in discover_symbols(md, config_symbols):
+        sym_stages = build_symbol_stages(md, sym)
+        # Seed the strategy chain with this symbol's stage-2 time.
+        stage2 = next((s for s in sym_stages if s.stage_id == "2"), None)
+        seed_time = stage2.generated_at if stage2 else None
+        strategies = [
+            build_strategy_pipeline(md, sid, seed_time, selection, selection_time)
+            for sid in _strategy_ids_for_symbol(md, sym)
+        ]
+        symbols.append(SymbolPipeline(symbol=sym, stages=sym_stages, strategies=strategies))
+
+    return PipelineStatus(generated_at=now, symbols=symbols)
+
+
 def discover_symbols(manifests_dir: Path, config_symbols: list[str]) -> list[str]:
     """Union of config symbols (first, in order) and symbols found on disk."""
     found: set[str] = set()
