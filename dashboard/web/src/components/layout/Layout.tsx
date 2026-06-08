@@ -1,5 +1,5 @@
 import { Outlet, NavLink } from "react-router-dom";
-import { BarChart2, TrendingUp, FlaskConical, Moon, Sun } from "lucide-react";
+import { BarChart2, TrendingUp, FlaskConical, Workflow, Moon, Sun } from "lucide-react";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { cn } from "@/lib/utils";
 
@@ -7,6 +7,7 @@ const NAV = [
   { to: "/", label: "Strategies", icon: BarChart2, end: true },
   { to: "/factors", label: "Factors", icon: TrendingUp, end: false },
   { to: "/testnet", label: "Testnet", icon: FlaskConical, end: false },
+  { to: "/pipeline", label: "Pipeline", icon: Workflow, end: false },
 ];
 
 export function Layout() {
