@@ -72,11 +72,13 @@ class TestRealStrategyRuns:
             assert isinstance(entry, StrategyRunsEntry)
             assert entry.symbol
 
-    def test_all_strategy_ids_have_btc_prefix(self) -> None:
+    def test_all_strategy_ids_have_coin_prefix(self) -> None:
         result = load_strategy_runs()
         for sid in result.entries:
-            assert sid.startswith("btc_"), (
-                f"strategy_id '{sid}' must start with 'btc_' (coin prefix)"
+            coin = sid.split("_", 1)[0]
+            assert coin.isalpha() and coin.islower() and "_" in sid, (
+                f"strategy_id '{sid}' must start with a lowercase coin prefix "
+                f"like 'btc_'/'eth_'/'sol_'"
             )
 
     def test_all_entries_are_strategy_runs_entry(self) -> None:
@@ -86,11 +88,12 @@ class TestRealStrategyRuns:
                 f"Entry for '{sid}' must be a StrategyRunsEntry"
             )
 
-    def test_all_entries_have_btc_usdt_swap_symbol(self) -> None:
+    def test_all_entries_have_usdt_swap_symbol(self) -> None:
         result = load_strategy_runs()
         for sid, entry in result.entries.items():
-            assert entry.symbol == "BTC-USDT-SWAP", (
-                f"Entry '{sid}' symbol must be 'BTC-USDT-SWAP', got '{entry.symbol}'"
+            assert entry.symbol.endswith("-USDT-SWAP") and entry.symbol.isupper(), (
+                f"Entry '{sid}' symbol must be a <COIN>-USDT-SWAP ticker, "
+                f"got '{entry.symbol}'"
             )
 
     def test_spec_yaml_paths_point_to_existing_files(self) -> None:
@@ -132,25 +135,26 @@ class TestRealStrategyRuns:
             )
 
     def test_run_names_carry_coin_prefix(self) -> None:
-        """All non-null run names must start with btc_ (coin prefix convention)."""
+        """All non-null run names must start with their entry's coin prefix."""
         result = load_strategy_runs()
         for sid, entry in result.entries.items():
+            prefix = sid.split("_", 1)[0] + "_"  # e.g. "btc_", "eth_", "sol_"
             for run_name in [entry.base_run, entry.sweep_run]:
                 if run_name is not None:
-                    assert run_name.startswith("btc_"), (
-                        f"Entry '{sid}': run name '{run_name}' must start with 'btc_'"
+                    assert run_name.startswith(prefix), (
+                        f"Entry '{sid}': run name '{run_name}' must start with '{prefix}'"
                     )
             for label, run_name in entry.regime_runs.items():
-                assert run_name.startswith("btc_"), (
-                    f"Entry '{sid}': regime_runs['{label}'] = '{run_name}' must start with 'btc_'"
+                assert run_name.startswith(prefix), (
+                    f"Entry '{sid}': regime_runs['{label}'] = '{run_name}' must start with '{prefix}'"
                 )
             for label, run_name in entry.stress_runs.items():
-                assert run_name.startswith("btc_"), (
-                    f"Entry '{sid}': stress_runs['{label}'] = '{run_name}' must start with 'btc_'"
+                assert run_name.startswith(prefix), (
+                    f"Entry '{sid}': stress_runs['{label}'] = '{run_name}' must start with '{prefix}'"
                 )
             for run_name in entry.oos_runs:
-                assert run_name.startswith("btc_"), (
-                    f"Entry '{sid}': oos_runs contains '{run_name}' which must start with 'btc_'"
+                assert run_name.startswith(prefix), (
+                    f"Entry '{sid}': oos_runs contains '{run_name}' which must start with '{prefix}'"
                 )
 
 

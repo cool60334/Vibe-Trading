@@ -1111,6 +1111,15 @@ def _write_factor_manifest(manifests_dir: Path, sym_name: str, factors: list[dic
 class TestStage2MultiEmit:
     """Task 3: _generate_for_symbol_multi — archetype fan-out and swarm demotion."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_strategy_runs(self, tmp_path, monkeypatch):
+        """Belt-and-suspenders: never let these tests mutate the repo's real
+        research/strategy_runs.json via register_strategy's default path."""
+        import pipeline.strategy_runs as _sr
+        monkeypatch.setattr(
+            _sr, "_DEFAULT_JSON_PATH", tmp_path / "_default_strategy_runs.json"
+        )
+
     # Two mixed-sign factors -> pick_archetypes returns 3 plans:
     # single_factor + trend_with_gate + consensus_all
     _MIXED_FACTORS = [
@@ -1134,6 +1143,31 @@ class TestStage2MultiEmit:
 
         mock_swarm.assert_not_called()
         assert len(results) > 0
+
+    def test_multi_emit_registration_uses_given_runs_path(self, tmp_path: Path):
+        """register_strategy must write to the provided runs_path, not the repo file.
+
+        Regression: _generate_for_symbol_multi called register_strategy with the
+        default path, so every test run polluted research/strategy_runs.json with
+        dangling entries whose YAMLs lived only under tmp_path.
+        """
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        runs_path = tmp_path / "strategy_runs.json"
+        runs_path.write_text("{}", encoding="utf-8")
+        _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        results = _generate_for_symbol_multi(
+            sym, strategies_dir, manifests_dir, use_swarm=False, runs_path=runs_path,
+        )
+
+        registered = json.loads(runs_path.read_text(encoding="utf-8"))
+        assert results, "expected at least one emitted strategy"
+        for gen in results:
+            assert gen.strategy_id in registered, (
+                f"{gen.strategy_id} not registered in the provided runs_path"
+            )
 
     def test_default_run_emits_all_routed_archetypes(self, tmp_path: Path):
         """N strategies returned = len(pick_archetypes(usable_factors))."""

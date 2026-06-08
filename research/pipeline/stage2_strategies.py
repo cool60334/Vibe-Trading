@@ -1120,6 +1120,7 @@ def _generate_for_symbol_multi(
     manifests_dir: Path,
     use_swarm: bool = False,
     seq_start: int = 1,
+    runs_path: Path | str | None = None,
 ) -> list[GeneratedStrategy]:
     """Run stage-2 for one symbol and emit one strategy per archetype plan.
 
@@ -1247,11 +1248,13 @@ def _generate_for_symbol_multi(
         )
         print(f"[stage2] {sym.name}: wrote {gen_path}")
 
-        # Auto-register in strategy_runs.json (idempotent).
+        # Auto-register in strategy_runs.json (idempotent). runs_path lets callers
+        # (and tests) redirect the registry; defaults to the real repo file in prod.
         register_strategy(
             strategy_id=strategy_id,
             symbol=sym.okx_swap,
             spec_yaml=f"research/strategies/strategy_{strategy_id}.yaml",
+            path=runs_path,
         )
 
         generated.append(GeneratedStrategy(
