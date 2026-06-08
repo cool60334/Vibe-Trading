@@ -84,6 +84,101 @@ def _apply_staleness(raws: list["_Raw"], seed_time: Optional[str]) -> list[Stage
     return out
 
 
+def _raw_0a(md: Path, sym: str) -> _Raw:
+    meta_p = md / f"features_{sym}.meta.json"
+    meta = _load_json(meta_p)
+    if meta is None:
+        return _Raw("0a", "Features/Evidence", None, None, None, False)
+    gen = _artifact_time(meta_p, meta)
+    ev = _load_json(md / f"evidence_{sym}.json")
+    if ev and isinstance(ev.get("evidence"), list) and ev["evidence"]:
+        top = 0.0
+        for e in ev["evidence"]:
+            for v in (e.get("ic_by_horizon") or {}).values():
+                if isinstance(v, (int, float)):
+                    top = max(top, abs(v))
+        return _Raw("0a", "Features/Evidence", gen, "top|IC|", f"{top:.3f}", True)
+    n = len(meta.get("feature_names") or [])
+    return _Raw("0a", "Features/Evidence", gen, "features", str(n), True)
+
+
+def _raw_0(md: Path, sym: str) -> _Raw:
+    p = md / f"candidates_{sym}.json"
+    raw = _load_json(p)
+    if raw is None:
+        return _Raw("0", "Discovery", None, None, None, False)
+    n = len(raw.get("candidates") or [])
+    return _Raw("0", "Discovery", _artifact_time(p, raw), "candidates", str(n), True)
+
+
+def _raw_1(md: Path, sym: str) -> _Raw:
+    p = md / f"factor_{sym}.json"
+    raw = _load_json(p)
+    if raw is None:
+        return _Raw("1", "Factors", None, None, None, False)
+    counts = {"single_use": 0, "ensemble_only": 0, "reject": 0}
+    for f in raw.get("factors") or []:
+        v = f.get("verdict")
+        if v in counts:
+            counts[v] += 1
+    val = f"S{counts['single_use']} E{counts['ensemble_only']} R{counts['reject']}"
+    return _Raw("1", "Factors", _artifact_time(p, raw), "verdicts", val, True)
+
+
+def _raw_2(md: Path, sym: str) -> _Raw:
+    """Count strategies emitted for this symbol (dirs with generation.json,
+    id prefixed ``<sym>_``). Time = newest generation.json among them."""
+    ids = _strategy_ids_for_symbol(md, sym)
+    times: list[str] = []
+    for sid in ids:
+        gp = md / sid / "generation.json"
+        raw = _load_json(gp)
+        if raw is not None:
+            t = _artifact_time(gp, raw)
+            if t:
+                times.append(t)
+    if not times:
+        return _Raw("2", "Strategies", None, None, None, False)
+    newest = max(times, key=lambda s: _parse_iso(s) or datetime.min.replace(tzinfo=timezone.utc))
+    return _Raw("2", "Strategies", newest, "emitted", str(len(times)), True)
+
+
+def _raw_25(md: Path, sym: str) -> _Raw:
+    p = md / f"regime_{sym}.json"
+    raw = _load_json(p)
+    if raw is None:
+        return _Raw("2.5", "Regime", None, None, None, False)
+    breakdown = raw.get("breakdown") or []
+    dominant = None
+    if breakdown:
+        tally: dict[str, int] = {}
+        for row in breakdown:
+            lbl = row.get("regime")
+            if lbl:
+                tally[lbl] = tally.get(lbl, 0) + 1
+        if tally:
+            dominant = max(tally, key=lambda k: tally[k])
+    return _Raw("2.5", "Regime", _artifact_time(p, raw),
+                "regime" if dominant else None, dominant, True)
+
+
+def _strategy_ids_for_symbol(md: Path, sym: str) -> list[str]:
+    """Strategy manifest dirs whose id is prefixed ``<sym>_`` (e.g. btc_s1_...)."""
+    out: list[str] = []
+    if not md.is_dir():
+        return out
+    for child in md.iterdir():
+        if child.is_dir() and child.name.startswith(f"{sym}_"):
+            out.append(child.name)
+    return sorted(out)
+
+
+def build_symbol_stages(md: Path, sym: str) -> list[StageStatus]:
+    raws = [_raw_0a(md, sym), _raw_0(md, sym), _raw_1(md, sym),
+            _raw_2(md, sym), _raw_25(md, sym)]
+    return _apply_staleness(raws, seed_time=None)
+
+
 def discover_symbols(manifests_dir: Path, config_symbols: list[str]) -> list[str]:
     """Union of config symbols (first, in order) and symbols found on disk."""
     found: set[str] = set()

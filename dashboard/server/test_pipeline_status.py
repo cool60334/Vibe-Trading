@@ -80,3 +80,45 @@ def test_apply_staleness_seed_time_from_upstream_chain():
     raws = [ps_mod._Raw("3", "Diag", "2026-01-15T00:00:00+00:00", None, None, True)]
     out = ps_mod._apply_staleness(raws, seed_time=seed)
     assert out[0].state == "stale"
+
+
+def _seed_symbol_manifests(md: Path):
+    md.mkdir(parents=True, exist_ok=True)
+    _write(md / "features_btc.meta.json",
+           {"generated_at": "2026-06-01T00:00:00+00:00",
+            "feature_names": ["rsi_14", "funding_z"]})
+    _write(md / "evidence_btc.json",
+           {"evidence": [{"ic_by_horizon": {"8": 0.088, "72": -0.02}}]})
+    _write(md / "candidates_btc.json",
+           {"generated_at": "2026-06-02T00:00:00+00:00",
+            "candidates": [{"feature_key": "funding_z"}, {"feature_key": "stablecoin_supply_z"}]})
+    _write(md / "factor_btc.json",
+           {"generated_at": "2026-06-03T00:00:00+00:00",
+            "factors": [{"verdict": "single_use"}, {"verdict": "ensemble_only"},
+                        {"verdict": "reject"}]})
+    _write(md / "regime_btc.json",
+           {"generated_at": "2026-06-08T00:00:00+00:00",
+            "breakdown": [{"regime": "bull"}, {"regime": "bull"}, {"regime": "bear"}]})
+
+
+def test_symbol_stages_metrics_and_states(tmp_path):
+    md = tmp_path / "research" / "manifests"
+    _seed_symbol_manifests(md)
+    # stage 2 generation.json for one btc strategy
+    _write(md / "btc_s1_single_factor" / "generation.json", {"method": "deterministic", "generated_at": "2026-06-07T00:00:00+00:00"})
+
+    stages = ps_mod.build_symbol_stages(md, "btc")
+    by_id = {s.stage_id: s for s in stages}
+    assert by_id["0a"].metric_label == "top|IC|" and by_id["0a"].metric_value == "0.088"
+    assert by_id["0"].metric_value == "2"                # 2 candidates
+    assert by_id["1"].metric_value == "S1 E1 R1"         # verdict counts
+    assert by_id["2"].metric_value == "1"                # 1 strategy emitted
+    assert by_id["2.5"].metric_value == "bull"           # dominant regime
+    assert all(s.state == "done" for s in stages)        # timestamps ascending
+
+
+def test_symbol_stages_missing(tmp_path):
+    md = tmp_path / "research" / "manifests"
+    md.mkdir(parents=True)
+    stages = ps_mod.build_symbol_stages(md, "btc")
+    assert all(s.state == "missing" for s in stages)
