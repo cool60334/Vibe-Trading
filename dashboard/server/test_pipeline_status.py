@@ -128,15 +128,17 @@ def test_strategy_stages_and_full_build(tmp_path):
     md = tmp_path / "research" / "manifests"
     _seed_symbol_manifests(md)
     sid = "btc_s1_single_factor"
-    _write(md / sid / "generation.json", {"method": "deterministic"})
+    # Give strategy artifacts timestamps newer than symbol stage-2 (which will have mtime ~now)
+    _write(md / sid / "generation.json",
+           {"method": "deterministic", "generated_at": "2026-06-09T10:00:00+00:00"})
     _write(md / sid / "diagnosis.json",
-           {"generated_at": "2026-06-05T00:00:00+00:00",
+           {"generated_at": "2026-06-09T11:00:00+00:00",
             "recommended_action": "proceed"})
     _write(md / sid / "optimization.json",
-           {"generated_at": "2026-06-06T00:00:00+00:00",
+           {"generated_at": "2026-06-09T12:00:00+00:00",
             "best_params": {}, "best_metrics": {"sharpe": 1.23}})
     _write(md / "selection.json",
-           {"generated_at": "2026-06-07T00:00:00+00:00",
+           {"generated_at": "2026-06-09T13:00:00+00:00",
             "ranking": [{"strategy_id": sid, "score": 0.72, "selected": True}]})
 
     full = ps_mod.build_pipeline_status(tmp_path, config_symbols=["btc"])
@@ -158,3 +160,20 @@ def test_strategy_stage_missing_when_no_artifacts(tmp_path):
     full = ps_mod.build_pipeline_status(tmp_path, config_symbols=["btc"])
     strat = full.symbols[0].strategies[0]
     assert [s.state for s in strat.stages] == ["missing", "missing", "missing"]
+
+
+def test_strategy_stage_stale_when_older_than_seed(tmp_path):
+    """Strategy stage older than symbol's stage-2 must be stale."""
+    md = tmp_path / "research" / "manifests"
+    _seed_symbol_manifests(md)
+    sid = "btc_s1_single_factor"
+    _write(md / sid / "generation.json", {"generated_at": "2026-06-03T12:00:00+00:00"})
+    # Diagnosis older than generation (stage-2 seed) -> stale
+    _write(md / sid / "diagnosis.json",
+           {"generated_at": "2026-06-02T00:00:00+00:00",
+            "recommended_action": "proceed"})
+
+    full = ps_mod.build_pipeline_status(tmp_path, config_symbols=["btc"])
+    strat = full.symbols[0].strategies[0]
+    by_id = {s.stage_id: s for s in strat.stages}
+    assert by_id["3"].state == "stale"

@@ -223,7 +223,7 @@ def build_strategy_pipeline(md: Path, sid: str, seed_time: Optional[str],
                             selection_time: Optional[str]) -> StrategyPipeline:
     raws = [_raw_3(md, sid), _raw_4(md, sid),
             _raw_5(md, sid, selection, selection_time)]
-    stages = _apply_staleness(raws, seed_time=None)
+    stages = _apply_staleness(raws, seed_time=seed_time)
     return StrategyPipeline(strategy_id=sid, stages=stages)
 
 
