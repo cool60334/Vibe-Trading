@@ -744,3 +744,40 @@ class StrategySpec(_Manifest):
     entry_long: Optional[EntryBlock] = None
     entry_short: Optional[EntryBlock] = None
     exit_rules: List[ExitRule]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline status (A1 read-only status page)
+# ---------------------------------------------------------------------------
+
+#: Tri-state for a pipeline stage on the status page.
+StageState = Literal["done", "stale", "missing"]
+
+
+class StageStatus(BaseModel):
+    """State of one pipeline stage for one symbol or strategy."""
+    stage_id: str            # "0a","0","1","2","2.5","3","4","5"
+    label: str
+    state: StageState
+    generated_at: Optional[str] = None   # ISO; None when missing
+    metric_label: Optional[str] = None   # e.g. "top|IC|"
+    metric_value: Optional[str] = None   # pre-formatted display string
+
+
+class StrategyPipeline(BaseModel):
+    """Per-strategy tail of the pipeline (stages 3 diagnose, 4, 5)."""
+    strategy_id: str
+    stages: List[StageStatus]
+
+
+class SymbolPipeline(BaseModel):
+    """Per-symbol pipeline: symbol-level stages + its strategies."""
+    symbol: str
+    stages: List[StageStatus]          # 0a, 0, 1, 2, 2.5
+    strategies: List[StrategyPipeline]
+
+
+class PipelineStatus(BaseModel):
+    """Whole-pipeline status snapshot."""
+    generated_at: str                  # server "now", ISO
+    symbols: List[SymbolPipeline]
