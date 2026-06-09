@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 import artifacts
 import parsers
+import pipeline_jobs
 import pipeline_status
 import state as state_module
 import supervisor as supervisor_module
@@ -220,6 +221,41 @@ def _config_symbols() -> list[str]:
 @app.get("/api/pipeline/status")
 def get_pipeline_status():
     return pipeline_status.build_pipeline_status(REPO_ROOT, _config_symbols())
+
+
+class PipelineRunRequest(BaseModel):
+    kind: str
+    stage: Optional[str] = None
+
+
+@app.post("/api/pipeline/run", status_code=201)
+def run_pipeline(body: PipelineRunRequest) -> dict:
+    try:
+        return pipeline_jobs.create_job(REPO_ROOT, body.kind, body.stage)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/pipeline/jobs")
+def list_pipeline_jobs(limit: int = 50) -> list[dict]:
+    return pipeline_jobs.list_jobs(REPO_ROOT, limit)
+
+
+@app.get("/api/pipeline/jobs/{job_id}")
+def get_pipeline_job(job_id: str) -> dict:
+    job = pipeline_jobs.read_job(REPO_ROOT, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    job["log_tail"] = pipeline_jobs.tail_log(REPO_ROOT, job_id)
+    return job
+
+
+@app.post("/api/pipeline/jobs/{job_id}/cancel")
+def cancel_pipeline_job(job_id: str) -> dict:
+    job = pipeline_jobs.request_cancel(REPO_ROOT, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
 
 
 # ---------------------------------------------------------------------------

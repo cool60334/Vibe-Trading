@@ -95,3 +95,47 @@ def test_request_cancel_running_sets_flag_only(tmp_path):
 
 def test_request_cancel_missing_returns_none(tmp_path):
     assert pj.request_cancel(tmp_path, "missing") is None
+
+
+import importlib
+from fastapi.testclient import TestClient
+
+
+def _client(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    import main as main_module
+    importlib.reload(main_module)
+    return TestClient(main_module.app), main_module
+
+
+def test_endpoint_run_creates_queued_job(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    r = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "1"})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["status"] == "queued" and body["stage"] == "1"
+    # listed
+    jobs = c.get("/api/pipeline/jobs").json()
+    assert any(j["job_id"] == body["job_id"] for j in jobs)
+
+
+def test_endpoint_run_rejects_bad_stage(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    r = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "99"})
+    assert r.status_code == 400
+
+
+def test_endpoint_get_job_includes_log_tail(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    jid = c.post("/api/pipeline/run", json={"kind": "pipeline"}).json()["job_id"]
+    pj.log_path(tmp_path, jid).write_text("hello-log", encoding="utf-8")
+    body = c.get(f"/api/pipeline/jobs/{jid}").json()
+    assert body["log_tail"] == "hello-log"
+    assert c.get("/api/pipeline/jobs/nope").status_code == 404
+
+
+def test_endpoint_cancel(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    jid = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "0a"}).json()["job_id"]
+    body = c.post(f"/api/pipeline/jobs/{jid}/cancel").json()
+    assert body["status"] == "canceled"
