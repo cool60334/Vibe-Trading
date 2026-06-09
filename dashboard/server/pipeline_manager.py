@@ -28,12 +28,17 @@ logging.basicConfig(
 logger = logging.getLogger("pipeline.manager")
 
 
-def _default_runner(repo_root: Path, stage_id: str, log_fp) -> int:
+def _default_runner(repo_root: Path, stage_id: str, symbol, log_fp) -> int:
     """Run one stage as ``python -m research.pipeline.<module>``; stdout+stderr
-    stream into the job's log file. Returns the process exit code."""
+    stream into the job's log file. If ``symbol`` is set, scope it via
+    RESEARCH_ONLY_SYMBOL. Returns the process exit code."""
     argv = [sys.executable, *pj.stage_command(stage_id)]
     env = {**os.environ}
     env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
+    if symbol:
+        env["RESEARCH_ONLY_SYMBOL"] = symbol
+    else:
+        env.pop("RESEARCH_ONLY_SYMBOL", None)
     proc = subprocess.run(
         argv, cwd=str(repo_root), env=env,
         stdout=log_fp, stderr=subprocess.STDOUT, text=True,
@@ -88,7 +93,12 @@ class Manager:
             with open(lp, "a", encoding="utf-8") as fp:
                 fp.write(f"\n===== stage {step['stage']} @ {pj._now()} =====\n")
                 fp.flush()
-                rc = self._runner(self.repo_root, step["stage"], fp)
+                step_symbol = (
+                    job.get("symbol")
+                    if job.get("symbol") and pj.stage_uses_symbol(step["stage"])
+                    else None
+                )
+                rc = self._runner(self.repo_root, step["stage"], step_symbol, fp)
 
             step["exit_code"] = rc
             step["status"] = "succeeded" if rc == 0 else "failed"
