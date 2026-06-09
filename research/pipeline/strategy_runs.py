@@ -128,7 +128,7 @@ def _filter_entries_by_env(entries: dict) -> dict:
     Match on the entry's short symbol (``BTC-USDT-SWAP`` -> ``btc``). Unset ->
     unchanged. No match -> empty map (stages handle "no strategies" gracefully).
     """
-    only = os.environ.get("RESEARCH_ONLY_SYMBOL", "").strip()
+    only = os.environ.get("RESEARCH_ONLY_SYMBOL", "").strip().lower()
     if not only:
         return entries
     return {
