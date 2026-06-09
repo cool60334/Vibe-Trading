@@ -121,3 +121,29 @@ def create_job(repo_root, kind: str, stage: Optional[str] = None) -> dict:
     }
     write_job(repo_root, job)
     return job
+
+
+def log_path(repo_root, job_id: str) -> Path:
+    return jobs_dir(repo_root) / job_id / "log.txt"
+
+
+def tail_log(repo_root, job_id: str, lines: int = 200) -> str:
+    try:
+        text = log_path(repo_root, job_id).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(text.splitlines()[-lines:])
+
+
+def request_cancel(repo_root, job_id: str) -> Optional[dict]:
+    """Flag a job for cancellation. A queued job is canceled immediately; a
+    running job only gets the flag (honored between steps by the manager)."""
+    job = read_job(repo_root, job_id)
+    if job is None:
+        return None
+    if job["status"] == "queued":
+        job["status"] = "canceled"
+        job["finished_at"] = _now()
+    job["cancel"] = True
+    write_job(repo_root, job)
+    return job

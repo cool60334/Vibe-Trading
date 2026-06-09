@@ -66,3 +66,32 @@ def test_read_and_list_jobs_newest_first(tmp_path):
     assert ids[0] == b["job_id"]            # newest first
     assert pj.read_job(tmp_path, a["job_id"])["stage"] == "0a"
     assert pj.read_job(tmp_path, "nope") is None
+
+
+def test_tail_log_returns_last_lines(tmp_path):
+    job = pj.create_job(tmp_path, kind="stage", stage="1")
+    lp = pj.log_path(tmp_path, job["job_id"])
+    lp.parent.mkdir(parents=True, exist_ok=True)
+    lp.write_text("\n".join(f"line{i}" for i in range(10)), encoding="utf-8")
+    assert pj.tail_log(tmp_path, job["job_id"], lines=3) == "line7\nline8\nline9"
+    assert pj.tail_log(tmp_path, "missing") == ""
+
+
+def test_request_cancel_queued_marks_canceled(tmp_path):
+    job = pj.create_job(tmp_path, kind="stage", stage="1")
+    out = pj.request_cancel(tmp_path, job["job_id"])
+    assert out["status"] == "canceled"
+    assert out["cancel"] is True
+
+
+def test_request_cancel_running_sets_flag_only(tmp_path):
+    job = pj.create_job(tmp_path, kind="pipeline")
+    job["status"] = "running"
+    pj.write_job(tmp_path, job)
+    out = pj.request_cancel(tmp_path, job["job_id"])
+    assert out["status"] == "running"   # not killed mid-run
+    assert out["cancel"] is True
+
+
+def test_request_cancel_missing_returns_none(tmp_path):
+    assert pj.request_cancel(tmp_path, "missing") is None
