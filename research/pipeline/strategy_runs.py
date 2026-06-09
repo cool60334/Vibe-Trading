@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import types
 from pathlib import Path
 from typing import Mapping
@@ -117,6 +118,23 @@ class StrategyRunsMap:
     strategy_id follows the convention: <coin>_s<N>_<archetype>
     e.g. 'btc_s1_multifactor_contrarian'.
     """
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _filter_entries_by_env(entries: dict) -> dict:
+    """If RESEARCH_ONLY_SYMBOL is set, keep only entries for that symbol.
+
+    Match on the entry's short symbol (``BTC-USDT-SWAP`` -> ``btc``). Unset ->
+    unchanged. No match -> empty map (stages handle "no strategies" gracefully).
+    """
+    only = os.environ.get("RESEARCH_ONLY_SYMBOL", "").strip()
+    if not only:
+        return entries
+    return {
+        sid: e for sid, e in entries.items()
+        if str(e.symbol).split("-")[0].lower() == only
+    }
 
 
 # ─── Loader ──────────────────────────────────────────────────────────────────
@@ -279,7 +297,7 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
             walk_forward_runs=tuple(wf_runs),
         )
 
-    return StrategyRunsMap(entries=types.MappingProxyType(entries))
+    return StrategyRunsMap(entries=types.MappingProxyType(_filter_entries_by_env(entries)))
 
 
 # ─── Writer ──────────────────────────────────────────────────────────────────

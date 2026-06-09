@@ -815,3 +815,26 @@ class TestRegisterStrategy:
         assert entry.regime_runs == {}
         assert entry.oos_runs == ()
         assert entry.walk_forward_runs == ()
+
+
+# ─── Unit: RESEARCH_ONLY_SYMBOL env-var filtering ────────────────────────────
+
+def test_load_strategy_runs_filters_to_env_symbol(tmp_path, monkeypatch):
+    payload = {
+        "btc_s1_x": {"symbol": "BTC-USDT-SWAP", "spec_yaml": "research/strategies/strategy_S1.yaml",
+                      "base_run": "btc_s1_x_base", "regime_runs": {}, "stress_runs": {},
+                      "oos_runs": [], "sweep_run": None, "walk_forward_runs": []},
+        "eth_s1_y": {"symbol": "ETH-USDT-SWAP", "spec_yaml": "research/strategies/strategy_S1.yaml",
+                      "base_run": "eth_s1_y_base", "regime_runs": {}, "stress_runs": {},
+                      "oos_runs": [], "sweep_run": None, "walk_forward_runs": []},
+    }
+    p = tmp_path / "strategy_runs.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setenv("RESEARCH_ONLY_SYMBOL", "btc")
+    result = load_strategy_runs(p)
+    assert list(result.entries.keys()) == ["btc_s1_x"]
+
+    monkeypatch.delenv("RESEARCH_ONLY_SYMBOL", raising=False)
+    result_all = load_strategy_runs(p)
+    assert set(result_all.entries.keys()) == {"btc_s1_x", "eth_s1_y"}
