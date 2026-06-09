@@ -473,9 +473,8 @@ class TestDuplicateSymbols:
 # ─── Unit: RESEARCH_ONLY_SYMBOL env var filtering ────────────────────────────
 
 import os
-from pathlib import Path as _Path
 
-_REAL_CONFIG = _Path(__file__).resolve().parents[1] / "research_config.yaml"
+_REAL_CONFIG = Path(__file__).resolve().parents[1] / "research_config.yaml"
 
 
 def test_load_config_filters_to_env_symbol(monkeypatch):
