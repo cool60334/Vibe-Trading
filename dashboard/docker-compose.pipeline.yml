@@ -1,0 +1,34 @@
+# Standalone pipeline job runner — runs INDEPENDENTLY of the dashboard.
+#
+# pipeline_manager watches runs/pipeline_jobs/<id>/job.json on the shared mount
+# and runs queued jobs (one at a time) as `python -m research.pipeline.<stage>`.
+# The dashboard server only WRITES queued jobs, so deploying/restarting the
+# dashboard never kills a running job.
+#
+# UNLIKE the trader/dashboard, this mounts the repo READ-WRITE: pipeline stages
+# write research/manifests, research/strategies, strategy_runs.json and runs/.
+#
+# Lifecycle (kept separate on purpose):
+#   start :  docker compose -f docker-compose.pipeline.yml up -d --build
+#   logs  :  docker compose -f docker-compose.pipeline.yml logs -f
+#   stop  :  docker compose -f docker-compose.pipeline.yml down
+#
+# Distinct project name so `--remove-orphans` on another project can't delete it.
+name: vibe-pipeline
+
+services:
+  pipeline-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    working_dir: /app/server
+    command: ["python", "-m", "pipeline_manager", "--repo-root", "/repo", "--scan-interval", "3"]
+    environment:
+      REPO_ROOT: /repo
+      # Deterministic pipeline: no swarm/LLM. Stage 3-diag uses its rule-based fallback.
+      RESEARCH_STAGE2_USE_SWARM: "0"
+    volumes:
+      # Repo mounted READ-WRITE — stages write manifests/strategies/strategy_runs.json.
+      - ..:/repo
+      - ../runs:/repo/runs
+    restart: unless-stopped
