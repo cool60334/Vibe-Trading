@@ -256,6 +256,67 @@ class TestConsensusAll:
 
 
 # ---------------------------------------------------------------------------
+# 4b. n==2 mixed-sign dedup: consensus_all ≡ trend_with_gate → drop consensus_all
+# ---------------------------------------------------------------------------
+
+
+class TestN2MixedSignDedup:
+    """With exactly 2 mixed-sign factors, consensus_all collapses to the same
+    trading logic as trend_with_gate (btc_s2 ≡ btc_s3). Only trend_with_gate
+    should be emitted; consensus_all is deduped away."""
+
+    def test_n2_mixed_sign_drops_consensus_all(self):
+        factors = [
+            _make_factor("momentum", ic_by_horizon={24: 0.09}),   # positive → trend
+            _make_factor("funding",  ic_by_horizon={24: -0.07}),  # negative → gate
+        ]
+        plans = pick_archetypes(factors)
+
+        archetypes = [p.archetype for p in plans]
+        assert "trend_with_gate" in archetypes
+        assert "consensus_all" not in archetypes, (
+            "n==2 mixed-sign consensus_all duplicates trend_with_gate; "
+            "it must be deduped"
+        )
+
+    def test_n2_mixed_sign_emits_exactly_two_plans(self):
+        """single_factor + trend_with_gate only — no redundant third plan."""
+        factors = [
+            _make_factor("momentum", ic_by_horizon={24: 0.09}),
+            _make_factor("funding",  ic_by_horizon={24: -0.07}),
+        ]
+        plans = pick_archetypes(factors)
+        assert [p.archetype for p in plans] == ["single_factor", "trend_with_gate"]
+
+    def test_n2_same_sign_keeps_consensus_all(self):
+        """When trend_with_gate does NOT fire (same sign), consensus_all is the
+        only 2-factor plan and must be retained."""
+        factors = [
+            _make_factor("f1", ic_by_horizon={24: 0.08}),
+            _make_factor("f2", ic_by_horizon={24: 0.06}),
+        ]
+        plans = pick_archetypes(factors)
+
+        archetypes = [p.archetype for p in plans]
+        assert "trend_with_gate" not in archetypes
+        assert "consensus_all" in archetypes
+
+    def test_n3_mixed_sign_keeps_both(self):
+        """n==3 consensus_all (logic=any over 3 factors) is distinct from
+        trend_with_gate (2 of 3 factors) — both stay."""
+        factors = [
+            _make_factor("f1", ic_by_horizon={24: 0.10}),
+            _make_factor("f2", ic_by_horizon={24: 0.06}),
+            _make_factor("f3", ic_by_horizon={24: -0.07}),
+        ]
+        plans = pick_archetypes(factors)
+
+        archetypes = [p.archetype for p in plans]
+        assert "trend_with_gate" in archetypes
+        assert "consensus_all" in archetypes
+
+
+# ---------------------------------------------------------------------------
 # 5. Result capped at 3 plans total
 # ---------------------------------------------------------------------------
 

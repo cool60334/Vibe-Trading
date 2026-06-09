@@ -228,7 +228,16 @@ def pick_archetypes(factors: Sequence[Any]) -> list[ArchetypePlan]:
 
     # Rule 3 — consensus_all (requires 2 ≤ n ≤ 3)
     ca = _build_consensus_all(factors)
-    if ca is not None:
+    # Dedup: with exactly 2 mixed-sign factors, consensus_all collapses to the
+    # SAME trading logic as trend_with_gate. Stage 2 builds entry conditions per
+    # factor purely from each factor's IC sign (see stage2_strategies._entry_condition),
+    # so a 2-factor consensus AND = the trend>=80 AND gate<=20 pair that
+    # trend_with_gate emits — only the archetype label differs. Emitting both
+    # produces two byte-identical strategies (e.g. btc_s2 ≡ btc_s3) that waste a
+    # stage-3/4 backtest each. When trend_with_gate already fired for n == 2,
+    # drop consensus_all. (n == 3 consensus_all uses logic=any over all 3 factors
+    # while trend_with_gate uses only 2, so it stays distinct.)
+    if ca is not None and not (len(factors) == 2 and twg is not None):
         plans.append(ca)
 
     # Hard cap (no-op today; guards against future archetype additions)
