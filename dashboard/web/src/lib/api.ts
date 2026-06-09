@@ -341,6 +341,36 @@ export interface PipelineStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Pipeline jobs — A2 run/jobs/cancel
+// ---------------------------------------------------------------------------
+
+export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
+
+export interface JobStep {
+  stage: string;
+  status: "pending" | "running" | "succeeded" | "failed" | "skipped";
+  exit_code: number | null;
+}
+
+export interface PipelineJob {
+  job_id: string;
+  kind: "stage" | "pipeline";
+  stage: string | null;
+  status: JobStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  steps: JobStep[];
+  exit_code: number | null;
+  error: string | null;
+  cancel: boolean;
+}
+
+export interface PipelineJobDetail extends PipelineJob {
+  log_tail: string;
+}
+
+// ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
 
@@ -394,4 +424,20 @@ export const api = {
   traderProcess: (testnetId: string, strategyId: string): Promise<{ running: boolean; pid: number | null }> =>
     get(`/testnet/${testnetId}/process?strategy_id=${encodeURIComponent(strategyId)}`),
   getPipelineStatus: () => get<PipelineStatus>("/pipeline/status"),
+  runPipeline: (body: { kind: "stage" | "pipeline"; stage?: string }): Promise<PipelineJob> =>
+    fetch(`${BASE}/pipeline/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json();
+    }),
+  listPipelineJobs: () => get<PipelineJob[]>("/pipeline/jobs"),
+  getPipelineJob: (id: string) => get<PipelineJobDetail>(`/pipeline/jobs/${id}`),
+  cancelPipelineJob: (id: string): Promise<PipelineJob> =>
+    fetch(`${BASE}/pipeline/jobs/${id}/cancel`, { method: "POST" }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json();
+    }),
 };
