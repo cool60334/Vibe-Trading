@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -215,6 +218,7 @@ def _config_symbols() -> list[str]:
                 out.append(str(name))
         return out
     except Exception:
+        logger.warning("_config_symbols: failed to read research_config.yaml", exc_info=True)
         return []
 
 
