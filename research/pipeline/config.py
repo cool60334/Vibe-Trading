@@ -20,6 +20,7 @@ Usage
 from __future__ import annotations
 
 import dataclasses
+import os
 from pathlib import Path
 
 import yaml
@@ -103,6 +104,26 @@ class ResearchConfig:
 _REQUIRED_TOP_LEVEL = {"symbols", "period", "interval", "data_source", "engine", "fees", "horizons_h"}
 _REQUIRED_SYMBOL_KEYS = {"name", "okx_swap", "ccxt_bybit"}
 _REQUIRED_FEE_KEYS = {"maker_rate", "taker_rate", "slippage"}
+
+
+# ─── Symbol filter ───────────────────────────────────────────────────────────
+
+def _apply_symbol_filter(cfg: ResearchConfig) -> ResearchConfig:
+    """If RESEARCH_ONLY_SYMBOL is set, return a copy with symbols filtered to it.
+
+    Lets the dashboard run the pipeline for a single symbol without per-CLI flags.
+    Unset -> unchanged (all symbols). Unknown -> ValueError listing valid names.
+    """
+    only = os.environ.get("RESEARCH_ONLY_SYMBOL", "").strip()
+    if not only:
+        return cfg
+    matches = [s for s in cfg.symbols if s.name == only]
+    if not matches:
+        valid = [s.name for s in cfg.symbols]
+        raise ValueError(
+            f"RESEARCH_ONLY_SYMBOL={only!r} matches no config symbol; valid: {valid}"
+        )
+    return dataclasses.replace(cfg, symbols=tuple(matches))
 
 
 # ─── Loader ──────────────────────────────────────────────────────────────────
@@ -285,7 +306,7 @@ def load_config(path: Path | str | None = None) -> ResearchConfig:
                 f"'oos_start' must be an ISO date (YYYY-MM-DD), got {oos_start!r}."
             ) from exc
 
-    return ResearchConfig(
+    cfg = ResearchConfig(
         symbols=tuple(symbol_configs),
         period=period,
         interval=str(raw["interval"]),
@@ -299,3 +320,4 @@ def load_config(path: Path | str | None = None) -> ResearchConfig:
         append_coverage_threshold=append_coverage_threshold,
         oos_start=oos_start,
     )
+    return _apply_symbol_filter(cfg)

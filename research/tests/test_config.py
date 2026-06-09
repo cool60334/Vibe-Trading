@@ -468,3 +468,29 @@ class TestDuplicateSymbols:
         p = write_yaml(tmp_path, yaml_content)
         with pytest.raises(ValueError, match="[Dd]uplicate"):
             load_config(p)
+
+
+# ─── Unit: RESEARCH_ONLY_SYMBOL env var filtering ────────────────────────────
+
+import os
+from pathlib import Path as _Path
+
+_REAL_CONFIG = _Path(__file__).resolve().parents[1] / "research_config.yaml"
+
+
+def test_load_config_filters_to_env_symbol(monkeypatch):
+    monkeypatch.setenv("RESEARCH_ONLY_SYMBOL", "btc")
+    cfg = load_config(_REAL_CONFIG)
+    assert cfg.symbol_names() == ["btc"]
+
+
+def test_load_config_no_env_returns_all(monkeypatch):
+    monkeypatch.delenv("RESEARCH_ONLY_SYMBOL", raising=False)
+    cfg = load_config(_REAL_CONFIG)
+    assert "btc" in cfg.symbol_names() and len(cfg.symbol_names()) >= 2
+
+
+def test_load_config_unknown_env_symbol_raises(monkeypatch):
+    monkeypatch.setenv("RESEARCH_ONLY_SYMBOL", "zzz")
+    with pytest.raises(ValueError, match="RESEARCH_ONLY_SYMBOL"):
+        load_config(_REAL_CONFIG)
