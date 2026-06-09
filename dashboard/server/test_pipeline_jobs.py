@@ -157,3 +157,28 @@ def test_create_job_stores_symbol(tmp_path):
 def test_create_job_symbol_defaults_none(tmp_path):
     job = pj.create_job(tmp_path, kind="pipeline")
     assert job["symbol"] is None
+
+
+def test_endpoint_run_with_symbol(tmp_path, monkeypatch):
+    # seed a config so _config_symbols() returns btc/eth
+    research = tmp_path / "research"
+    research.mkdir(parents=True)
+    (research / "research_config.yaml").write_text(
+        """
+symbols:
+  - {name: btc, okx_swap: BTC-USDT-SWAP, ccxt_bybit: "BTC/USDT:USDT"}
+  - {name: eth, okx_swap: ETH-USDT-SWAP, ccxt_bybit: "ETH/USDT:USDT"}
+period: 365
+interval: "1H"
+data_source: okx
+engine: daily
+fees: {maker_rate: 0.0002, taker_rate: 0.00055, slippage: 0.0005}
+horizons_h: [8, 24, 72, 168]
+""".strip(),
+        encoding="utf-8",
+    )
+    c, _ = _client(tmp_path, monkeypatch)
+    ok = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "3", "symbol": "btc"})
+    assert ok.status_code == 201 and ok.json()["symbol"] == "btc"
+    bad = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "3", "symbol": "zzz"})
+    assert bad.status_code == 400
