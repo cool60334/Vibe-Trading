@@ -28,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger("pipeline.manager")
 
 
-def _default_runner(repo_root: Path, stage_id: str, symbol, log_fp) -> int:
+def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_fp) -> int:
     """Run one stage as ``python -m research.pipeline.<module>``; stdout+stderr
     stream into the job's log file. If ``symbol`` is set, scope it via
     RESEARCH_ONLY_SYMBOL. Returns the process exit code."""
