@@ -33,6 +33,10 @@ _PIPELINE_SEQUENCE = ["0a", "0", "1", "2", "2b", "2.5", "3", "3diag", "4", "5"]
 # Stages exposed as individual UI "Run" buttons (2b / 3diag are chain-only).
 _UI_STAGE_IDS = ["0a", "0", "1", "2", "2.5", "3", "4", "5"]
 
+# Stages whose work can be filtered to a single symbol via RESEARCH_ONLY_SYMBOL.
+# (5 = global selection; 2b = compiles all — both stay all-scope.)
+SYMBOL_AWARE_STAGES = {"0a", "0", "1", "2", "2.5", "3", "3diag", "4"}
+
 
 def allowed_stage_ids() -> list[str]:
     return list(_UI_STAGE_IDS)
@@ -40,6 +44,10 @@ def allowed_stage_ids() -> list[str]:
 
 def pipeline_sequence() -> list[str]:
     return list(_PIPELINE_SEQUENCE)
+
+
+def stage_uses_symbol(stage_id: str) -> bool:
+    return stage_id in SYMBOL_AWARE_STAGES
 
 
 def stage_command(stage_id: str) -> list[str]:
@@ -94,7 +102,8 @@ def list_jobs(repo_root, limit: int = 50) -> list[dict]:
     return out[:limit]
 
 
-def create_job(repo_root, kind: str, stage: Optional[str] = None) -> dict:
+def create_job(repo_root, kind: str, stage: Optional[str] = None,
+               symbol: Optional[str] = None) -> dict:
     if kind == "stage":
         if stage not in allowed_stage_ids():
             raise ValueError(f"invalid stage {stage!r}")
@@ -110,6 +119,7 @@ def create_job(repo_root, kind: str, stage: Optional[str] = None) -> dict:
         "job_id": _new_job_id(),
         "kind": kind,
         "stage": stage,
+        "symbol": symbol,
         "status": "queued",
         "created_at": _now(),
         "started_at": None,

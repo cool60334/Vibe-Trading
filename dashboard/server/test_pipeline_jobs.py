@@ -139,3 +139,21 @@ def test_endpoint_cancel(tmp_path, monkeypatch):
     jid = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "0a"}).json()["job_id"]
     body = c.post(f"/api/pipeline/jobs/{jid}/cancel").json()
     assert body["status"] == "canceled"
+
+
+def test_symbol_aware_stages():
+    for s in ["0a", "0", "1", "2", "2.5", "3", "3diag", "4"]:
+        assert pj.stage_uses_symbol(s) is True
+    for s in ["2b", "5"]:
+        assert pj.stage_uses_symbol(s) is False
+
+
+def test_create_job_stores_symbol(tmp_path):
+    job = pj.create_job(tmp_path, kind="stage", stage="3", symbol="btc")
+    assert job["symbol"] == "btc"
+    assert pj.read_job(tmp_path, job["job_id"])["symbol"] == "btc"
+
+
+def test_create_job_symbol_defaults_none(tmp_path):
+    job = pj.create_job(tmp_path, kind="pipeline")
+    assert job["symbol"] is None
