@@ -19,9 +19,11 @@ name: vibe-pipeline
 services:
   pipeline-runner:
     build:
-      context: .
-      dockerfile: Dockerfile.server
-    working_dir: /app/server
+      # Repo-root context so the image can COPY both agent/ (backtest engine, needed
+      # by stage 3/4) and dashboard/server/ (pipeline_manager). Dockerfile.server is
+      # too lean — it lacks the agent package, so stage 3/4 backtests fail there.
+      context: ..
+      dockerfile: dashboard/Dockerfile.pipeline
     command: ["python", "-m", "pipeline_manager", "--repo-root", "/repo", "--scan-interval", "3"]
     environment:
       REPO_ROOT: /repo

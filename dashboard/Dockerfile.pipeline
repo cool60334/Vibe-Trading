@@ -1,0 +1,37 @@
+# Pipeline job runner image — the FULL research+backtest environment.
+#
+# Unlike Dockerfile.server (lightweight: fastapi/pandas only, no agent), the
+# pipeline-runner must run stage 3/4 which shell out to `python -m backtest.runner`
+# (the agent CryptoEngine). `backtest` is only importable after `pip install -e .`
+# against pyproject.toml (package-dir = {"" = "agent"}), so this image installs the
+# full agent env. It also bakes dashboard/server so `pipeline_manager` is importable.
+#
+# Built from the REPO ROOT context (see docker-compose.pipeline.yml) so it can COPY
+# both agent/ and dashboard/server/. Runs as root so the read-write /repo mount is
+# writable (stages write research/manifests, research/strategies, strategy_runs.json).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Build deps for scientific wheels (numpy/scipy/scikit-learn) that lack manylinux.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps first (layer caching). Mirrors the root Dockerfile.
+COPY agent/requirements.txt agent/requirements.txt
+RUN pip install --no-cache-dir -r agent/requirements.txt
+
+# Install the agent package so `backtest`, `cli`, `src` are importable.
+COPY pyproject.toml LICENSE README.md ./
+COPY agent/ agent/
+RUN pip install --no-cache-dir -e .
+
+# Dashboard server modules — pipeline_manager + pipeline_jobs (the queue runner).
+COPY dashboard/server/ /app/server/
+
+ENV REPO_ROOT=/repo \
+    PYTHONPATH=/app/server
+
+# pipeline_manager watches /repo/runs/pipeline_jobs and runs queued stage jobs.
+CMD ["python", "-m", "pipeline_manager", "--repo-root", "/repo", "--scan-interval", "3"]
