@@ -51,6 +51,7 @@ from pipeline.stage3_backtest import (   # noqa: E402
     compute_exit_code,
     find_signal_engine,
     list_pending_runs,
+    stress_run_plan,
     symbol_to_short,
     verify_run_artifacts,
 )
@@ -620,3 +621,39 @@ class TestBuildRunConfigFees:
         assert c["maker_rate"] == 0.0002 * 3.0
         assert c["slippage"] == 0.0005 * 3.0
         assert c["funding_rate"] == 0.0001 * 3.0
+
+
+# ---------------------------------------------------------------------------
+# (j) stress_run_plan
+# ---------------------------------------------------------------------------
+
+class TestStressRunPlan:
+    def test_split_yields_train_and_oos_each_2x_3x(self):
+        cfg = _make_research_config(period=730, interval="1H")
+        cfg = dataclasses.replace(cfg, oos_start="2025-01-01")  # enable walk-forward split
+        plan = stress_run_plan("eth_s5_half_size", cfg, today=date(2026, 1, 1))
+        names = [p[0] for p in plan]
+        labels = [p[1] for p in plan]
+        assert names == [
+            "eth_s5_half_size_stress_train_2x",
+            "eth_s5_half_size_stress_train_3x",
+            "eth_s5_half_size_stress_oos_2x",
+            "eth_s5_half_size_stress_oos_3x",
+        ]
+        assert labels == ["2x_fees_train", "3x_fees_train", "2x_fees_oos", "3x_fees_oos"]
+        # multiplier in tuple position 3
+        assert [p[3] for p in plan] == [2.0, 3.0, 2.0, 3.0]
+
+    def test_no_split_yields_full_window_only(self):
+        cfg = _make_research_config(period=730, interval="1H")
+        cfg = dataclasses.replace(cfg, oos_start=None)
+        plan = stress_run_plan("btc_s9", cfg, today=date(2026, 1, 1))
+        assert [p[0] for p in plan] == ["btc_s9_stress_full_2x", "btc_s9_stress_full_3x"]
+        assert [p[1] for p in plan] == ["2x_fees_full", "3x_fees_full"]
+
+    def test_labels_parse_back_to_multiplier(self):
+        import re
+        cfg = dataclasses.replace(_make_research_config(), oos_start="2025-01-01")
+        for _name, label, _window, mult in stress_run_plan("x", cfg, today=date(2026, 1, 1)):
+            m = re.search(r"(\d+(?:\.\d+)?)x", label.lower())
+            assert m and float(m.group(1)) == mult

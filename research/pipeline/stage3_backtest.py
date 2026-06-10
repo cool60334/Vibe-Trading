@@ -192,6 +192,35 @@ def oos_window(cfg: ResearchConfig, today: date | None = None) -> tuple[str, str
     return (cfg.oos_start, today.isoformat())
 
 
+STRESS_MULTIPLIERS = (2.0, 3.0)
+
+
+def stress_run_plan(
+    strategy_id: str,
+    cfg: ResearchConfig,
+    today: date | None = None,
+) -> list[tuple[str, str, str, float]]:
+    """Return the cost-stress runs to generate for one strategy.
+
+    Each item is (run_name, label, window, fee_multiplier). Windows are
+    train + oos when a walk-forward split is configured (oos_start), else
+    a single full window. label (e.g. "3x_fees_oos") is parsed by
+    emit_manifest's re.search(r"(\\d+)x", label) to recover the multiplier.
+    """
+    if train_window(cfg, today) is not None and oos_window(cfg, today) is not None:
+        windows = ["train", "oos"]
+    else:
+        windows = ["full"]
+
+    plan: list[tuple[str, str, str, float]] = []
+    for window in windows:
+        for mult in STRESS_MULTIPLIERS:
+            run_name = f"{strategy_id}_stress_{window}_{int(mult)}x"
+            label = f"{int(mult)}x_fees_{window}"
+            plan.append((run_name, label, window, mult))
+    return plan
+
+
 def find_signal_engine(strategies_code_dir: Path, strategy_id: str) -> Path | None:
     """Look for an existing signal_engine.py for a strategy.
 
