@@ -22,6 +22,7 @@ Pytest is run from research/ as:
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import sys
 import types
@@ -594,3 +595,28 @@ class TestArchetypeMisfitGuard:
         )
         # 1990 trades / (730/365.25 ≈ 1.998 years) ≈ 996 trades/year => not misfit
         assert check_archetype_misfit(run_dir) is False
+
+
+# ---------------------------------------------------------------------------
+# (i) build_run_config with fee_multiplier
+# ---------------------------------------------------------------------------
+
+class TestBuildRunConfigFees:
+    """build_run_config(symbol, cfg, fee_multiplier=) -> dict with scaled fees."""
+
+    def _cfg(self):
+        return _make_research_config(period=730, interval="1H")
+
+    def test_no_multiplier_has_no_fee_keys(self):
+        """When fee_multiplier is None, no fee keys appear in config."""
+        c = build_run_config("BTC-USDT-SWAP", self._cfg(), today=date(2026, 1, 1))
+        for k in ("maker_rate", "taker_rate", "slippage", "funding_rate"):
+            assert k not in c
+
+    def test_multiplier_3x_adds_scaled_fees(self):
+        """When fee_multiplier=3.0, all fee keys are scaled by 3x."""
+        c = build_run_config("BTC-USDT-SWAP", self._cfg(), today=date(2026, 1, 1), fee_multiplier=3.0)
+        assert c["taker_rate"] == 0.0005 * 3.0
+        assert c["maker_rate"] == 0.0002 * 3.0
+        assert c["slippage"] == 0.0005 * 3.0
+        assert c["funding_rate"] == 0.0001 * 3.0

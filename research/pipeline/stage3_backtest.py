@@ -70,6 +70,16 @@ if _REPO_ROOT_STR not in sys.path:
     sys.path.insert(0, _REPO_ROOT_STR)
 
 
+# ─── Constants ─────────────────────────────────────────────────────────────────
+
+DEFAULT_FEES = {
+    "maker_rate": 0.0002,
+    "taker_rate": 0.0005,
+    "slippage": 0.0005,
+    "funding_rate": 0.0001,
+}
+
+
 # ─── Data containers ──────────────────────────────────────────────────────────
 
 @dataclasses.dataclass
@@ -100,7 +110,8 @@ def symbol_to_short(symbol: str) -> str:
     return symbol.split("-")[0].lower()
 
 
-def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None) -> dict:
+def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None,
+                     fee_multiplier: float | None = None) -> dict:
     """Build the config.json dict for a backtest run.
 
     The schema matches agent/backtest/runner.py BacktestConfigSchema:
@@ -119,10 +130,15 @@ def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None
     - interval: from research_config.yaml's interval field.
     - engine: always "daily".
 
+    When fee_multiplier is provided, all fee keys (maker_rate, taker_rate, slippage,
+    funding_rate) are included in the config, scaled by the multiplier.
+
     Args:
         symbol: Exchange ticker, e.g. "BTC-USDT-SWAP".
         cfg:    ResearchConfig loaded from research_config.yaml.
         today:  Reference date for end_date (defaults to date.today()).
+        fee_multiplier: If provided, scales DEFAULT_FEES by this multiplier and includes
+                       them in the config. If None, no fee keys are added.
 
     Returns:
         Dict conforming to BacktestConfigSchema (JSON-serialisable).
@@ -135,7 +151,7 @@ def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None
     # validated separately via stage 4's walk_forward holdout. This keeps the
     # in-sample backtest / diagnosis from peeking at out-of-sample data.
     end_date = cfg.oos_start if cfg.oos_start else today.isoformat()
-    return {
+    config = {
         "codes": [symbol],
         "start_date": start.isoformat(),
         "end_date": end_date,
@@ -143,6 +159,10 @@ def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None
         "interval": cfg.interval,
         "engine": "daily",
     }
+    if fee_multiplier is not None:
+        for key, base_rate in DEFAULT_FEES.items():
+            config[key] = base_rate * fee_multiplier
+    return config
 
 
 def train_window(cfg: ResearchConfig, today: date | None = None) -> tuple[str, str] | None:
