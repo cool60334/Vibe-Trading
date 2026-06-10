@@ -633,6 +633,19 @@ def apply_run_window_overrides(
     return config_dict
 
 
+def window_is_valid(config_dict: dict) -> bool:
+    """True when start_date <= end_date (ISO dates compare lexicographically).
+
+    A regime override can invert the range when the regime's span lies entirely
+    after the train-window cap; such a run must be skipped, not executed.
+    """
+    start = config_dict.get("start_date")
+    end = config_dict.get("end_date")
+    if not start or not end:
+        return True  # nothing to validate (base/full windows always have both)
+    return start <= end
+
+
 def print_summary(results: list[BacktestRunResult]) -> None:
     """Print a human-readable per-run summary to stdout.
 
@@ -773,6 +786,19 @@ def _run_backtest_for_run(
     config_dict = build_run_config(symbol=symbol, cfg=cfg)
     regime_windows = load_regime_windows(manifests_dir, short)
     config_dict = apply_run_window_overrides(config_dict, role, regime_windows)
+
+    # Guard: a regime's longest contiguous span can fall entirely AFTER the
+    # train-window cap (oos_start) under a walk-forward split. Clipping the end
+    # to the cap then leaves start > end (e.g. bear 2026-01-15..2025-01-01).
+    # That window has no valid in-train slice — skip it rather than fail the run.
+    if not window_is_valid(config_dict):
+        msg = (
+            f"regime '{role}' window {config_dict['start_date']}.."
+            f"{config_dict['end_date']} lies outside the train window — skipped"
+        )
+        print(f"  [SKIP] {msg}")
+        return BacktestRunResult(run_name=run_name, ok=True)
+
     print(f"  [1/3] Creating run dir: {run_dir}  (role={role}, window={config_dict['start_date']}..{config_dict['end_date']})")
     _setup_run_dir(run_dir, config_dict, strategies_code_dir, strategy_id)
 

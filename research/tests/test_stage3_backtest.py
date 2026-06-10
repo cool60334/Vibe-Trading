@@ -55,6 +55,7 @@ from pipeline.stage3_backtest import (   # noqa: E402
     stress_run_plan,
     symbol_to_short,
     verify_run_artifacts,
+    window_is_valid,
 )
 
 
@@ -302,6 +303,16 @@ class TestVerifyRunArtifacts:
         (artifacts / "notes.txt").write_text("no csv here")
         result = verify_run_artifacts(run_dir)
         assert result.ok is False
+
+    def test_window_valid_true_for_ordered_dates(self):
+        assert window_is_valid({"start_date": "2022-06-11", "end_date": "2025-01-01"}) is True
+
+    def test_window_valid_false_for_inverted_dates(self):
+        # regime span entirely after the train cap -> start > end after clipping
+        assert window_is_valid({"start_date": "2026-01-15", "end_date": "2025-01-01"}) is False
+
+    def test_window_valid_true_when_equal(self):
+        assert window_is_valid({"start_date": "2025-01-01", "end_date": "2025-01-01"}) is True
 
     def test_result_contains_run_name(self, tmp_path):
         run_dir = tmp_path / "btc_s1_base"
