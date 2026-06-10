@@ -24,6 +24,7 @@ from pipeline.strategy_runs import (
     StrategyRunsMap,
     load_strategy_runs,
     register_strategy,
+    update_stress_runs,
     update_sweep_run,
 )
 
@@ -838,3 +839,33 @@ def test_load_strategy_runs_filters_to_env_symbol(tmp_path, monkeypatch):
     monkeypatch.delenv("RESEARCH_ONLY_SYMBOL", raising=False)
     result_all = load_strategy_runs(p)
     assert set(result_all.entries.keys()) == {"btc_s1_x", "eth_s1_y"}
+
+
+# ─── Unit: update_stress_runs writer tests ──────────────────────────────────
+
+
+def test_update_stress_runs_writes_mapping(tmp_path):
+    payload = {
+        "btc_s9": {"symbol": "BTC-USDT-SWAP", "spec_yaml": "research/strategies/strategy_S1.yaml",
+                    "base_run": "btc_s9_base", "regime_runs": {}, "stress_runs": {},
+                    "oos_runs": [], "sweep_run": None, "walk_forward_runs": []},
+    }
+    p = tmp_path / "strategy_runs.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+
+    update_stress_runs("btc_s9", {"2x_fees_train": "btc_s9_stress_train_2x",
+                                   "3x_fees_oos": "btc_s9_stress_oos_3x"}, path=p)
+
+    entry = json.loads(p.read_text())["btc_s9"]
+    assert entry["stress_runs"] == {
+        "2x_fees_train": "btc_s9_stress_train_2x",
+        "3x_fees_oos": "btc_s9_stress_oos_3x",
+    }
+
+
+def test_update_stress_runs_unknown_strategy_raises(tmp_path):
+    p = tmp_path / "strategy_runs.json"
+    p.write_text("{}", encoding="utf-8")
+    import pytest
+    with pytest.raises(KeyError):
+        update_stress_runs("missing", {"2x_fees_train": "x"}, path=p)

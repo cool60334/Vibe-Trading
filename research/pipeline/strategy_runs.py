@@ -439,6 +439,58 @@ def update_sweep_run(
     resolved.write_text(payload, encoding="utf-8")
 
 
+def update_stress_runs(
+    strategy_id: str,
+    mapping: dict,
+    path: Path | str | None = None,
+) -> None:
+    """Set the stress_runs mapping for one strategy and write the file back.
+
+    Called by stage 3 --stress after generating fee-multiplied backtests, so
+    emit_manifest can assemble the cost_stress block. Same file-preserving
+    semantics as update_sweep_run.
+
+    Raises
+    ------
+    FileNotFoundError
+        If strategy_runs.json does not exist at the resolved path.
+    KeyError
+        If strategy_id is not present.
+    TypeError
+        If mapping is not a dict, or the entry is not a JSON object.
+    """
+    if not isinstance(mapping, dict):
+        raise TypeError(
+            f"update_stress_runs: mapping must be a dict, got {type(mapping).__name__}."
+        )
+
+    resolved = Path(path) if path is not None else _DEFAULT_JSON_PATH
+    if not resolved.exists():
+        raise FileNotFoundError(f"strategy_runs.json not found at: {resolved}")
+
+    with resolved.open("r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+
+    if not isinstance(raw, dict):
+        raise TypeError(
+            f"strategy_runs.json must be a JSON mapping at the top level, "
+            f"got {type(raw).__name__}."
+        )
+    if strategy_id not in raw or strategy_id == "_comment":
+        raise KeyError(f"strategy_runs.json: strategy_id '{strategy_id}' not present.")
+
+    entry = raw[strategy_id]
+    if not isinstance(entry, dict):
+        raise TypeError(
+            f"strategy_runs.json: entry for '{strategy_id}' is not a JSON object."
+        )
+
+    entry["stress_runs"] = dict(mapping)
+
+    payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
+    resolved.write_text(payload, encoding="utf-8")
+
+
 def update_walk_forward_runs(
     strategy_id: str,
     walk_forward_runs: list[str],
