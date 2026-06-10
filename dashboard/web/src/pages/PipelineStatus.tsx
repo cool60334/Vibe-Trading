@@ -142,6 +142,7 @@ function SymbolRunControl({
   busy: boolean;
 }) {
   const [stage, setStage] = useState("0a");
+  const [err, setErr] = useState<string | null>(null);
   return (
     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
       <select
@@ -158,7 +159,8 @@ function SymbolRunControl({
       </select>
       <button
         disabled={busy}
-        onClick={() =>
+        onClick={() => {
+          setErr(null);
           api
             .runPipeline(
               stage === "__all__"
@@ -166,12 +168,13 @@ function SymbolRunControl({
                 : { kind: "stage", stage, symbol },
             )
             .then(onStarted)
-            .catch(() => {})
-        }
+            .catch((e: unknown) => setErr(String(e)));
+        }}
         className="flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[11px] disabled:opacity-50"
       >
         <Play className="h-3 w-3" /> Run
       </button>
+      {err && <span className="text-[10px] text-destructive">{err}</span>}
     </div>
   );
 }
