@@ -130,6 +130,52 @@ function JobsPanel({
   );
 }
 
+const PER_SYMBOL_STAGES = ["0a", "0", "1", "2", "2.5", "3", "4"]; // no 5 (global)
+
+function SymbolRunControl({
+  symbol,
+  onStarted,
+  busy,
+}: {
+  symbol: string;
+  onStarted: () => void;
+  busy: boolean;
+}) {
+  const [stage, setStage] = useState("0a");
+  return (
+    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <select
+        value={stage}
+        onChange={(e) => setStage(e.target.value)}
+        className="border rounded px-1 py-0.5 text-[11px] bg-background"
+      >
+        <option value="__all__">全 pipeline</option>
+        {PER_SYMBOL_STAGES.map((s) => (
+          <option key={s} value={s}>
+            stage {s}
+          </option>
+        ))}
+      </select>
+      <button
+        disabled={busy}
+        onClick={() =>
+          api
+            .runPipeline(
+              stage === "__all__"
+                ? { kind: "pipeline", symbol }
+                : { kind: "stage", stage, symbol },
+            )
+            .then(onStarted)
+            .catch(() => {})
+        }
+        className="flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[11px] disabled:opacity-50"
+      >
+        <Play className="h-3 w-3" /> Run
+      </button>
+    </div>
+  );
+}
+
 export default function PipelineStatus() {
   const [data, setData] = useState<PipelineStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -229,9 +275,12 @@ export default function PipelineStatus() {
                     <StageChip key={s.stage_id} s={s} />
                   ))}
                 </div>
-                <span className="ml-auto text-xs text-muted-foreground">
-                  {sym.strategies.length} 策略
-                </span>
+                <div className="ml-auto flex items-center gap-3">
+                  <SymbolRunControl symbol={sym.symbol} onStarted={refreshJobs} busy={busy} />
+                  <span className="text-xs text-muted-foreground">
+                    {sym.strategies.length} 策略
+                  </span>
+                </div>
               </button>
 
               {open && sym.strategies.length > 0 && (
