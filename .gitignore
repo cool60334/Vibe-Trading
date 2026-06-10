@@ -127,6 +127,26 @@ research/strategies/strategy_sol_*.yaml
 research/strategies/strategy_*-USDT-*.yaml
 research/strategies/code/*/signal_engine.py
 research/strategies/code/*/test_signal_engine.py
+# ...but TRACK curated (hand-authored, registered in strategy_runs.json) strategies'
+# yaml + compiled signal_engine, so the deploy server can backtest/promote them.
+# Auto-generated archetype strategies (single_factor/trend_with_gate/consensus_all)
+# stay ignored — they are reproducible by re-running the pipeline.
+!research/strategies/strategy_btc_s7_stablecoin_funding_gated.yaml
+!research/strategies/strategy_btc_s8_funding_z_contrarian.yaml
+!research/strategies/strategy_btc_s9_stablecoin_funding_gated_tuned.yaml
+!research/strategies/strategy_eth_s1_multi_factor_consensus.yaml
+!research/strategies/strategy_eth_s5_half_size.yaml
+!research/strategies/strategy_eth_s3_dynamic_exit.yaml
+!research/strategies/strategy_sol_s1_multi_factor_consensus.yaml
+!research/strategies/strategy_sol_s2_stablecoin_trend_gated.yaml
+!research/strategies/code/btc_s7_stablecoin_funding_gated/signal_engine.py
+!research/strategies/code/btc_s8_funding_z_contrarian/signal_engine.py
+!research/strategies/code/btc_s9_stablecoin_funding_gated_tuned/signal_engine.py
+!research/strategies/code/eth_s1_multi_factor_consensus/signal_engine.py
+!research/strategies/code/eth_s5_half_size/signal_engine.py
+!research/strategies/code/eth_s3_dynamic_exit/signal_engine.py
+!research/strategies/code/sol_s1_multi_factor_consensus/signal_engine.py
+!research/strategies/code/sol_s2_stablecoin_trend_gated/signal_engine.py
 research/strategy_runs.json.bak
 research/manifests/factor_values_*.parquet
 research/manifests/factor_values_*.meta.json

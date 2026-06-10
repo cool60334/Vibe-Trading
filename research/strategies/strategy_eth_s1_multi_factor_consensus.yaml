@@ -1,0 +1,126 @@
+name: eth_s1_multi_factor_consensus
+archetype: multi_factor_consensus
+hypothesis: "Stage-1 screening retained these factors with a tradable edge: stablecoin_supply_z,\
+  \ atr_14, funding_z, rolling_std_20. Crypto-trading-desk swarm rationale\
+  \ (post-hoc, see generation.json):\n# ETH-USDT Trading Plan (3-7 Day Swing)\n\n## I. Signal Integration\n\
+  - **Funding/Basis Analysis**: Current funding rate is low, with a slight \ndiscount in the spot-perpetual\
+  \ basis. This suggests a potential mean-reversion \nopportunity.\n- **Liquidation Mapping**: Lack of\
+  \ real-time data, but historical patterns \nsuggest psychological levels as key areas.\n- **Flow Data**:\
+  \ Strong stablecoin presence indicates liquidity availability, \nsupporting potential market movements.\n\
+  \n## II. Factor Analysis\n- **Stablecoin Supply Z-Score**: Positive IC for 72-168 hours, suggesting\
+  \ a \ntrend-following approach.\n- **ATR 14 Contrarian**: Negative IC, indicating a mean-reversion strategy.\n\
+  - **Funding Z Contrarian**: Negative IC, supporting a contrarian approach.\n- **Rolling Std 20 Contrarian**:\
+  \ Negative IC, favoring mean-reversion.\n\n## III. Trade Recommendation\n- **Direction**: Long\n- **Conviction\
+  \ Level**: Medium\n- **Entry Zone**: $1960 - $1980 (based on recent price action and mean-reversion\n\
+  signals)\n- **Take-Profit Levels**:\n  - TP1 (Conservative): $2020\n  - TP2 (Base): $2050\n  - TP3 (Optimistic):\
+  \ $2080\n- **Stop-Loss**: $1940 (maximum acceptable loss of 2%)\n\n## IV. Position Sizing\n- **Recommended\
+  \ Position Size**: 5% of portfolio\n- **Maximum Leverage**: 3x\n- **Scaling Plan**: \n  - Initial Entry:\
+  \ 50% of position size\n  - Add-on Trigger: Break above $2000\n  - Full Position: Upon confirmation\
+  \ of trend continuation\n\n## V. Risk Gates\n- **Funding Rate Gate**: Reassess if funding exceeds ±0.05%\n\
+  - **Liquidation Proximity Gate**: Tighten stop if price approaches within 1% of \nmajor psychological\
+  \ levels\n- **Stablecoin Flow Gate**: Reduce exposure if net outflow exceeds $500M in 7 \ndays\n- **Correlation\
+  \ Gate**: Reduce sizing if BTC-NASDAQ correlation spikes above 0.8\n- **Maximum Drawdown Gate**: Mandatory\
+  \ stop if position drawdown exceeds 5%\n\n## VI. Monitoring Checklist\n- **Funding Rate**: Alert if\
+  \ exceeds ±0.05%\n- **Price Action**: Alert if price breaks $2000 or $1940\n- **Stablecoin Flows**:\
+  \ Monitor for sig\n\nCOMPLETED  Time: 1m 16s\nTokens: ~178,686 (in: 175,320 out: 3,366)"
+symbol: ETH-USDT-SWAP
+timeframe_signal: 8h
+hold_period:
+  min_hours: 24
+  max_hours: 120
+indicators:
+  stablecoin_supply_z:
+    source: stage1:stablecoin_supply_z
+    smoothing: sma_3
+  atr_14:
+    source: stage1:atr_14
+    smoothing: sma_3
+  funding_z:
+    source: stage1:funding_z
+    smoothing: sma_3
+  rolling_std_20:
+    source: stage1:rolling_std_20
+    smoothing: sma_3
+entry_long:
+  description: Enter long when each retained factor sits at the extreme that its measured IC sign says
+    precedes a rise (trend factors high, contrarian factors low), with persistence. OR-logic (logic=any)
+    — 4-factor AND-consensus is too sparse to trade.
+  logic: any
+  conditions:
+  - stablecoin_supply_z_percentile_90d >= 80 persist 2/3
+  - atr_14_percentile_90d <= 20 persist 2/3
+  - funding_z_percentile_90d <= 20 persist 2/3
+  - rolling_std_20_percentile_90d <= 20 persist 2/3
+entry_short:
+  description: Enter short when each retained factor sits at the opposite extreme (trend factors low,
+    contrarian factors high), with persistence. OR-logic (logic=any) — 4-factor AND-consensus is too sparse
+    to trade.
+  logic: any
+  conditions:
+  - stablecoin_supply_z_percentile_90d <= 20 persist 2/3
+  - atr_14_percentile_90d >= 80 persist 2/3
+  - funding_z_percentile_90d >= 80 persist 2/3
+  - rolling_std_20_percentile_90d >= 80 persist 2/3
+exit_rules:
+- condition: time_based
+  max_hold_hours: 120
+- condition: take_profit_pct
+  value: 6.0
+- condition: stop_loss_pct
+  value: 3.0
+- condition: signal_invalidation
+  expression: stablecoin_supply_z_percentile_90d between 40,60
+- condition: signal_invalidation
+  expression: atr_14_percentile_90d between 40,60
+- condition: signal_invalidation
+  expression: funding_z_percentile_90d between 40,60
+- condition: signal_invalidation
+  expression: rolling_std_20_percentile_90d between 40,60
+position_sizing:
+  method: fixed_risk
+  risk_per_trade_pct: 1.5
+  leverage: 1.5
+parameter_search_ranges:
+  lookback_days:
+  - 60
+  - 120
+  - 30
+  entry_high_pct:
+  - 75
+  - 90
+  - 5
+  entry_low_pct:
+  - 10
+  - 25
+  - 5
+  persistence_last_n:
+  - 3
+  - 5
+  - 1
+  persistence_min_hits:
+  - 2
+  - 3
+  - 1
+  hold_max_hours:
+  - 96
+  - 144
+  - 24
+  tp_pct:
+  - 4.0
+  - 7.0
+  - 1.5
+  sl_pct:
+  - 2.5
+  - 4.0
+  - 0.5
+expected_behavior:
+  trades_per_year_estimate: 80
+  expected_sharpe: 1.0
+  expected_max_dd_pct: 8.0
+  expected_win_rate_pct: 51
+caveats:
+- Quantitative thresholds in this spec are a deterministic scaffold derived from stage-1 factor verdicts,
+  NOT authored by the LLM swarm (see stage2_strategies.py module docstring, decision B). Calibrate via
+  the stage-4 parameter sweep before trusting them.
+- Factor edges can decay across market regimes; re-run stage 1 periodically and watch cross_regime_ic
+  / stability.

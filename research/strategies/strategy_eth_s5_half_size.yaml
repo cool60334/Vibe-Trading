@@ -1,0 +1,62 @@
+# manual: do-not-overwrite
+# This yaml is a documentation shell for eth_s5_half_size. The actual signal
+# logic lives in research/strategies/code/eth_s5_half_size/signal_engine.py
+# (hand-written, marked `# manual: do-not-overwrite` so stage 2b skips it).
+# Stage 2b will not regenerate signal_engine.py from this yaml.
+name: eth_s5_half_size
+archetype: multi_factor_consensus
+hypothesis: >
+  Production-ready iteration of the ETH s2->s3->s4 chain. Inherits everything
+  from eth_s4_regime_filtered (2 factors, AND-logic entry, signal_invalidation
+  exits, regime overlay) and applies SIZE_MULT=0.45 at the signal layer.
+  This produces a position size equivalent to leverage 0.5x while keeping
+  the live exchange leverage at 1x (real exchanges enforce min leverage 1x).
+  OOS: sharpe 1.02, DD -9.1%, annual +9.4%, alpha +54pp vs ETH -40.4%.
+symbol: ETH-USDT-SWAP
+timeframe_signal: 8h
+hold_period:
+  min_hours: 24
+  max_hours: 168
+indicators:
+  stablecoin_supply_z:
+    source: stage1:stablecoin_supply_z
+    smoothing: sma_3
+  funding_z:
+    source: stage1:funding_z
+    smoothing: sma_3
+entry_long:
+  description: "stablecoin_supply_z high AND funding_z low, regime != bear, half size"
+  logic: all
+  conditions:
+  - stablecoin_supply_z_percentile_90d >= 70 persist 2/3
+  - funding_z_percentile_90d <= 15 persist 2/3
+entry_short:
+  description: "stablecoin_supply_z low AND funding_z high, regime != bull, half size"
+  logic: all
+  conditions:
+  - stablecoin_supply_z_percentile_90d <= 15 persist 2/3
+  - funding_z_percentile_90d >= 70 persist 2/3
+exit_rules:
+- condition: time_based
+  max_hold_hours: 168
+- condition: take_profit_pct
+  value: 8.5
+- condition: stop_loss_pct
+  value: 3.0
+- condition: signal_invalidation
+  expression: stablecoin_supply_z_percentile_90d between 40,60
+- condition: signal_invalidation
+  expression: funding_z_percentile_90d between 40,60
+position_sizing:
+  method: fixed_risk
+  risk_per_trade_pct: 1.5
+  leverage: 1.0
+parameter_search_ranges: {}
+expected_behavior:
+  trades_per_year_estimate: 35
+  expected_sharpe: 1.0
+  expected_max_dd_pct: 10.0
+  expected_win_rate_pct: 53
+caveats:
+- "Hand-written signal_engine.py with regime overlay (loads regime_eth.json) and SIZE_MULT=0.45. Not regenerable from this yaml — yaml is documentation only."
+- "Live deployment: use 1x leverage on the exchange. The 0.45 sizing produces the same risk exposure as leverage 0.5x would in backtest math."

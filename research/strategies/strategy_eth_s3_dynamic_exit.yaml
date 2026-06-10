@@ -1,0 +1,86 @@
+name: eth_s3_dynamic_exit
+archetype: multi_factor_consensus
+hypothesis: >
+  Iteration on eth_s2_stablecoin_funding_gated. Train sharpe 1.55 → OOS 0.12
+  with win_rate falling 48.7% → 36.2% suggests fixed -3% stop_loss is being hit
+  by ETH volatility noise (1-week ATR ~6-9%). Replace fixed SL exits with
+  signal_invalidation: close the position when EITHER factor returns to the
+  neutral percentile band (40-60), regardless of MTM. Keep a wider SL=-4%
+  as a hard backstop. Hypothesis: less SL whipsaw → win_rate recovery toward
+  train, fewer small losses, higher profit_factor. Same 2 factors as s2
+  (stablecoin_supply_z trend + funding_z contrarian gate).
+symbol: ETH-USDT-SWAP
+timeframe_signal: 8h
+hold_period:
+  min_hours: 24
+  max_hours: 144
+indicators:
+  stablecoin_supply_z:
+    source: stage1:stablecoin_supply_z
+    smoothing: sma_3
+  funding_z:
+    source: stage1:funding_z
+    smoothing: sma_3
+entry_long:
+  description: >
+    Capital inflowing (high stablecoin z) AND longs not crowded (low funding z).
+    80/20 extremes on 120-day percentile window with persistence.
+  logic: all
+  conditions:
+  - stablecoin_supply_z_percentile_120d >= 80 persist 2/3
+  - funding_z_percentile_120d <= 20 persist 2/3
+entry_short:
+  description: >
+    Mirror of entry_long.
+  logic: all
+  conditions:
+  - stablecoin_supply_z_percentile_120d <= 20 persist 2/3
+  - funding_z_percentile_120d >= 80 persist 2/3
+exit_rules:
+- condition: time_based
+  max_hold_hours: 144
+- condition: take_profit_pct
+  value: 9.0
+- condition: stop_loss_pct
+  value: 4.0
+- condition: signal_invalidation
+  expression: stablecoin_supply_z_percentile_120d between 40,60
+- condition: signal_invalidation
+  expression: funding_z_percentile_120d between 40,60
+position_sizing:
+  method: fixed_risk
+  risk_per_trade_pct: 1.5
+  leverage: 1.0
+parameter_search_ranges:
+  lookback_days:
+  - 90
+  - 150
+  - 30
+  entry_high_pct:
+  - 70
+  - 85
+  - 5
+  entry_low_pct:
+  - 15
+  - 25
+  - 5
+  hold_max_hours:
+  - 96
+  - 168
+  - 24
+  tp_pct:
+  - 7.0
+  - 10.0
+  - 1.5
+  sl_pct:
+  - 3.0
+  - 5.0
+  - 0.5
+expected_behavior:
+  trades_per_year_estimate: 50
+  expected_sharpe: 0.8
+  expected_max_dd_pct: 25.0
+  expected_win_rate_pct: 48
+caveats:
+- "Compared to eth_s2 (same factors, fixed SL only), this variant adds two signal_invalidation exits. Hypothesis explicit: improve OOS win_rate by exiting on neutral-percentile reversion rather than ATR-noise SL."
+- "2-factor AND remains sparse; expect 30-50 trades/yr. Stage 4 sweep should explore widened SL (3-5%) to find sweet spot between hard-stop noise and dynamic-exit responsiveness."

@@ -1,0 +1,88 @@
+name: btc_s9_stablecoin_funding_gated_tuned
+archetype: multi_factor_consensus
+hypothesis: >
+  Stage-4-tuned version of btc_s7_stablecoin_funding_gated. The s7 scaffold
+  (stablecoin_supply_z trend GATED by the NEW perp-derived funding_z) scored a
+  train sharpe 1.36; a 150-combo deterministic grid sweep lifted it to train
+  sharpe 1.46 and, crucially, the held-out 2025-01..2026-06 walk-forward holdout
+  returned +5.2% at sharpe 0.27 while BTC buy-hold fell -24.1% — i.e. ~29pp of
+  out-of-sample alpha in a down market (defensive, low-correlation). This spec
+  bakes in the winning params: lookback 120d, entry extremes 75/20, hold 120h,
+  tp 7% / sl 2.5%, leverage 1.0. Economic logic unchanged: long only when fresh
+  capital is entering (high stablecoin z) AND longs are not crowded (low funding
+  z); short the mirror. The funding_z gate is the new contribution.
+symbol: BTC-USDT-SWAP
+timeframe_signal: 8h
+hold_period:
+  min_hours: 24
+  max_hours: 120
+indicators:
+  stablecoin_supply_z:
+    source: stage1:stablecoin_supply_z
+    smoothing: sma_3
+  funding_z:
+    source: stage1:funding_z
+    smoothing: sma_3
+entry_long:
+  description: >
+    Capital inflowing (high stablecoin z) AND longs not crowded (low funding z).
+    Tuned extremes 75/20 on a 120-day percentile window, with persistence.
+  logic: all
+  conditions:
+  - stablecoin_supply_z_percentile_120d >= 75 persist 2/3
+  - funding_z_percentile_120d <= 20 persist 2/3
+entry_short:
+  description: >
+    Capital leaving (low stablecoin z) AND longs crowded (high funding z).
+    Tuned extremes on a 120-day percentile window, with persistence.
+  logic: all
+  conditions:
+  - stablecoin_supply_z_percentile_120d <= 20 persist 2/3
+  - funding_z_percentile_120d >= 75 persist 2/3
+exit_rules:
+- condition: time_based
+  max_hold_hours: 120
+- condition: take_profit_pct
+  value: 7.0
+- condition: stop_loss_pct
+  value: 2.5
+position_sizing:
+  method: fixed_risk
+  risk_per_trade_pct: 1.5
+  leverage: 1.0
+parameter_search_ranges:
+  lookback_days:
+  - 90
+  - 150
+  - 30
+  entry_high_pct:
+  - 70
+  - 85
+  - 5
+  entry_low_pct:
+  - 15
+  - 25
+  - 5
+  hold_max_hours:
+  - 96
+  - 144
+  - 24
+  tp_pct:
+  - 6.0
+  - 9.0
+  - 1.5
+  sl_pct:
+  - 2.0
+  - 3.5
+  - 0.5
+expected_behavior:
+  trades_per_year_estimate: 30
+  expected_sharpe: 1.0
+  expected_max_dd_pct: 17.0
+  expected_win_rate_pct: 52
+caveats:
+- In-sample (train) sharpe 1.46 but held-out OOS sharpe 0.27 (+5.2%). The edge is
+  real but modest in absolute terms; its strength is relative/defensive (beat a
+  -24% BTC market OOS). Size accordingly; do not extrapolate the train sharpe.
+- Both factors are ensemble_only (modest IC). funding_z standalone (btc_s8) had no
+  edge — value is purely as the gate on the stablecoin trend.

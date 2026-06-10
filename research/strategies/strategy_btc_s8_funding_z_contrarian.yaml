@@ -1,0 +1,77 @@
+name: btc_s8_funding_z_contrarian
+archetype: single_factor_contrarian
+hypothesis: >
+  Isolated test of the headline NEW perp-derived factor funding_z (30d rolling
+  z-score of perp funding rate). Honest 4yr BTC IC is negative and peaks at
+  IC72 -0.0515 (ensemble_only) -> CONTRARIAN framing: when funding z is high,
+  longs are crowded and paying to hold -> fade (short); when funding z is low,
+  positioning is clean / shorts may be crowded -> long. Single factor, leverage
+  1.0, time+tp+sl exits only (no invalidation churn). Purpose: measure the new
+  factor's standalone tradable edge after funding fees, before combining it.
+symbol: BTC-USDT-SWAP
+timeframe_signal: 8h
+hold_period:
+  min_hours: 16
+  max_hours: 96
+indicators:
+  funding_z:
+    source: stage1:funding_z
+    smoothing: sma_3
+entry_long:
+  description: >
+    Funding z low (positioning clean / shorts crowded) -> contrarian long.
+  logic: all
+  conditions:
+  - funding_z_percentile_90d <= 20 persist 2/3
+entry_short:
+  description: >
+    Funding z high (crowded longs paying funding) -> contrarian short.
+  logic: all
+  conditions:
+  - funding_z_percentile_90d >= 80 persist 2/3
+exit_rules:
+- condition: time_based
+  max_hold_hours: 96
+- condition: take_profit_pct
+  value: 4.0
+- condition: stop_loss_pct
+  value: 3.0
+position_sizing:
+  method: fixed_risk
+  risk_per_trade_pct: 1.5
+  leverage: 1.0
+parameter_search_ranges:
+  lookback_days:
+  - 30
+  - 90
+  - 30
+  entry_high_pct:
+  - 75
+  - 90
+  - 5
+  entry_low_pct:
+  - 10
+  - 25
+  - 5
+  hold_max_hours:
+  - 48
+  - 120
+  - 24
+  tp_pct:
+  - 3.0
+  - 6.0
+  - 1.0
+  sl_pct:
+  - 2.0
+  - 4.0
+  - 1.0
+expected_behavior:
+  trades_per_year_estimate: 40
+  expected_sharpe: 0.3
+  expected_max_dd_pct: 14.0
+  expected_win_rate_pct: 49
+caveats:
+- Funding-rate factors must include funding fees in the backtest (engine does);
+  a naive funding contrarian can bleed fees. Judge on walk-forward OOS.
+- Negative-IC contrarian; if standalone loses both directions the factor has no
+  tradable edge alone and only the s7 gated combo is worth keeping.

@@ -1,0 +1,119 @@
+name: sol_s1_multi_factor_consensus
+archetype: multi_factor_consensus
+hypothesis: "Stage-1 screening retained these factors with a tradable edge: stablecoin_supply_zscore,\
+  \ bollinger_band_width, atr_volatility. Crypto-trading-desk swarm rationale (post-hoc, see generation.json):\n\
+  # SOL-USDT Trading Plan\n\n## Signal Integration\n\n1. **Funding/Basis Analysis**: The funding rate\
+  \ for SOL-USDT is neutral with a \nslight premium in perpetual contracts. The trend is declining, indicating\
+  \ \npotential reduction in leveraged long positions. The best carry trade is \nshorting on OKX and holding\
+  \ a long spot position with an expected annualized \nyield of approximately 10.95%.\n\n2. **Liquidation\
+  \ Analysis**: Due to lack of real-time data, liquidation clusters\nare estimated around psychological\
+  \ levels. Cascade risks are inferred from \nhistorical volatility and open interest data.\n\n3. **Flow\
+  \ Analysis**: There is a net outflow of 500,000 SOL from exchanges, \nindicating accumulation. Whales\
+  \ are accumulating SOL, but upcoming token unlocks\ncould introduce sell pressure. The expanding DeFi\
+  \ TVL and ETF inflows indicate \nhealthy capital rotation.\n\n4. **Factor Analysis**: \n   - **Stablecoin\
+  \ Supply Z-score**: Slightly positive IC over longer horizons, \nsuggesting a contrarian approach.\n\
+  \   - **Bollinger Band Width**: Positive IC, indicating a trend-following \napproach.\n   - **ATR Volatility**:\
+  \ Negative IC, suggesting a mean-reversion approach.\n\n## Trade Recommendation\n\n- **Direction**:\
+  \ Long SOL-USDT\n- **Conviction Level**: Medium\n- **Entry Zone**: $78.00 - $80.00 (based on recent\
+  \ price action and \npsychological support levels)\n- **Take-Profit Levels**:\n  - TP1 (Conservative):\
+  \ $85.00\n  - TP2 (Base): $90.00\n  - TP3 (Optimistic): $95.00\n- **Stop-Loss**: $75.00 (maximum acceptable\
+  \ loss of 5%)\n\n## Position Sizing and Risk Gates\n\n- **Position Size**: 2% of portfolio\n- **Maximum\
+  \ Leverage**: 3x\n- **Scaling Plan**: \n  - Initial entry at 1% of portfolio\n  - Add-on trigger at\
+  \ $82.00 if momentum continues\n  - Full position at $85.00 if breakout confirmed\n- **Risk per Trade**:\
+  \ Max 2% of portfolio\n\n## Risk Gates\n\n- **Funding Rate Gate**: Reassess if funding exceeds ±0.05%\n\
+  - **Liquidation Proximity Gate**: Tighten stop if price within 2% of a major \ncluster\n- **Stablecoin\
+  \ Flow Gate**: Reduce exposu\n\nCOMPLETED  Time: 1m 12s\nTokens: ~131,776 (in: 128,022 out: 3,754)"
+symbol: SOL-USDT-SWAP
+timeframe_signal: 8h
+hold_period:
+  min_hours: 24
+  max_hours: 120
+indicators:
+  stablecoin_supply_zscore:
+    source: stage1:stablecoin_supply_zscore
+    smoothing: sma_3
+  bollinger_band_width:
+    source: stage1:bollinger_band_width
+    smoothing: sma_3
+  atr_volatility:
+    source: stage1:atr_volatility
+    smoothing: sma_3
+entry_long:
+  description: Enter long when each retained factor sits at the extreme that its measured IC sign says
+    precedes a rise (trend factors high, contrarian factors low), with persistence. OR-logic (logic=any)
+    — 3-factor AND-consensus is too sparse to trade.
+  logic: any
+  conditions:
+  - stablecoin_supply_zscore_percentile_90d >= 80 persist 2/3
+  - bollinger_band_width_percentile_90d >= 80 persist 2/3
+  - atr_volatility_percentile_90d <= 20 persist 2/3
+entry_short:
+  description: Enter short when each retained factor sits at the opposite extreme (trend factors low,
+    contrarian factors high), with persistence. OR-logic (logic=any) — 3-factor AND-consensus is too sparse
+    to trade.
+  logic: any
+  conditions:
+  - stablecoin_supply_zscore_percentile_90d <= 20 persist 2/3
+  - bollinger_band_width_percentile_90d <= 20 persist 2/3
+  - atr_volatility_percentile_90d >= 80 persist 2/3
+exit_rules:
+- condition: time_based
+  max_hold_hours: 120
+- condition: take_profit_pct
+  value: 6.0
+- condition: stop_loss_pct
+  value: 3.0
+- condition: signal_invalidation
+  expression: stablecoin_supply_zscore_percentile_90d between 40,60
+- condition: signal_invalidation
+  expression: bollinger_band_width_percentile_90d between 40,60
+- condition: signal_invalidation
+  expression: atr_volatility_percentile_90d between 40,60
+position_sizing:
+  method: fixed_risk
+  risk_per_trade_pct: 1.5
+  leverage: 1.5
+parameter_search_ranges:
+  lookback_days:
+  - 60
+  - 120
+  - 30
+  entry_high_pct:
+  - 75
+  - 90
+  - 5
+  entry_low_pct:
+  - 10
+  - 25
+  - 5
+  persistence_last_n:
+  - 3
+  - 5
+  - 1
+  persistence_min_hits:
+  - 2
+  - 3
+  - 1
+  hold_max_hours:
+  - 96
+  - 144
+  - 24
+  tp_pct:
+  - 4.0
+  - 7.0
+  - 1.5
+  sl_pct:
+  - 2.5
+  - 4.0
+  - 0.5
+expected_behavior:
+  trades_per_year_estimate: 80
+  expected_sharpe: 1.0
+  expected_max_dd_pct: 8.0
+  expected_win_rate_pct: 51
+caveats:
+- Quantitative thresholds in this spec are a deterministic scaffold derived from stage-1 factor verdicts,
+  NOT authored by the LLM swarm (see stage2_strategies.py module docstring, decision B). Calibrate via
+  the stage-4 parameter sweep before trusting them.
+- Factor edges can decay across market regimes; re-run stage 1 periodically and watch cross_regime_ic
+  / stability.
