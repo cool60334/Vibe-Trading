@@ -810,6 +810,14 @@ def _run_backtest_for_run(
 
 def main() -> None:
     """Stage-3 entry point: orchestrate, verify, report, exit."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Stage 3 — Backtest Execution")
+    parser.add_argument(
+        "--stress", action="store_true",
+        help="Also generate fee-multiplied (2x/3x) cost-stress runs per strategy.",
+    )
+    args = parser.parse_args()
+
     cfg: ResearchConfig = load_config()
     runs_map: StrategyRunsMap = load_strategy_runs()
 
@@ -825,6 +833,7 @@ def main() -> None:
     print(f"Runs root:  {runs_root}")
 
     all_results: list[BacktestRunResult] = []
+    stress_eligible: list[tuple[str, str]] = []  # (strategy_id, symbol)
 
     # Check that at least one run exists across all strategies
     all_pending: list[tuple[str, str, str, str]] = []
@@ -888,8 +897,20 @@ def main() -> None:
                         f"skipping regime/oos runs"
                     )
                     write_archetype_misfit_sentinel(manifests_dir, strategy_id, base_run_dir)
+                else:
+                    stress_eligible.append((strategy_id, symbol))
 
             all_results.append(result)
+
+    if args.stress and stress_eligible:
+        print("\n" + "=" * 60)
+        print(f"Stage 3 — Cost-stress ({len(stress_eligible)} strategies)")
+        print("=" * 60)
+        for sid, symbol in stress_eligible:
+            print(f"\n[stress] {sid}")
+            _run_stress_for_strategy(
+                sid, symbol, cfg, runs_root, strategies_code_dir, manifests_dir,
+            )
 
     print_summary(all_results)
     sys.exit(compute_exit_code(all_results))
