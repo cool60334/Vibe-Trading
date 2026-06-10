@@ -44,6 +44,7 @@ for _p in (_RESEARCH_DIR, _REPO_ROOT):
 
 from pipeline.stage3_backtest import (   # noqa: E402
     BacktestRunResult,
+    _run_stress_for_strategy,
     _setup_run_dir,
     build_run_config,
     build_stub_signal_engine,
@@ -657,3 +658,61 @@ class TestStressRunPlan:
         for _name, label, _window, mult in stress_run_plan("x", cfg, today=date(2026, 1, 1)):
             m = re.search(r"(\d+(?:\.\d+)?)x", label.lower())
             assert m and float(m.group(1)) == mult
+
+
+class TestRunStressForStrategy:
+    def test_registers_successful_stress_runs(self, tmp_path, monkeypatch):
+        import subprocess
+        from pipeline import stage3_backtest as s3
+
+        # real strategy_runs.json so update_stress_runs can write
+        payload = {
+            "btc_s9": {"symbol": "BTC-USDT-SWAP", "spec_yaml": "research/strategies/strategy_S1.yaml",
+                        "base_run": "btc_s9_base", "regime_runs": {}, "stress_runs": {},
+                        "oos_runs": [], "sweep_run": None, "walk_forward_runs": []},
+        }
+        runs_json = tmp_path / "strategy_runs.json"
+        runs_json.write_text(json.dumps(payload), encoding="utf-8")
+        monkeypatch.setattr("pipeline.strategy_runs._DEFAULT_JSON_PATH", runs_json)
+
+        # stub the shell helpers: pretend every backtest succeeds with an artifact
+        monkeypatch.setattr(s3, "_setup_run_dir", lambda *a, **k: None)
+        monkeypatch.setattr(
+            s3, "_run_backtest",
+            lambda run_dir: subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setattr(
+            s3, "verify_run_artifacts",
+            lambda run_dir: BacktestRunResult(run_name=run_dir.name, ok=True),
+        )
+
+        cfg = dataclasses.replace(_make_research_config(period=730, interval="1H"),
+                                  oos_start="2025-01-01")
+        registered = s3._run_stress_for_strategy(
+            "btc_s9", "BTC-USDT-SWAP", cfg, tmp_path / "runs",
+            tmp_path / "code", tmp_path / "manifests", today=date(2026, 1, 1),
+        )
+        assert set(registered) == {"2x_fees_train", "3x_fees_train", "2x_fees_oos", "3x_fees_oos"}
+        on_disk = json.loads(runs_json.read_text())["btc_s9"]["stress_runs"]
+        assert on_disk == registered
+
+    def test_failed_stress_run_not_registered(self, tmp_path, monkeypatch):
+        import subprocess
+        from pipeline import stage3_backtest as s3
+        payload = {"btc_s9": {"symbol": "BTC-USDT-SWAP", "spec_yaml": "x",
+                               "base_run": "btc_s9_base", "regime_runs": {}, "stress_runs": {},
+                               "oos_runs": [], "sweep_run": None, "walk_forward_runs": []}}
+        runs_json = tmp_path / "strategy_runs.json"
+        runs_json.write_text(json.dumps(payload), encoding="utf-8")
+        monkeypatch.setattr("pipeline.strategy_runs._DEFAULT_JSON_PATH", runs_json)
+        monkeypatch.setattr(s3, "_setup_run_dir", lambda *a, **k: None)
+        monkeypatch.setattr(
+            s3, "_run_backtest",
+            lambda run_dir: subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom"),
+        )
+        cfg = dataclasses.replace(_make_research_config(), oos_start=None)
+        registered = s3._run_stress_for_strategy(
+            "btc_s9", "BTC-USDT-SWAP", cfg, tmp_path / "runs",
+            tmp_path / "code", tmp_path / "manifests", today=date(2026, 1, 1),
+        )
+        assert registered == {}

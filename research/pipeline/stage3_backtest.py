@@ -62,7 +62,7 @@ for _p in (_RESEARCH_DIR,):
 
 # ── Internal imports ───────────────────────────────────────────────────────────
 from pipeline.config import _REPO_ROOT, ResearchConfig, SymbolConfig, load_config  # noqa: E402
-from pipeline.strategy_runs import StrategyRunsEntry, StrategyRunsMap, load_strategy_runs  # noqa: E402
+from pipeline.strategy_runs import StrategyRunsEntry, StrategyRunsMap, load_strategy_runs, update_stress_runs  # noqa: E402
 
 # ── Agent / backtest path ──────────────────────────────────────────────────────
 _REPO_ROOT_STR = str(_REPO_ROOT)
@@ -219,6 +219,48 @@ def stress_run_plan(
             label = f"{int(mult)}x_fees_{window}"
             plan.append((run_name, label, window, mult))
     return plan
+
+
+def _run_stress_for_strategy(
+    strategy_id: str,
+    symbol: str,
+    cfg: ResearchConfig,
+    runs_root: Path,
+    strategies_code_dir: Path,
+    manifests_dir: Path,
+    today: date | None = None,
+) -> dict:
+    """Generate + register fee-stress backtests for one strategy.
+
+    Builds each run from stress_run_plan(): same engine/data/window as the base,
+    fees multiplied. Only runs that complete with artifacts are registered.
+    Returns the {label: run_name} mapping that was written.
+    """
+    registered: dict = {}
+    for run_name, label, window, mult in stress_run_plan(strategy_id, cfg, today):
+        config = build_run_config(symbol, cfg, today, fee_multiplier=mult)
+        if window == "train":
+            win = train_window(cfg, today)
+            if win:
+                config["start_date"], config["end_date"] = win
+        elif window == "oos":
+            win = oos_window(cfg, today)
+            if win:
+                config["start_date"], config["end_date"] = win
+        # window == "full": keep build_run_config's full-period dates
+
+        run_dir = runs_root / run_name
+        print(f"  [stress] {run_name} (x{mult:g}, {window})")
+        _setup_run_dir(run_dir, config, strategies_code_dir, strategy_id)
+        proc = _run_backtest(run_dir)
+        if proc.returncode == 0 and verify_run_artifacts(run_dir).ok:
+            registered[label] = run_name
+        else:
+            print(f"  [stress] {run_name} FAILED — not registered")
+
+    if registered:
+        update_stress_runs(strategy_id, registered)
+    return registered
 
 
 def find_signal_engine(strategies_code_dir: Path, strategy_id: str) -> Path | None:
