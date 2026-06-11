@@ -362,7 +362,6 @@ def main() -> None:
             "base_run": entry.base_run,
             "regime_runs": dict(entry.regime_runs),
             "stress_runs": dict(entry.stress_runs),
-            "oos_runs": list(entry.oos_runs),
             "sweep_run": entry.sweep_run,
         }
         result = _compile_one(strategy_id, entry_dict, dry_run=args.dry_run)
