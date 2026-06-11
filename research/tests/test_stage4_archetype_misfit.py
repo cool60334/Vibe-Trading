@@ -66,7 +66,6 @@ def _make_strategy_entry(symbol: str = "BTC-USDT-SWAP"):
         base_run="btc_s1_base",
         regime_runs=types.MappingProxyType({}),
         stress_runs=types.MappingProxyType({}),
-        oos_runs=tuple(),
         sweep_run=None,
     )
 

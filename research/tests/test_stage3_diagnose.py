@@ -88,7 +88,6 @@ def _make_strategy_entry(
     symbol: str = "BTC-USDT-SWAP",
     base_run: str | None = "btc_s1_base",
     regime_runs: dict | None = None,
-    oos_runs: list | None = None,
 ):
     """Return a minimal StrategyRunsEntry for tests."""
     from pipeline.strategy_runs import StrategyRunsEntry
@@ -98,7 +97,6 @@ def _make_strategy_entry(
         base_run=base_run,
         regime_runs=types.MappingProxyType(regime_runs or {}),
         stress_runs=types.MappingProxyType({}),
-        oos_runs=tuple(oos_runs or []),
         sweep_run=None,
     )
 

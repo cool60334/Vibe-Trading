@@ -89,7 +89,6 @@ class TestStage2ToStage2bIntegration:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 
@@ -126,7 +125,6 @@ class TestStage2ToStage2bIntegration:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 
@@ -173,7 +171,6 @@ class TestStage2ToStage2bIntegration:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 

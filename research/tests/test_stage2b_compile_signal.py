@@ -82,7 +82,6 @@ def _make_entry(spec_yaml_path: Path) -> dict:
         "base_run": None,
         "regime_runs": {},
         "stress_runs": {},
-        "oos_runs": [],
         "sweep_run": None,
     }
 
@@ -105,7 +104,6 @@ class TestValidYaml:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 
@@ -141,7 +139,6 @@ class TestValidYaml:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 
@@ -185,7 +182,6 @@ class TestManualEscapeHatch:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 
@@ -236,7 +232,6 @@ class TestInvalidYaml:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 
@@ -254,7 +249,6 @@ class TestInvalidYaml:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 
@@ -282,7 +276,6 @@ class TestDryRun:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 
@@ -312,7 +305,6 @@ class TestDryRun:
             "base_run": None,
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
 

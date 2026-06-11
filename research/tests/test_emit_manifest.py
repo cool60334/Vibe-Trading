@@ -93,7 +93,6 @@ def _good_metrics_row() -> dict:
 
 def _make_entry(
     base_run: str | None = "base_run",
-    oos_runs: tuple[str, ...] = (),
     regime_runs: dict | None = None,
     stress_runs: dict | None = None,
     symbol: str = "BTC-USDT-SWAP",
@@ -109,7 +108,6 @@ def _make_entry(
         base_run=base_run,
         regime_runs=types.MappingProxyType(regime_runs or {}),
         stress_runs=types.MappingProxyType(stress_runs or {}),
-        oos_runs=oos_runs,
         sweep_run=sweep_run,
         walk_forward_runs=walk_forward_runs,
     )
@@ -1197,7 +1195,7 @@ class TestEmitManifestForStrategy:
         base_csv = runs_root / "base_run" / "artifacts" / "metrics.csv"
         _write_metrics_csv(base_csv, _good_metrics_row())
 
-        entry = _make_entry(base_run="base_run", oos_runs=())
+        entry = _make_entry(base_run="base_run")
         strategy_id = "test_strat"
 
         returned_path = emit_manifest_for_strategy(

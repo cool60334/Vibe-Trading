@@ -46,7 +46,6 @@ MINIMAL_VALID_ENTRY = {
     "base_run": "btc_s1_base",
     "regime_runs": {"bull": "btc_s1_bull", "bear": "btc_s1_bear", "neutral": "btc_s1_neutral"},
     "stress_runs": {"3x_fees": "btc_s1_base_stress"},
-    "oos_runs": ["btc_s1_oos_2023"],
     "sweep_run": "btc_s1_sweep",
 }
 
@@ -121,13 +120,6 @@ class TestRealStrategyRuns:
                 f"Entry '{sid}' stress_runs must be a MappingProxyType"
             )
 
-    def test_oos_runs_is_tuple(self) -> None:
-        result = load_strategy_runs()
-        for sid, entry in result.entries.items():
-            assert isinstance(entry.oos_runs, tuple), (
-                f"Entry '{sid}' oos_runs must be a tuple"
-            )
-
     def test_sweep_run_is_str_or_none(self) -> None:
         result = load_strategy_runs()
         for sid, entry in result.entries.items():
@@ -153,10 +145,6 @@ class TestRealStrategyRuns:
                 assert run_name.startswith(prefix), (
                     f"Entry '{sid}': stress_runs['{label}'] = '{run_name}' must start with '{prefix}'"
                 )
-            for run_name in entry.oos_runs:
-                assert run_name.startswith(prefix), (
-                    f"Entry '{sid}': oos_runs contains '{run_name}' which must start with '{prefix}'"
-                )
 
 
 # ─── Unit: valid fixture load ─────────────────────────────────────────────────
@@ -176,7 +164,6 @@ class TestValidFixture:
         assert entry.base_run == "btc_s1_base"
         assert entry.regime_runs == {"bull": "btc_s1_bull", "bear": "btc_s1_bear", "neutral": "btc_s1_neutral"}
         assert entry.stress_runs == {"3x_fees": "btc_s1_base_stress"}
-        assert entry.oos_runs == ("btc_s1_oos_2023",)
         assert entry.sweep_run == "btc_s1_sweep"
 
     def test_sweep_run_null_is_allowed(self, tmp_path: Path) -> None:
@@ -201,16 +188,13 @@ class TestValidFixture:
         result = load_strategy_runs(p)
         assert result.entries["btc_s1_test"].stress_runs == {}
 
-    def test_empty_oos_runs_allowed(self, tmp_path: Path) -> None:
-        data = {
-            "btc_s1_test": {
-                **MINIMAL_VALID_ENTRY,
-                "oos_runs": [],
-            }
-        }
+    def test_legacy_oos_runs_key_ignored(self, tmp_path: Path) -> None:
+        """Old strategy_runs.json files may still carry oos_runs — loader ignores it."""
+        data = {"btc_s1_test": {**MINIMAL_VALID_ENTRY, "oos_runs": []}}
         p = write_json(tmp_path, data)
         result = load_strategy_runs(p)
-        assert result.entries["btc_s1_test"].oos_runs == ()
+        assert "btc_s1_test" in result.entries
+        assert not hasattr(result.entries["btc_s1_test"], "oos_runs")
 
     def test_multiple_entries_parsed(self, tmp_path: Path) -> None:
         entry2 = {**MINIMAL_VALID_ENTRY, "spec_yaml": "research/strategies/strategy_S2.yaml"}
@@ -234,10 +218,6 @@ class TestValidFixture:
         with pytest.raises((AttributeError, TypeError)):
             entry.symbol = "MODIFIED"  # type: ignore[misc]
 
-        # oos_runs is a tuple — cannot append
-        with pytest.raises((AttributeError, TypeError)):
-            entry.oos_runs.append("new_run")  # type: ignore[union-attr]
-
         # regime_runs is a MappingProxyType — cannot set items
         with pytest.raises(TypeError):
             entry.regime_runs["x"] = "y"  # type: ignore[index]
@@ -260,7 +240,6 @@ class TestMissingRequiredKey:
         "base_run",
         "regime_runs",
         "stress_runs",
-        "oos_runs",
         "sweep_run",
     ])
     def test_raises_key_error_naming_strategy_id_and_field(
@@ -331,15 +310,6 @@ class TestWrongType:
         assert "btc_s1_test" in msg
         assert "stress_runs" in msg
 
-    def test_oos_runs_not_list_raises_type_error(self, tmp_path: Path) -> None:
-        data = {"btc_s1_test": {**MINIMAL_VALID_ENTRY, "oos_runs": "btc_s1_oos"}}
-        p = write_json(tmp_path, data)
-        with pytest.raises(TypeError) as exc_info:
-            load_strategy_runs(p)
-        msg = str(exc_info.value)
-        assert "btc_s1_test" in msg
-        assert "oos_runs" in msg
-
     def test_sweep_run_not_string_or_null_raises_type_error(self, tmp_path: Path) -> None:
         data = {"btc_s1_test": {**MINIMAL_VALID_ENTRY, "sweep_run": 7}}
         p = write_json(tmp_path, data)
@@ -376,21 +346,6 @@ class TestWrongType:
         msg = str(exc_info.value)
         assert "btc_s1_test" in msg
         assert "regime_runs" in msg
-
-    def test_oos_runs_element_not_string_raises_type_error(self, tmp_path: Path) -> None:
-        """oos_runs list elements must be strings."""
-        data = {
-            "btc_s1_test": {
-                **MINIMAL_VALID_ENTRY,
-                "oos_runs": ["btc_s1_oos_2023", 99],
-            }
-        }
-        p = write_json(tmp_path, data)
-        with pytest.raises(TypeError) as exc_info:
-            load_strategy_runs(p)
-        msg = str(exc_info.value)
-        assert "btc_s1_test" in msg
-        assert "oos_runs" in msg
 
     def test_stress_runs_value_not_string_raises_type_error(self, tmp_path: Path) -> None:
         """stress_runs dict values must be strings — mirrors regime_runs coverage."""
@@ -429,7 +384,6 @@ class TestMultiSymbolPrefixes:
             "base_run": "eth_s1_base",
             "regime_runs": {"bull": "eth_s1_bull", "bear": "eth_s1_bear", "neutral": "eth_s1_neutral"},
             "stress_runs": {"3x_fees": "eth_s1_base_stress"},
-            "oos_runs": ["eth_s1_oos_2023"],
             "sweep_run": "eth_s1_sweep",
         }
         data = {
@@ -541,7 +495,6 @@ class TestUpdateSweepRun:
         assert entry.symbol == MINIMAL_VALID_ENTRY["symbol"]
         assert entry.base_run == MINIMAL_VALID_ENTRY["base_run"]
         assert dict(entry.regime_runs) == MINIMAL_VALID_ENTRY["regime_runs"]
-        assert list(entry.oos_runs) == MINIMAL_VALID_ENTRY["oos_runs"]
 
     def test_preserves_other_strategies(self, tmp_path: Path) -> None:
         """Writing one strategy's sweep_run must leave siblings untouched."""
@@ -607,7 +560,7 @@ class TestRegisterStrategy:
         raw = json.loads(p.read_text(encoding="utf-8"))
         entry = raw["btc_s10_single_factor"]
         required_keys = {"symbol", "spec_yaml", "base_run", "regime_runs",
-                         "stress_runs", "oos_runs", "sweep_run", "walk_forward_runs"}
+                         "stress_runs", "sweep_run", "walk_forward_runs"}
         missing = required_keys - entry.keys()
         assert not missing, f"Entry is missing required keys: {missing}"
 
@@ -626,7 +579,6 @@ class TestRegisterStrategy:
         assert entry["base_run"] == "btc_s10_single_factor_base"
         assert entry["regime_runs"] == {}
         assert entry["stress_runs"] == {}
-        assert entry["oos_runs"] == []
         assert entry["sweep_run"] is None
         assert entry["walk_forward_runs"] == []
 
@@ -814,7 +766,6 @@ class TestRegisterStrategy:
         assert entry.base_run == "btc_s10_single_factor_base"
         assert entry.sweep_run is None
         assert entry.regime_runs == {}
-        assert entry.oos_runs == ()
         assert entry.walk_forward_runs == ()
 
 
@@ -824,10 +775,10 @@ def test_load_strategy_runs_filters_to_env_symbol(tmp_path, monkeypatch):
     payload = {
         "btc_s1_x": {"symbol": "BTC-USDT-SWAP", "spec_yaml": "research/strategies/strategy_S1.yaml",
                       "base_run": "btc_s1_x_base", "regime_runs": {}, "stress_runs": {},
-                      "oos_runs": [], "sweep_run": None, "walk_forward_runs": []},
+                      "sweep_run": None, "walk_forward_runs": []},
         "eth_s1_y": {"symbol": "ETH-USDT-SWAP", "spec_yaml": "research/strategies/strategy_S1.yaml",
                       "base_run": "eth_s1_y_base", "regime_runs": {}, "stress_runs": {},
-                      "oos_runs": [], "sweep_run": None, "walk_forward_runs": []},
+                      "sweep_run": None, "walk_forward_runs": []},
     }
     p = tmp_path / "strategy_runs.json"
     p.write_text(json.dumps(payload), encoding="utf-8")
@@ -848,7 +799,7 @@ def test_update_stress_runs_writes_mapping(tmp_path):
     payload = {
         "btc_s9": {"symbol": "BTC-USDT-SWAP", "spec_yaml": "research/strategies/strategy_S1.yaml",
                     "base_run": "btc_s9_base", "regime_runs": {}, "stress_runs": {},
-                    "oos_runs": [], "sweep_run": None, "walk_forward_runs": []},
+                    "sweep_run": None, "walk_forward_runs": []},
     }
     p = tmp_path / "strategy_runs.json"
     p.write_text(json.dumps(payload), encoding="utf-8")

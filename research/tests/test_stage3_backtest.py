@@ -84,7 +84,6 @@ def _make_strategy_entry(
     symbol: str = "BTC-USDT-SWAP",
     base_run: str | None = "btc_s1_base",
     regime_runs: dict | None = None,
-    oos_runs: list | None = None,
 ):
     """Return a minimal StrategyRunsEntry-like object."""
     from pipeline.strategy_runs import StrategyRunsEntry
@@ -94,7 +93,6 @@ def _make_strategy_entry(
         base_run=base_run,
         regime_runs=types.MappingProxyType(regime_runs or {}),
         stress_runs=types.MappingProxyType({}),
-        oos_runs=tuple(oos_runs or []),
         sweep_run=None,
     )
 
@@ -434,7 +432,6 @@ class TestListPendingRuns:
             base_run=None,
             regime_runs=types.MappingProxyType({}),
             stress_runs=types.MappingProxyType({"3x_fees": "btc_s1_base_stress"}),
-            oos_runs=(),
             sweep_run="btc_s1_sweep",
         )
         runs = list_pending_runs("btc_s1_test", entry)
@@ -668,7 +665,7 @@ class TestRunStressForStrategy:
         payload = {
             "btc_s9": {"symbol": "BTC-USDT-SWAP", "spec_yaml": "research/strategies/strategy_S1.yaml",
                         "base_run": "btc_s9_base", "regime_runs": {}, "stress_runs": {},
-                        "oos_runs": [], "sweep_run": None, "walk_forward_runs": []},
+                        "sweep_run": None, "walk_forward_runs": []},
         }
         runs_json = tmp_path / "strategy_runs.json"
         runs_json.write_text(json.dumps(payload), encoding="utf-8")
@@ -700,7 +697,7 @@ class TestRunStressForStrategy:
         from pipeline import stage3_backtest as s3
         payload = {"btc_s9": {"symbol": "BTC-USDT-SWAP", "spec_yaml": "x",
                                "base_run": "btc_s9_base", "regime_runs": {}, "stress_runs": {},
-                               "oos_runs": [], "sweep_run": None, "walk_forward_runs": []}}
+                               "sweep_run": None, "walk_forward_runs": []}}
         runs_json = tmp_path / "strategy_runs.json"
         runs_json.write_text(json.dumps(payload), encoding="utf-8")
         monkeypatch.setattr("pipeline.strategy_runs._DEFAULT_JSON_PATH", runs_json)

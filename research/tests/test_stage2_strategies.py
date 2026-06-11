@@ -1011,7 +1011,6 @@ def _make_entry_for_yaml(strat_id: str, yaml_text: str, tmp_path: Path) -> dict:
         "base_run": None,
         "regime_runs": {},
         "stress_runs": {},
-        "oos_runs": [],
         "sweep_run": None,
     }
 

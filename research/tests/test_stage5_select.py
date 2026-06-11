@@ -431,7 +431,6 @@ def _make_strategy_runs_json(strategies: dict) -> dict:
             "base_run": info.get("base_run"),
             "regime_runs": {},
             "stress_runs": {},
-            "oos_runs": [],
             "sweep_run": None,
         }
     return result
@@ -645,7 +644,6 @@ def _make_runs_map(strategies: dict, tmp_path: Path):
             base_run=info.get("base_run"),
             regime_runs={},
             stress_runs={},
-            oos_runs=[],
             sweep_run=None,
         )
     return StrategyRunsMap(entries=entries)

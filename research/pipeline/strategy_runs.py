@@ -51,7 +51,6 @@ _REQUIRED_ENTRY_KEYS = {
     "base_run",
     "regime_runs",
     "stress_runs",
-    "oos_runs",
     "sweep_run",
 }
 
@@ -85,12 +84,6 @@ class StrategyRunsEntry:
     """
     Cost-stress run directories keyed by a descriptive label.
     Example: {"3x_fees": "btc_s1_base_stress"}
-    """
-
-    oos_runs: tuple[str, ...]
-    """
-    Out-of-sample run directory names (ordered chronologically if multiple).
-    Example: ("btc_s1_oos_2023", "btc_s1_oos_2024")
     """
 
     sweep_run: str | None
@@ -252,19 +245,6 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
                     f"'stress_runs[{k!r}]' must be a string, got {type(v).__name__}."
                 )
 
-        oos_runs = entry_raw["oos_runs"]
-        if not isinstance(oos_runs, list):
-            raise TypeError(
-                f"strategy_runs.json: entry for strategy_id '{strategy_id}': "
-                f"'oos_runs' must be a JSON array (list), got {type(oos_runs).__name__}."
-            )
-        for i, v in enumerate(oos_runs):
-            if not isinstance(v, str):
-                raise TypeError(
-                    f"strategy_runs.json: entry for strategy_id '{strategy_id}': "
-                    f"'oos_runs[{i}]' must be a string, got {type(v).__name__}."
-                )
-
         sweep_run = entry_raw["sweep_run"]
         if sweep_run is not None and not isinstance(sweep_run, str):
             raise TypeError(
@@ -292,7 +272,6 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
             base_run=base_run,
             regime_runs=types.MappingProxyType(dict(regime_runs)),
             stress_runs=types.MappingProxyType(dict(stress_runs)),
-            oos_runs=tuple(oos_runs),
             sweep_run=sweep_run,
             walk_forward_runs=tuple(wf_runs),
         )
@@ -355,7 +334,6 @@ def register_strategy(
         "base_run": f"{strategy_id}_base",
         "regime_runs": {},
         "stress_runs": {},
-        "oos_runs": [],
         "sweep_run": None,
         "walk_forward_runs": [],
     }
