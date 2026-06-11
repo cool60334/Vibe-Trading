@@ -2,7 +2,7 @@
   "schema_version": 1,
   "strategy_id": "eth_s5_half_size",
   "symbol": "ETH",
-  "generated_at": "2026-06-06T12:04:30.619983Z",
+  "generated_at": "2026-06-10T14:58:35.462391Z",
   "pipeline_stage": 5,
   "spec": {
     "source_run": null,
@@ -16,12 +16,12 @@
   "backtest": {
     "in_sample": {
       "source_run": "eth_s5_half_size_train",
-      "sharpe": 1.1889188374029411,
-      "max_drawdown": 0.14874114732664587,
+      "sharpe": 1.2386463971329293,
+      "max_drawdown": 0.14889666790038583,
       "trades": 86,
-      "profit_factor": 1.9303,
-      "total_return": 0.3602550621984235,
-      "win_rate": 0.5581395348837209
+      "profit_factor": 1.9773,
+      "total_return": 0.37625222990011187,
+      "win_rate": 0.5813953488372093
     },
     "oos": {
       "source_run": "eth_s5_half_size_oos",
@@ -36,13 +36,49 @@
     "monte_carlo": null,
     "benchmark": {
       "source_run": "eth_s5_half_size_train",
-      "strategy_return": 0.3602550621984235,
-      "hodl_return": 0.840634,
-      "excess_return": -0.480379,
+      "strategy_return": 0.37625222990011187,
+      "hodl_return": 1.0014,
+      "excess_return": -0.625147,
       "beats_hodl": false
     },
     "by_regime": [],
-    "cost_stress": null
+    "cost_stress": {
+      "source_run": "eth_s5_half_size_stress_train_2x",
+      "levels": [
+        {
+          "label": "2x_fees_train",
+          "source_run": "eth_s5_half_size_stress_train_2x",
+          "fee_multiplier": 2.0,
+          "sharpe": 0.9569806019954579,
+          "total_return": 0.2761567866125745,
+          "profit_factor": 1.8197
+        },
+        {
+          "label": "3x_fees_train",
+          "source_run": "eth_s5_half_size_stress_train_3x",
+          "fee_multiplier": 3.0,
+          "sharpe": 0.6754740907447838,
+          "total_return": 0.18330942013096307,
+          "profit_factor": 1.6742
+        },
+        {
+          "label": "2x_fees_oos",
+          "source_run": "eth_s5_half_size_stress_oos_2x",
+          "fee_multiplier": 2.0,
+          "sharpe": 1.0917288661912254,
+          "total_return": 0.15365469595076564,
+          "profit_factor": 1.6375
+        },
+        {
+          "label": "3x_fees_oos",
+          "source_run": "eth_s5_half_size_stress_oos_3x",
+          "fee_multiplier": 3.0,
+          "sharpe": 0.8515737595768399,
+          "total_return": 0.11655279813695985,
+          "profit_factor": 1.5274
+        }
+      ]
+    }
   },
   "optimization": {
     "source_run": "eth_s5_half_size_train",
@@ -130,12 +166,12 @@
       {
         "name": "alpha_not_fee_illusion",
         "threshold": 0.0,
-        "actual": null,
-        "passed": false,
-        "fatal": false
+        "actual": 0.6754740907447838,
+        "passed": true,
+        "fatal": true
       }
     ],
-    "overall_pass": false,
+    "overall_pass": true,
     "fatal_fail": false,
     "red_flags": [
       "too_few_trades",

@@ -24,6 +24,7 @@ agent/tests/*_result.json
 .ruff_cache/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
+dashboard/web/tsconfig.tsbuildinfo
 wiki/node_modules/
 dashboard/web/node_modules/
 wiki/dist/

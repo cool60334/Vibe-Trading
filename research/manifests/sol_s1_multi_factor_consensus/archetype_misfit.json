@@ -1,0 +1,6 @@
+{
+  "archetype_misfit": true,
+  "reason": "trades_per_year 1482 > 1000",
+  "sharpe": -1.6738973261053518,
+  "trades_per_year": 1481.7
+}
