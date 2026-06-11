@@ -148,6 +148,26 @@ def test_symbol_aware_stages():
         assert pj.stage_uses_symbol(s) is False
 
 
+def test_create_stage3_job_with_stress(tmp_path):
+    job = pj.create_job(tmp_path, kind="stage", stage="3", stress=True)
+    assert job["stress"] is True
+
+
+def test_pipeline_job_forces_stress_off(tmp_path):
+    job = pj.create_job(tmp_path, kind="pipeline", stress=True)
+    assert job["stress"] is False
+
+
+def test_non_stage3_stage_job_forces_stress_off(tmp_path):
+    job = pj.create_job(tmp_path, kind="stage", stage="1", stress=True)
+    assert job["stress"] is False
+
+
+def test_default_job_has_stress_false(tmp_path):
+    job = pj.create_job(tmp_path, kind="stage", stage="1")
+    assert job["stress"] is False
+
+
 def test_create_job_stores_symbol(tmp_path):
     job = pj.create_job(tmp_path, kind="stage", stage="3", symbol="btc")
     assert job["symbol"] == "btc"

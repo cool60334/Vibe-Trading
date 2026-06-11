@@ -103,7 +103,7 @@ def list_jobs(repo_root, limit: int = 50) -> list[dict]:
 
 
 def create_job(repo_root, kind: str, stage: Optional[str] = None,
-               symbol: Optional[str] = None) -> dict:
+               symbol: Optional[str] = None, stress: bool = False) -> dict:
     if kind == "stage":
         if stage not in allowed_stage_ids():
             raise ValueError(f"invalid stage {stage!r}")
@@ -120,6 +120,7 @@ def create_job(repo_root, kind: str, stage: Optional[str] = None,
         "kind": kind,
         "stage": stage,
         "symbol": symbol,
+        "stress": bool(stress) and kind == "stage" and stage == "3",
         "status": "queued",
         "created_at": _now(),
         "started_at": None,
