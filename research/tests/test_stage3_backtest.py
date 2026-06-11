@@ -410,7 +410,7 @@ class TestListPendingRuns:
         entry = _make_strategy_entry(base_run=None)
         runs = list_pending_runs("btc_s1_test", entry)
         # None should not appear
-        for run_name, _, _ in runs:
+        for run_name, *_ in runs:
             assert run_name is not None
 
     def test_regime_runs_included(self):
