@@ -472,3 +472,43 @@ def test_get_pipeline_empty(tmp_path):
         r = c.get("/api/pipeline")
     assert r.status_code == 200
     assert r.json() == []
+
+
+# ---------------------------------------------------------------------------
+# POST /api/pipeline/run — stress flag
+# ---------------------------------------------------------------------------
+
+def test_run_stage3_stress_accepted(client, monkeypatch):
+    monkeypatch.setattr("main._config_symbols", lambda: ["ETH"])
+    r = client.post(
+        "/api/pipeline/run",
+        json={"kind": "stage", "stage": "3", "symbol": "ETH", "stress": True},
+    )
+    assert r.status_code == 201
+    assert r.json()["stress"] is True
+
+
+def test_run_stress_rejected_on_non_stage3(client):
+    r = client.post(
+        "/api/pipeline/run",
+        json={"kind": "stage", "stage": "1", "stress": True},
+    )
+    assert r.status_code == 400
+
+
+def test_run_stress_rejected_on_pipeline(client):
+    r = client.post(
+        "/api/pipeline/run",
+        json={"kind": "pipeline", "stress": True},
+    )
+    assert r.status_code == 400
+
+
+def test_run_stage3_without_stress_still_works(client, monkeypatch):
+    monkeypatch.setattr("main._config_symbols", lambda: ["ETH"])
+    r = client.post(
+        "/api/pipeline/run",
+        json={"kind": "stage", "stage": "3", "symbol": "ETH"},
+    )
+    assert r.status_code == 201
+    assert r.json()["stress"] is False
