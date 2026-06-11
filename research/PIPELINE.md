@@ -299,7 +299,7 @@ python -m research.pipeline.stage3_backtest
 ```
 
 ### 跑哪些 run
-讀 `research/strategy_runs.json`，每策略跑：`base_run`（主回測）、`regime_runs`（bull/bear/neutral 切片）、`oos_runs`（年度切片）。透過 subprocess 呼叫 `python -m backtest.runner <run_dir>`，產物寫 `runs/<run>/artifacts/`（metrics.csv / equity.csv / trades.csv …）。
+讀 `research/strategy_runs.json`，每策略跑：`base_run`（主回測）、`regime_runs`（bull/bear/neutral 切片）。透過 subprocess 呼叫 `python -m backtest.runner <run_dir>`，產物寫 `runs/<run>/artifacts/`（metrics.csv / equity.csv / trades.csv …）。
 
 ### train/OOS 行為
 - **未設 `oos_start`**：base = 全期（legacy）。
@@ -421,12 +421,12 @@ dashboard 的 promote 按鈕靠 `gate.fatal_fail` 決定是否解鎖。2026-06-0
 
 | 情況 | eval_metrics | min_sharpe 門檻 | min_trades 門檻 |
 |---|---|---|---|
-| `backtest.oos` 有值（walk-forward 或 oos_runs） | OOS 指標 | 1.0（`GATE_MIN_WALK_FORWARD_SHARPE`） | 30（`GATE_OOS_MIN_TRADES`） |
+| `backtest.oos` 有值（walk-forward） | OOS 指標 | 1.0（`GATE_MIN_WALK_FORWARD_SHARPE`） | 30（`GATE_OOS_MIN_TRADES`） |
 | `backtest.oos == None`（舊式 legacy） | in-sample 指標 | 1.5（`GATE_MIN_SHARPE`） | 100（`GATE_MIN_TRADES`） |
 
 `max_drawdown`（≤ 0.10）與 `min_profit_factor`（≥ 1.5）門檻不論模式不變。
 
-**OOS 資料來源（`build_backtest_block`）**：`oos_runs` 非空 → 優先；否則 fallback `walk_forward_runs[0]`；兩者皆空 → `oos = None`（legacy 路徑）。
+**OOS 資料來源（`build_backtest_block`）**：`walk_forward_runs[0]`；為空 → `oos = None`（legacy 路徑）。
 
 **`alpha_not_fee_illusion` 行為**：
 - 有 stress 資料（`stress_runs` 非空）→ `fatal=True`；worst sharpe ≤ 0 → hard block。
@@ -456,7 +456,7 @@ period_start ─────────────── oos_start ───�
 
 ### 規則
 - **in-sample（train）**：base 回測 + regime 切片 + 掃參，全部止於 `oos_start`，**不碰 OOS**。Stage 3-diag 仍會讀 train 指標，但只當作 overfit gap 偵測用，不作為主要裁決。
-- **真 OOS**：只有 `manifest.backtest.walk_forward` 是真樣本外。`backtest.oos`（年度切片）在切分模式下應視為描述用、非真 OOS（建議乾脆清空 `oos_runs`，讓 walk_forward 當唯一 OOS）。**Stage 3-diag 現在也直接消費 walk-forward 指標**作為 LLM prompt 與 deterministic fallback 的最終裁決依據。
+- **真 OOS**：只有 `manifest.backtest.walk_forward` 是真樣本外。`oos_runs` 已於 2026-06-11 移除（B4）——`walk_forward` 是唯一 OOS 來源。**Stage 3-diag 現在也直接消費 walk-forward 指標**作為 LLM prompt 與 deterministic fallback 的最終裁決依據。
 - **解讀**：train 調得好、held-out 也撐住 = 真 edge；train 好但 held-out 崩 = overfit。例 BTC s2：train sharpe ~1.5 → held-out 2025 僅 0.27 = edge 在 2025 退潮（真相，非藏起來）。
 
 ### 自動流程

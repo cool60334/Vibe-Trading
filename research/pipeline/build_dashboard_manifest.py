@@ -12,7 +12,7 @@ This builder assembles that ``manifest.json`` from the per-stage outputs:
 
     spec          <- strategy_runs.json entry + spec_yaml
     generation    <- <id>/generation.json          (stage 2)
-    backtest      <- runs/<base|oos|regime>/artifacts/metrics.csv  (stage 3)
+    backtest      <- runs/<base|regime>/artifacts/metrics.csv  (stage 3)
     optimization  <- <id>/optimization.json         (stage 4)
     diagnosis     <- <id>/diagnosis.json            (stage 3-diag)
 
