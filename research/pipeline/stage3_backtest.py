@@ -6,7 +6,7 @@ Stage-3 runner: Backtest Execution.
 For each strategy in strategy_runs.json this runner:
   1. Loads config via pipeline.config.load_config().
   2. Reads strategy_runs.json to get all strategies + their run directory names.
-  3. For each non-null run (base_run, regime_runs values, oos_runs items):
+  3. For each non-null run (base_run, regime_runs values):
      - Gates on stage1 factor manifest existing for the symbol.
      - Creates the run directory under <repo_root>/runs/<run_name>/.
      - Writes config.json inside the run dir.
@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -514,7 +513,7 @@ def list_pending_runs(
 ) -> list[tuple[str, str, str, str]]:
     """List all backtest runs to process from a strategy entry.
 
-    Processes base_run, regime_runs values, and oos_runs items.
+    Processes base_run and regime_runs values.
     Does NOT include stress_runs or sweep_run (those belong to other tools).
     Skips null/None values.
 
@@ -524,8 +523,7 @@ def list_pending_runs(
 
     Returns:
         List of (run_name, strategy_id, symbol, role) tuples.
-        Role is one of: "base", "<regime_label>" (e.g. "bull"), or the oos
-        run_name itself (e.g. "eth_s1_oos_2023") — caller parses year from it.
+        Role is one of: "base" or "<regime_label>" (e.g. "bull").
     """
     runs: list[tuple[str, str, str, str]] = []
 
@@ -535,16 +533,10 @@ def list_pending_runs(
     for regime_label, run_name in entry.regime_runs.items():
         runs.append((run_name, strategy_id, entry.symbol, regime_label))
 
-    for run_name in entry.oos_runs:
-        runs.append((run_name, strategy_id, entry.symbol, run_name))
-
     return runs
 
 
-# ── Per-run window overrides (regime / oos slicing) ───────────────────────────
-
-
-_OOS_YEAR_RE = re.compile(r"oos_(\d{4})$")
+# ── Per-run window overrides (regime slicing) ────────────────────────────────
 
 
 def load_regime_windows(manifests_dir: Path, short: str) -> dict[str, tuple[str, str]]:
@@ -607,7 +599,6 @@ def apply_run_window_overrides(
     Role mapping:
       - "base"                  → unchanged (full window)
       - "bull"/"bear"/"neutral" → longest contiguous regime span from regime_windows
-      - "*_oos_YYYY"            → YYYY-01-01 to YYYY-12-31
 
     Unknown roles → unchanged.
     """
@@ -621,13 +612,6 @@ def apply_run_window_overrides(
         cap = config_dict.get("end_date")
         config_dict["start_date"] = start
         config_dict["end_date"] = min(end, cap) if cap else end
-        return config_dict
-
-    m = _OOS_YEAR_RE.search(role)
-    if m:
-        year = m.group(1)
-        config_dict["start_date"] = f"{year}-01-01"
-        config_dict["end_date"] = f"{year}-12-31"
         return config_dict
 
     return config_dict
@@ -920,7 +904,7 @@ def main() -> None:
                     result = dataclasses.replace(result, archetype_misfit=True)
                     print(
                         f"\n[stage3] {strategy_id}: archetype_misfit — "
-                        f"skipping regime/oos runs"
+                        f"skipping regime runs"
                     )
                     write_archetype_misfit_sentinel(manifests_dir, strategy_id, base_run_dir)
                 else:

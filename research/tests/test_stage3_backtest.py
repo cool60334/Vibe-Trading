@@ -425,16 +425,6 @@ class TestListPendingRuns:
         assert "btc_s1_bull" in run_names
         assert "btc_s1_bear" in run_names
 
-    def test_oos_runs_included(self):
-        entry = _make_strategy_entry(
-            base_run=None,
-            oos_runs=["btc_s1_oos_2023", "btc_s1_oos_2024"],
-        )
-        runs = list_pending_runs("btc_s1_test", entry)
-        run_names = [r[0] for r in runs]
-        assert "btc_s1_oos_2023" in run_names
-        assert "btc_s1_oos_2024" in run_names
-
     def test_stress_and_sweep_not_included(self):
         """stress_runs and sweep_run are NOT processed by stage3."""
         from pipeline.strategy_runs import StrategyRunsEntry
@@ -459,18 +449,16 @@ class TestListPendingRuns:
             assert strategy_id == "btc_s1_test"
             assert symbol == "BTC-USDT-SWAP"
 
-    def test_all_base_plus_regime_plus_oos(self):
+    def test_mixed_runs_included(self):
         entry = _make_strategy_entry(
             base_run="btc_s1_base",
             regime_runs={"bull": "btc_s1_bull"},
-            oos_runs=["btc_s1_oos_2023"],
         )
         runs = list_pending_runs("btc_s1_test", entry)
         run_names = [r[0] for r in runs]
         assert "btc_s1_base" in run_names
         assert "btc_s1_bull" in run_names
-        assert "btc_s1_oos_2023" in run_names
-        assert len(run_names) == 3
+        assert len(run_names) == 2
 
 
 # ---------------------------------------------------------------------------
