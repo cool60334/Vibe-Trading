@@ -89,6 +89,7 @@ class BacktestRunResult:
     ok: bool
     error: str | None = None  # description if ok=False
     archetype_misfit: bool = False  # True when the fail-fast guard triggered
+    skipped_window: bool = False  # True when regime window lies outside train (skipped, not run)
 
 
 # ─── Pure-logic helpers (testable, network-free) ──────────────────────────────
@@ -645,6 +646,8 @@ def print_summary(results: list[BacktestRunResult]) -> None:
     for r in results:
         if r.ok and r.archetype_misfit:
             print(f"  [SKIP] {r.run_name}: skipped (archetype_misfit)")
+        elif r.ok and r.skipped_window:
+            print(f"  [SKIP] {r.run_name}: window outside train (skipped)")
         elif r.ok:
             print(f"  [OK] {r.run_name}: artifacts present")
         else:
@@ -781,7 +784,7 @@ def _run_backtest_for_run(
             f"{config_dict['end_date']} lies outside the train window — skipped"
         )
         print(f"  [SKIP] {msg}")
-        return BacktestRunResult(run_name=run_name, ok=True)
+        return BacktestRunResult(run_name=run_name, ok=True, skipped_window=True)
 
     print(f"  [1/3] Creating run dir: {run_dir}  (role={role}, window={config_dict['start_date']}..{config_dict['end_date']})")
     _setup_run_dir(run_dir, config_dict, strategies_code_dir, strategy_id)

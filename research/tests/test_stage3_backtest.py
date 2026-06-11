@@ -52,6 +52,7 @@ from pipeline.stage3_backtest import (   # noqa: E402
     compute_exit_code,
     find_signal_engine,
     list_pending_runs,
+    print_summary,
     stress_run_plan,
     symbol_to_short,
     verify_run_artifacts,
@@ -654,6 +655,27 @@ class TestStressRunPlan:
         for _name, label, _window, mult in stress_run_plan("x", cfg, today=date(2026, 1, 1)):
             m = re.search(r"(\d+(?:\.\d+)?)x", label.lower())
             assert m and float(m.group(1)) == mult
+
+
+class TestPrintSummarySkippedWindow:
+    """A window-skipped run must render [SKIP], not [OK], while ok stays True."""
+
+    def test_skipped_window_renders_skip_not_ok(self, capsys):
+        results = [BacktestRunResult(run_name="btc_s1_bear", ok=True, skipped_window=True)]
+        print_summary(results)
+        out = capsys.readouterr().out
+        assert "[SKIP]" in out
+        assert "[OK] btc_s1_bear" not in out
+
+    def test_skipped_window_keeps_ok_true_for_exit_code(self):
+        r = BacktestRunResult(run_name="btc_s1_bear", ok=True, skipped_window=True)
+        assert r.ok is True
+        assert compute_exit_code([r]) == 0
+
+    def test_plain_ok_still_renders_ok(self, capsys):
+        print_summary([BacktestRunResult(run_name="btc_s1_base", ok=True)])
+        out = capsys.readouterr().out
+        assert "[OK] btc_s1_base" in out
 
 
 class TestRunStressForStrategy:
