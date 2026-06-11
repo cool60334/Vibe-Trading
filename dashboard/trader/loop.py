@@ -28,7 +28,9 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+import ccxt
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +54,48 @@ _INTERVAL_SLEEP: dict[str, int] = {
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+# ── Transient Bybit error backoff ────────────────────────────────────────────
+
+# Bybit caps requests per IP across *all* clients on the host. When another
+# ccxt client (e.g. a research data fetch) runs concurrently, the combined rate
+# can trip retCode 10006 ("Too many visits"), which ccxt raises as a
+# RateLimitExceeded (a NetworkError subclass). enableRateLimit only throttles
+# within one process, so transient cross-process spikes still leak through.
+RETRY_MAX = int(os.environ.get("BYBIT_RETRY_MAX", "4"))
+RETRY_BASE_SLEEP = float(os.environ.get("BYBIT_RETRY_BASE_SLEEP", "5"))
+
+
+def call_with_retry(
+    fn: Callable,
+    *,
+    max_attempts: int = RETRY_MAX,
+    base_sleep: float = RETRY_BASE_SLEEP,
+    sleeper: Callable[[float], None] = time.sleep,
+):
+    """Call ``fn()``, retrying transient ccxt ``NetworkError`` with backoff.
+
+    Covers rate limits (retCode 10006), timeouts, and ExchangeNotAvailable —
+    all NetworkError subclasses and all transient. Backs off
+    ``base_sleep * 2**(attempt-1)`` seconds between tries and re-raises once
+    ``max_attempts`` is reached, so a momentary per-IP spike self-heals instead
+    of dropping a trading bar. Non-network errors (logic bugs) raise at once.
+    """
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except ccxt.NetworkError as exc:
+            attempt += 1
+            if attempt >= max_attempts:
+                raise
+            sleep_s = base_sleep * (2 ** (attempt - 1))
+            logger.warning(
+                "Bybit transient error (attempt %d/%d): %s — backing off %ss",
+                attempt, max_attempts, exc, sleep_s,
+            )
+            sleeper(sleep_s)
 
 
 def kill_thresholds(env: Optional[dict] = None) -> tuple[float, float]:
@@ -221,7 +265,7 @@ def run(args: argparse.Namespace) -> None:
     while not _shutdown["flag"]:
         try:
             # ── Fetch equity & check kill switch ─────────────────────────────
-            equity = broker.get_equity()
+            equity = call_with_retry(broker.get_equity)
             decision, reason = ks.check(equity)
             max_dd = ks.current_drawdown(equity)
 
@@ -237,7 +281,7 @@ def run(args: argparse.Namespace) -> None:
                 })
                 # Close all positions
                 try:
-                    broker.close_position(symbol)
+                    call_with_retry(lambda: broker.close_position(symbol))
                 except Exception as e:
                     logger.warning("Failed to close position on terminate: %s", e)
                 logger.warning("Kill switch TERMINATE: %s", reason)
@@ -263,10 +307,10 @@ def run(args: argparse.Namespace) -> None:
 
             # ── Compute signal ────────────────────────────────────────────────
             if live_status == "running" or stale_pause:
-                result = compute_signal(
+                result = call_with_retry(lambda: compute_signal(
                     run_dir, broker.exchange, symbol, interval, lookback,
                     manifests_dir=manifests_dir,
-                )
+                ))
 
                 if result.stale:
                     # Factor data too old — do not trade on frozen alpha.
@@ -300,12 +344,12 @@ def run(args: argparse.Namespace) -> None:
 
                 # ── Execute signal ────────────────────────────────────────────
                 if not result.stale and new_signal != current_signal:
-                    pos = broker.get_position(symbol)
+                    pos = call_with_retry(lambda: broker.get_position(symbol))
 
                     # Close existing position if changing direction or going flat
                     if pos is not None:
                         try:
-                            close_order = broker.close_position(symbol)
+                            close_order = call_with_retry(lambda: broker.close_position(symbol))
                             if close_order:
                                 trade_count += 1
                                 _append_trade(out_dir, {
@@ -322,7 +366,9 @@ def run(args: argparse.Namespace) -> None:
                     new_side = _signal_to_side(new_signal)
                     if new_side is not None:
                         try:
-                            order = broker.place_market_order(symbol, new_side, qty)
+                            order = call_with_retry(
+                                lambda: broker.place_market_order(symbol, new_side, qty)
+                            )
                             trade_count += 1
                             _append_trade(out_dir, {
                                 "timestamp": _now_iso(),
@@ -342,7 +388,7 @@ def run(args: argparse.Namespace) -> None:
                     current_signal = new_signal
 
             # ── Write status & equity snapshot ────────────────────────────────
-            pos = broker.get_position(symbol)
+            pos = call_with_retry(lambda: broker.get_position(symbol))
             open_positions = 1 if pos else 0
             ts = _now_iso()
             _append_equity(out_dir, ts, equity)
