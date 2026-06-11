@@ -1,17 +1,20 @@
 """Tests for dashboard/server/pipeline_manager.py (global-serial executor)."""
 from __future__ import annotations
 
+import io
+
 import pipeline_jobs as pj
+import pipeline_manager as pm
 from pipeline_manager import Manager
 
 
 def _runner(codes):
-    """Injectable runner: records (stage, symbol), returns codes.get(stage, 0)."""
+    """Injectable runner: records (stage, symbol, stress), returns codes.get(stage, 0)."""
     calls = []
 
-    def run(repo_root, stage_id, symbol, fp):
-        calls.append((stage_id, symbol))
-        fp.write(f"ran {stage_id} symbol={symbol}\n")
+    def run(repo_root, stage_id, symbol, fp, stress=False):
+        calls.append((stage_id, symbol, stress))
+        fp.write(f"ran {stage_id} symbol={symbol} stress={stress}\n")
         return codes.get(stage_id, 0)
 
     run.calls = calls
@@ -91,7 +94,7 @@ def test_pipeline_job_with_symbol_filters_only_aware_stages(tmp_path):
     job = pj.create_job(tmp_path, kind="pipeline", symbol="btc")
     r = _runner({})
     Manager(tmp_path, runner=r).scan_once()
-    by_stage = dict(r.calls)
+    by_stage = {c[0]: c[1] for c in r.calls}
     # symbol-aware stages get "btc"; 2b/5 get None (global)
     assert by_stage["0a"] == "btc"
     assert by_stage["3"] == "btc"
@@ -104,11 +107,62 @@ def test_stage_job_with_symbol_passes_it(tmp_path):
     pj.create_job(tmp_path, kind="stage", stage="3", symbol="btc")
     r = _runner({})
     Manager(tmp_path, runner=r).scan_once()
-    assert r.calls == [("3", "btc")]
+    assert r.calls == [("3", "btc", False)]
 
 
 def test_job_without_symbol_passes_none(tmp_path):
     pj.create_job(tmp_path, kind="stage", stage="3")
     r = _runner({})
     Manager(tmp_path, runner=r).scan_once()
-    assert r.calls == [("3", None)]
+    assert r.calls == [("3", None, False)]
+
+
+def test_stage3_stress_job_threads_stress_true(tmp_path):
+    pj.create_job(tmp_path, kind="stage", stage="3", symbol="eth", stress=True)
+    r = _runner({})
+    Manager(tmp_path, runner=r).scan_once()
+    assert r.calls == [("3", "eth", True)]
+
+
+def test_non_stress_job_threads_stress_false(tmp_path):
+    pj.create_job(tmp_path, kind="stage", stage="3", symbol="eth")
+    r = _runner({})
+    Manager(tmp_path, runner=r).scan_once()
+    assert r.calls == [("3", "eth", False)]
+
+
+# ---------------------------------------------------------------------------
+# _default_runner argv tests
+# ---------------------------------------------------------------------------
+
+def _capture_argv(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(pm.subprocess, "run", fake_run)
+    return captured
+
+
+def test_default_runner_stage3_stress_appends_flag(tmp_path, monkeypatch):
+    captured = _capture_argv(monkeypatch)
+    pm._default_runner(tmp_path, "3", "eth", io.StringIO(), stress=True)
+    assert "--stress" in captured["argv"]
+
+
+def test_default_runner_stage3_no_stress_omits_flag(tmp_path, monkeypatch):
+    captured = _capture_argv(monkeypatch)
+    pm._default_runner(tmp_path, "3", "eth", io.StringIO(), stress=False)
+    assert "--stress" not in captured["argv"]
+
+
+def test_default_runner_non_stage3_stress_omits_flag(tmp_path, monkeypatch):
+    captured = _capture_argv(monkeypatch)
+    pm._default_runner(tmp_path, "1", "eth", io.StringIO(), stress=True)
+    assert "--stress" not in captured["argv"]

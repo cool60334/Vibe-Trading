@@ -28,11 +28,16 @@ logging.basicConfig(
 logger = logging.getLogger("pipeline.manager")
 
 
-def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_fp) -> int:
+def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_fp,
+                    stress: bool = False) -> int:
     """Run one stage as ``python -m research.pipeline.<module>``; stdout+stderr
     stream into the job's log file. If ``symbol`` is set, scope it via
-    RESEARCH_ONLY_SYMBOL. Returns the process exit code."""
+    RESEARCH_ONLY_SYMBOL. If ``stress`` is set AND this is stage 3, append
+    ``--stress`` so stage 3 also runs the 2x/3x cost-stress sweep. Returns the
+    process exit code."""
     argv = [sys.executable, *pj.stage_command(stage_id)]
+    if stress and stage_id == "3":
+        argv.append("--stress")
     env = {**os.environ}
     env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
     if symbol:
@@ -98,7 +103,10 @@ class Manager:
                     if job.get("symbol") and pj.stage_uses_symbol(step["stage"])
                     else None
                 )
-                rc = self._runner(self.repo_root, step["stage"], step_symbol, fp)
+                rc = self._runner(
+                    self.repo_root, step["stage"], step_symbol, fp,
+                    job.get("stress", False),
+                )
 
             step["exit_code"] = rc
             step["status"] = "succeeded" if rc == 0 else "failed"
