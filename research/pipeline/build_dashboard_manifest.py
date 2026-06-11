@@ -179,11 +179,9 @@ def build_manifest(
     backtest = None
     in_sample = _backtest_metrics(entry.base_run, runs_root)
     if in_sample is not None:
+        # Annual-slice oos_runs were removed (B4): walk_forward (below) is the
+        # only OOS source; the legacy oos field stays None.
         oos = None
-        for oos_run in entry.oos_runs:
-            oos = _backtest_metrics(oos_run, runs_root)
-            if oos is not None:
-                break
         by_regime: list[RegimeMetrics] = []
         for label, run_name in entry.regime_runs.items():
             rm = _backtest_metrics(run_name, runs_root)
@@ -303,7 +301,7 @@ def main() -> None:
     for strategy_id, entry in targets:
         # Skip entries with no base_run: these are not deployable strategies but
         # validation harnesses (e.g. a walk-forward test that only carries
-        # held-out oos_runs). They should not appear in the dashboard strategy list.
+        # held-out walk_forward_runs). They should not appear in the dashboard strategy list.
         if entry.base_run is None:
             print(f"  [SKIP] {strategy_id:32s} no base_run (validation harness, not a strategy)")
             continue
