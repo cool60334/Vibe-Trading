@@ -110,7 +110,7 @@ function JobsPanel({
         {jobs.slice(0, 10).map((j) => (
           <div key={j.job_id} className="flex items-center gap-2 text-xs">
             <button onClick={() => onSelect(j.job_id)} className="font-mono truncate w-52 text-left hover:underline">
-              {j.kind === "pipeline" ? "全 pipeline" : `stage ${j.stage}`} · {j.job_id.slice(-6)}
+              {j.kind === "pipeline" ? "全 pipeline" : `stage ${j.stage}${j.stress ? " +stress" : ""}`} · {j.job_id.slice(-6)}
             </button>
             <span className={cn("w-20", color(j.status))}>{j.status}</span>
             {(j.status === "queued" || j.status === "running") && (
@@ -142,12 +142,13 @@ function SymbolRunControl({
   busy: boolean;
 }) {
   const [stage, setStage] = useState("0a");
+  const [stress, setStress] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   return (
     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
       <select
         value={stage}
-        onChange={(e) => setStage(e.target.value)}
+        onChange={(e) => { setStage(e.target.value); setStress(false); }}
         className="border rounded px-1 py-0.5 text-[11px] bg-background"
       >
         <option value="__all__">全 pipeline</option>
@@ -157,6 +158,16 @@ function SymbolRunControl({
           </option>
         ))}
       </select>
+      {stage === "3" && (
+        <label className="flex items-center gap-0.5 text-[11px] text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={stress}
+            onChange={(e) => setStress(e.target.checked)}
+          />
+          cost-stress
+        </label>
+      )}
       <button
         disabled={busy}
         onClick={() => {
@@ -165,7 +176,7 @@ function SymbolRunControl({
             .runPipeline(
               stage === "__all__"
                 ? { kind: "pipeline", symbol }
-                : { kind: "stage", stage, symbol },
+                : { kind: "stage", stage, symbol, stress: stage === "3" && stress },
             )
             .then(onStarted)
             .catch((e: unknown) => setErr(String(e)));

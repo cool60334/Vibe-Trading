@@ -365,6 +365,7 @@ export interface PipelineJob {
   exit_code: number | null;
   error: string | null;
   cancel: boolean;
+  stress: boolean;
 }
 
 export interface PipelineJobDetail extends PipelineJob {
@@ -425,7 +426,7 @@ export const api = {
   traderProcess: (testnetId: string, strategyId: string): Promise<{ running: boolean; pid: number | null }> =>
     get(`/testnet/${testnetId}/process?strategy_id=${encodeURIComponent(strategyId)}`),
   getPipelineStatus: () => get<PipelineStatus>("/pipeline/status"),
-  runPipeline: (body: { kind: "stage" | "pipeline"; stage?: string; symbol?: string }): Promise<PipelineJob> =>
+  runPipeline: (body: { kind: "stage" | "pipeline"; stage?: string; symbol?: string; stress?: boolean }): Promise<PipelineJob> =>
     fetch(`${BASE}/pipeline/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
