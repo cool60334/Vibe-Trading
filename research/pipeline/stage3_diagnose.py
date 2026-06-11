@@ -709,17 +709,6 @@ def _diagnose_strategy(
     else:
         print(f"    base_run '{entry.base_run}': metrics.csv empty or unreadable")
 
-    # Collect first oos_run metrics if available.
-    if entry.oos_runs:
-        oos_run = entry.oos_runs[0]
-        oos_metrics_path = runs_root / oos_run / "artifacts" / "metrics.csv"
-        oos_metrics = read_metrics_csv(oos_metrics_path)
-        if oos_metrics is not None:
-            metrics_by_run[oos_run] = oos_metrics
-            print(f"    oos_run '{oos_run}': {len(oos_metrics)} columns")
-        else:
-            print(f"    oos_run '{oos_run}': metrics.csv missing or empty (skipped)")
-
     # Read stage-4 optimisation best if available — used both in prompt and as
     # rule-based fallback override.
     optimization_path = manifests_dir / strategy_id / "optimization.json"

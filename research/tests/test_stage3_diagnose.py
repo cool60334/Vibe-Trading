@@ -801,33 +801,6 @@ class TestDiagnoseStrategyIntegration:
         assert result.ok is False
         assert "metrics.csv" in result.error
 
-    def test_oos_run_metrics_collected(self, tmp_path):
-        """oos_runs[0] metrics are collected and included in the prompt."""
-        runs_root = tmp_path / "runs"
-        manifests_dir = tmp_path / "manifests"
-        self._setup_base_run(runs_root, "btc_s1_base", GOOD_METRICS)
-        self._setup_base_run(runs_root, "btc_s1_oos", GOOD_METRICS)
-
-        entry = _make_strategy_entry(base_run="btc_s1_base", oos_runs=["btc_s1_oos"])
-        cfg = _make_research_config()
-
-        llm_stdout = '```json\n{"recommended_action": "proceed", "summary": "Good.", "findings": []}\n```'
-
-        with patch("pipeline.stage3_diagnose.run_vibe_trading_diagnose", return_value=llm_stdout) as mock_run:
-            result = _diagnose_strategy(
-                strategy_id="btc_s1_test",
-                entry=entry,
-                cfg=cfg,
-                runs_root=runs_root,
-                manifests_dir=manifests_dir,
-            )
-
-        assert result.ok is True
-        # The prompt passed to the LLM should contain both run names.
-        call_args = mock_run.call_args[0][0]
-        assert "btc_s1_base" in call_args
-        assert "btc_s1_oos" in call_args
-
     def test_diagnosis_json_validates_against_schema(self, tmp_path):
         """The written diagnosis.json must validate against DiagnosisBlock."""
         runs_root = tmp_path / "runs"
