@@ -9,7 +9,7 @@ For each strategy in strategy_runs.json this runner:
   2. Reads strategy_runs.json to get all strategies + their run directory names.
   3. For each strategy with a non-null base_run:
      - Gates on runs/<base_run>/artifacts/metrics.csv existing.
-     - Reads metrics from base_run (and first oos_run if available).
+     - Reads metrics from base_run.
      - Builds a prompt injecting the metrics JSON as decision context.
      - Invokes ``vibe-trading run -p <prompt> --no-rich`` via subprocess.
      - Parses the LLM response for a recommended_action (proceed / back_to_stage_2 / back_to_stage_4).
