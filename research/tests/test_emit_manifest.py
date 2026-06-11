@@ -510,30 +510,22 @@ class TestBuildBacktestBlock:
         assert bt is not None
         assert bt.in_sample.source_run == "base"
 
-    def test_oos_populated_from_first_oos_run(self, tmp_path):
+    def test_oos_populated_from_first_walk_forward_run(self, tmp_path):
         runs_root = tmp_path / "runs"
         base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
-        oos_csv = runs_root / "oos1" / "artifacts" / "metrics.csv"
+        oos_csv = runs_root / "wf1" / "artifacts" / "metrics.csv"
         _write_metrics_csv(base_csv, _good_metrics_row())
         _write_metrics_csv(oos_csv, _good_metrics_row())
-        entry = _make_entry(base_run="base", oos_runs=("oos1",))
+        entry = _make_entry(base_run="base", walk_forward_runs=("wf1",))
         bt = build_backtest_block(entry, runs_root)
         assert bt.oos is not None
-        assert bt.oos.source_run == "oos1"
+        assert bt.oos.source_run == "wf1"
 
-    def test_oos_none_when_no_oos_runs(self, tmp_path):
+    def test_oos_none_when_walk_forward_csv_missing(self, tmp_path):
         runs_root = tmp_path / "runs"
         base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
         _write_metrics_csv(base_csv, _good_metrics_row())
-        entry = _make_entry(base_run="base", oos_runs=())
-        bt = build_backtest_block(entry, runs_root)
-        assert bt.oos is None
-
-    def test_oos_none_when_oos_csv_missing(self, tmp_path):
-        runs_root = tmp_path / "runs"
-        base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
-        _write_metrics_csv(base_csv, _good_metrics_row())
-        entry = _make_entry(base_run="base", oos_runs=("oos_missing",))
+        entry = _make_entry(base_run="base", walk_forward_runs=("wf_missing",))
         bt = build_backtest_block(entry, runs_root)
         assert bt.oos is None
 
@@ -656,49 +648,30 @@ class TestBuildBacktestBlock:
         assert RedFlagCode.UNDERPERFORMS_HODL in flags
 
 
-# ─── (e2) TestOosSourceFallback ────────────────────────────────────────────────
+# ─── (e2) TestOosSource ───────────────────────────────────────────────────────
 
 
-class TestOosSourceFallback:
+class TestOosSource:
 
-    def test_walk_forward_used_when_oos_runs_empty(self, tmp_path):
-        """oos_runs empty + walk_forward_runs present → oos populated from wf run."""
+    def test_walk_forward_is_the_oos_source(self, tmp_path):
+        """walk_forward_runs present → oos populated from the first wf run."""
         runs_root = tmp_path / "runs"
         base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
         wf_csv = runs_root / "wf_oos" / "artifacts" / "metrics.csv"
         _write_metrics_csv(base_csv, _good_metrics_row())
         _write_metrics_csv(wf_csv, _good_metrics_row())
-        entry = _make_entry(base_run="base", oos_runs=(), walk_forward_runs=("wf_oos",))
+        entry = _make_entry(base_run="base", walk_forward_runs=("wf_oos",))
         bt = build_backtest_block(entry, runs_root)
         assert bt is not None
         assert bt.oos is not None
         assert bt.oos.source_run == "wf_oos"
 
-    def test_oos_runs_takes_precedence_over_walk_forward(self, tmp_path):
-        """When both oos_runs and walk_forward_runs present, oos_runs wins."""
-        runs_root = tmp_path / "runs"
-        base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
-        oos_csv = runs_root / "explicit_oos" / "artifacts" / "metrics.csv"
-        wf_csv = runs_root / "wf_run" / "artifacts" / "metrics.csv"
-        _write_metrics_csv(base_csv, _good_metrics_row())
-        _write_metrics_csv(oos_csv, _good_metrics_row())
-        _write_metrics_csv(wf_csv, _good_metrics_row())
-        entry = _make_entry(
-            base_run="base",
-            oos_runs=("explicit_oos",),
-            walk_forward_runs=("wf_run",),
-        )
-        bt = build_backtest_block(entry, runs_root)
-        assert bt is not None
-        assert bt.oos is not None
-        assert bt.oos.source_run == "explicit_oos"
-
-    def test_oos_none_when_both_empty(self, tmp_path):
-        """oos_runs and walk_forward_runs both empty → oos is None."""
+    def test_oos_none_when_no_walk_forward(self, tmp_path):
+        """walk_forward_runs empty → oos is None (legacy in-sample gate path)."""
         runs_root = tmp_path / "runs"
         base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
         _write_metrics_csv(base_csv, _good_metrics_row())
-        entry = _make_entry(base_run="base", oos_runs=(), walk_forward_runs=())
+        entry = _make_entry(base_run="base", walk_forward_runs=())
         bt = build_backtest_block(entry, runs_root)
         assert bt is not None
         assert bt.oos is None
@@ -873,7 +846,7 @@ class TestBuildStrategyManifest:
         oos_csv = runs_root / "oos1" / "artifacts" / "metrics.csv"
         _write_metrics_csv(base_csv, _good_metrics_row())
         _write_metrics_csv(oos_csv, _good_metrics_row())
-        entry = _make_entry(base_run="base", oos_runs=("oos1",))
+        entry = _make_entry(base_run="base", walk_forward_runs=("oos1",))
         result = build_strategy_manifest("s1", "BTC", entry, runs_root, manifests_dir)
         assert result.get("gate") is not None
 
