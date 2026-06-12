@@ -1,7 +1,9 @@
 # yaml-hash: {{ yaml_hash }}
 import sys
 from pathlib import Path
-
+{% if spec.regime_filter %}
+import json
+{% endif %}
 import pandas as pd
 
 
@@ -13,6 +15,42 @@ def _ensure_research_on_syspath() -> None:
     if sp not in sys.path:
         sys.path.insert(0, sp)
 
+{% if spec.regime_filter %}
+
+def _load_regime_series(symbol_short: str, target_index: pd.DatetimeIndex) -> pd.Series:
+    """Load daily regime labels from regime_<sym>.json, reindex to target.
+
+    Returns a Series of strings ('bull'/'bear'/'neutral'), aligned to
+    ``target_index`` via daily forward-fill. Empty / unreadable JSON falls
+    back to all-'neutral' so the strategy degrades to s3 behaviour (no
+    masking).
+    """
+    here = Path(__file__).resolve()
+    repo_root = here.parents[3]
+    regime_path = repo_root / "research" / "manifests" / f"regime_{symbol_short}.json"
+    if not regime_path.exists():
+        return pd.Series("neutral", index=target_index)
+
+    try:
+        payload = json.loads(regime_path.read_text(encoding="utf-8"))
+    except Exception:
+        return pd.Series("neutral", index=target_index)
+
+    breakdown = payload.get("breakdown") or []
+    if not breakdown:
+        return pd.Series("neutral", index=target_index)
+
+    df = pd.DataFrame(breakdown)
+    df["ts"] = pd.to_datetime(df["date"])
+    df = df.set_index("ts").sort_index()
+    # Strip tz from target if present (ohlcv index is naive).
+    daily = df["regime"].astype(str)
+    # Reindex to hourly via ffill: each hour inherits the day's regime.
+    out = daily.reindex(target_index.normalize(), method="ffill")
+    out.index = target_index
+    return out.fillna("neutral")
+
+{% endif %}
 
 class SignalEngine:
     SYMBOL = "{{ spec.symbol }}"
@@ -36,6 +74,13 @@ class SignalEngine:
         # Entry signals
 {{ entry_long_code }}
 {{ entry_short_code }}
+{% if spec.regime_filter %}
+
+        # Regime overlay
+        regime = _load_regime_series("{{ spec.symbol.split('-')[0].lower() }}", ohlcv.index)
+        entry_long = entry_long & (regime != "bear")
+        entry_short = entry_short & (regime != "bull")
+{% endif %}
 
         # Exit state machine
 {{ exit_code }}
