@@ -744,6 +744,8 @@ class StrategySpec(_Manifest):
     entry_long: Optional[EntryBlock] = None
     entry_short: Optional[EntryBlock] = None
     exit_rules: List[ExitRule]
+    regime_filter: bool = False
+    size_mult: float = Field(default=1.0, gt=0.0, le=1.0)
 
 
 # ---------------------------------------------------------------------------

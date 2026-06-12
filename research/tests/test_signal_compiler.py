@@ -335,3 +335,67 @@ def test_raw_condition_rendering():
     cond = "funding_rate <= 0.01"
     rendered = _render_condition(cond)
     assert "(funding_rate <= 0.01)" in rendered
+
+
+# ---------------------------------------------------------------------------
+# StrategySpec new fields: regime_filter and size_mult
+# ---------------------------------------------------------------------------
+
+def test_strategy_spec_defaults():
+    """Minimal YAML dict without regime_filter/size_mult uses default values."""
+    from pydantic import ValidationError
+
+    data = {
+        "name": "test_strategy",
+        "archetype": "contrarian",
+        "symbol": "ETH-USDT-SWAP",
+        "timeframe_signal": "1H",
+        "indicators": {
+            "funding_rate": {"source": "stage1:funding_rate", "smoothing": "none"},
+        },
+        "exit_rules": [{"condition": "time_based", "max_hold_hours": 48}],
+    }
+    spec = StrategySpec.model_validate(data)
+    assert spec.regime_filter is False
+    assert spec.size_mult == 1.0
+
+
+def test_size_mult_out_of_range():
+    """size_mult values outside (0, 1] must raise ValidationError."""
+    from pydantic import ValidationError
+
+    base = {
+        "name": "test_strategy",
+        "archetype": "contrarian",
+        "symbol": "ETH-USDT-SWAP",
+        "timeframe_signal": "1H",
+        "indicators": {
+            "funding_rate": {"source": "stage1:funding_rate", "smoothing": "none"},
+        },
+        "exit_rules": [{"condition": "time_based", "max_hold_hours": 48}],
+    }
+
+    for bad_value in (1.5, 0, -0.1):
+        data = {**base, "size_mult": bad_value}
+        with pytest.raises(ValidationError, match=r"size_mult|greater_than|less_than"):
+            StrategySpec.model_validate(data)
+
+
+def test_size_mult_valid_boundary():
+    """size_mult=0.01 and size_mult=1.0 must both pass validation."""
+    base = {
+        "name": "test_strategy",
+        "archetype": "contrarian",
+        "symbol": "ETH-USDT-SWAP",
+        "timeframe_signal": "1H",
+        "indicators": {
+            "funding_rate": {"source": "stage1:funding_rate", "smoothing": "none"},
+        },
+        "exit_rules": [{"condition": "time_based", "max_hold_hours": 48}],
+    }
+
+    spec_low = StrategySpec.model_validate({**base, "size_mult": 0.01})
+    assert spec_low.size_mult == 0.01
+
+    spec_high = StrategySpec.model_validate({**base, "size_mult": 1.0})
+    assert spec_high.size_mult == 1.0
