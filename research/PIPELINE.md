@@ -112,6 +112,13 @@ stage1:<factor_key>
 
 > Stage 2 scaffold ≥3 因子自動用 `any`；進場方向（做高 `>=` 或做低 `<=`）依各因子**實測 IC 符號**決定，不寫死 contrarian。
 
+#### 頂層控制欄位（`StrategySpec` 頂層）
+
+| 欄位 | 型別 | 預設值 | 說明 |
+|---|---|---|---|
+| `regime_filter` | bool | `false` | `true` 時在編譯出的 signal_engine 插入 regime mask：bear 期間屏蔽多單、bull 期間屏蔽空單 |
+| `size_mult` | float (0, 1] | `1.0` | 訊號強度縮放係數；`1.0` = 無縮放；`0.45` 可將倉位縮半（無需動 leverage 設定）|
+
 #### 出場規則類型（`exit_rules[*].condition`）
 
 | `condition` | 必填欄位 | 說明 |
@@ -264,6 +271,8 @@ Stage 0 已**無「失敗」概念**（除非 0a 產物缺失）：
 
 每個 archetype 產一份完整策略 YAML 與 `generation.json`。策略 ID = `<coin>_s<seq>_<archetype>`（例 `btc_s1_single_factor`、`eth_s2_trend_with_gate`）。
 
+此外，`_generate_for_symbol_multi` 對**每個 archetype** 額外 fan-out 一份 `_regime` 變體：ID 後綴 `_regime`（例 `btc_s1_single_factor_regime`），自動設 `regime_filter: true`，並同步在 `strategy_runs.json` 中註冊。此變體可直接進 stage 2b 編譯，無需手動建檔。
+
 ### 進場方向（重要）
 
 每個因子的進場方向**依其實測 IC 符號**決定（不寫死 contrarian）：
@@ -384,6 +393,16 @@ python -m research.pipeline.stage3_diagnose
 - **設 `oos_start`**：自動只在 **train 窗**掃參 → 挑 best → **自動用 best 在 held-out OOS 窗跑一次** holdout run → 寫進 `manifest.walk_forward`。這就是真·樣本外驗證。
 - 手動覆寫：`--train-start / --train-end`。
 
+### size_mult 掃描範圍
+
+`_default_spec_scaffold` 預設在 `parameter_search_ranges` 加入：
+
+```yaml
+size_mult: [0.4, 1.0, 0.2]   # 從 0.4 到 1.0 步距 0.2，即 [0.4, 0.6, 0.8, 1.0]
+```
+
+stage 4 掃參時會同步展開此維度，自動找出適合的倉位縮放係數，無需手動設定。
+
 ### 前置
 需先有 `diagnosis.json`（Stage 3-diag 產），否則 SKIP/FAIL。順序：stage3 → stage3-diag → stage4。
 
@@ -414,6 +433,8 @@ stage 5 寫完 `selection.json` 後，會遍歷 `strategy_runs.json` 裡**所有
 > ⚠️ `manifest.json` 是 **derived artifact**，請勿手動編輯——下次 `stage5_select` 跑完會自動覆寫。如需調整策略資訊，應修改 `strategy_runs.json` 或策略 YAML，再重跑 stage 5。
 
 > 之後 → dashboard promote → testnet（`POST /api/strategies/<id>/promote` → `/api/testnet/<id>/start`）。
+
+> **部署注意（regime_filter）**：編譯時 `regime_filter: true` 的 signal_engine 在執行期會讀取 `research/manifests/regime_<sym>.json`。部署或拉新版時，請把此 regime 檔連同 feature parquet 一起同步，否則 regime mask 會用到舊資料。
 
 ### Gate — OOS-aware 判斷規則（`emit_manifest.py::compute_gate`）
 

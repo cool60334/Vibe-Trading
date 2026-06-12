@@ -380,6 +380,7 @@ def _default_spec_scaffold(factor_names: list[str]) -> dict:
             "hold_max_hours": [96, 144, 24],
             "tp_pct": [4.0, 7.0, 1.5],
             "sl_pct": [2.5, 4.0, 0.5],
+            "size_mult": [0.4, 1.0, 0.2],
         },
         "expected_behavior": {
             "trades_per_year_estimate": 80,
@@ -1227,6 +1228,11 @@ def _generate_for_symbol_multi(
             seq=seq,
         )
 
+        # Parse base yaml dict; set regime_filter=False explicitly (spec 5.2)
+        base_yaml_dict = yaml.safe_load(yaml_text)
+        base_yaml_dict["regime_filter"] = False
+        yaml_text = yaml.dump(base_yaml_dict, allow_unicode=True, default_flow_style=False)
+
         # Write strategy YAML
         yaml_path = strategies_dir / f"strategy_{strategy_id}.yaml"
         yaml_path.write_text(yaml_text, encoding="utf-8")
@@ -1262,6 +1268,50 @@ def _generate_for_symbol_multi(
             symbol=sym.name,
             yaml_path=yaml_path,
             generation_path=gen_path,
+        ))
+
+        # ── Emit regime variant ───────────────────────────────────────────────
+        regime_id = f"{strategy_id}_regime"
+
+        # Build regime yaml from base dict; set regime_filter=True
+        regime_yaml_dict = dict(base_yaml_dict)
+        regime_yaml_dict["regime_filter"] = True
+        regime_yaml_text = yaml.dump(regime_yaml_dict, allow_unicode=True, default_flow_style=False)
+
+        # Write regime yaml
+        regime_yaml_path = strategies_dir / f"strategy_{regime_id}.yaml"
+        regime_yaml_path.write_text(regime_yaml_text, encoding="utf-8")
+        print(f"[stage2] {sym.name}: wrote {regime_yaml_path.name}")
+
+        # Write regime generation.json
+        regime_gen_dir = manifests_dir / regime_id
+        regime_gen_dir.mkdir(parents=True, exist_ok=True)
+        symbol_short = sym.name.split("-")[0].lower()  # "ETH-USDT-SWAP" -> "eth"; "ETH" -> "eth"
+        regime_gen_block = {
+            **gen_block,
+            "regime_overlay": True,
+            "runtime_deps": [f"research/manifests/regime_{symbol_short}.json"],
+        }
+        regime_gen_path = regime_gen_dir / "generation.json"
+        regime_gen_path.write_text(
+            json.dumps(regime_gen_block, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"[stage2] {sym.name}: wrote {regime_gen_path}")
+
+        # Register regime variant
+        register_strategy(
+            strategy_id=regime_id,
+            symbol=sym.okx_swap,
+            spec_yaml=f"research/strategies/strategy_{regime_id}.yaml",
+            path=runs_path,
+        )
+
+        # Append regime GeneratedStrategy
+        generated.append(GeneratedStrategy(
+            strategy_id=regime_id,
+            symbol=sym.name,
+            yaml_path=regime_yaml_path,
+            generation_path=regime_gen_path,
         ))
 
     return generated

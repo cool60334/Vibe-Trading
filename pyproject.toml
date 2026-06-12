@@ -111,6 +111,7 @@ pythonpath = ["agent"]
 markers = [
     "unit: Unit tests (fast, no network)",
     "integration: Integration tests (may need network)",
+    "slow: Slow tests that run full backtests (excluded from fast suite)",
 ]
 
 [tool.ruff]

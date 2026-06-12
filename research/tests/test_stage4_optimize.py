@@ -43,6 +43,9 @@ from pipeline.stage4_optimize import (  # noqa: E402
     _rewrite_invalidation_lookback,
     _rewrite_percentile_condition,
 )
+from pipeline.stage2_strategies import _default_spec_scaffold  # noqa: E402
+from schemas import StrategySpec  # noqa: E402
+from lib.signal_compiler import compile_strategy  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -350,3 +353,67 @@ class TestComboResultProperties:
                         metrics={"sharpe": "n/a", "trade_count": "n/a"})
         assert c.sharpe == float("-inf")
         assert c.trade_count == 0
+
+
+# ---------------------------------------------------------------------------
+# size_mult in apply_overrides_to_spec + scaffold
+# ---------------------------------------------------------------------------
+
+
+def _full_spec() -> dict:
+    """A spec dict that satisfies StrategySpec.model_validate (has all required fields)."""
+    return {
+        "name": "test_full",
+        "archetype": "single_factor",
+        "symbol": "BTC",
+        "timeframe_signal": "1H",
+        "indicators": {
+            "funding_z": {"source": "stage1:funding_z", "smoothing": "none"},
+        },
+        "entry_long": {
+            "description": "Long when funding rate is low",
+            "logic": "all",
+            "conditions": ["funding_z_percentile_90d <= 20 persist 2/3"],
+        },
+        "entry_short": {
+            "description": "Short when funding rate is high",
+            "logic": "all",
+            "conditions": ["funding_z_percentile_90d >= 80 persist 2/3"],
+        },
+        "exit_rules": [
+            {"condition": "time_based", "max_hold_hours": 120},
+            {"condition": "take_profit_pct", "value": 6.0},
+            {"condition": "stop_loss_pct", "value": 3.0},
+            {"condition": "signal_invalidation",
+             "expression": "funding_z_percentile_90d between 40,60"},
+        ],
+    }
+
+
+class TestSizeMult:
+    def test_apply_overrides_size_mult_0_6(self):
+        """size_mult override sets top-level size_mult on the returned spec dict."""
+        spec_dict = apply_overrides_to_spec(_base_spec(), {"size_mult": 0.6})
+        assert spec_dict["size_mult"] == 0.6
+        # Bonus: validate through StrategySpec using a complete spec
+        full_result = apply_overrides_to_spec(_full_spec(), {"size_mult": 0.6})
+        validated = StrategySpec.model_validate(full_result)
+        assert validated.size_mult == 0.6
+
+    def test_apply_overrides_size_mult_recompile_signal(self):
+        """Compiled signal source contains the size_mult multiplier expression."""
+        spec_dict = apply_overrides_to_spec(_full_spec(), {"size_mult": 0.6})
+        compiled = compile_strategy(StrategySpec.model_validate(spec_dict))
+        assert "float(position) * 0.6" in compiled
+
+    def test_apply_overrides_no_size_mult_unchanged(self):
+        """When size_mult is absent from overrides, spec size_mult is not set (defaults to 1.0)."""
+        spec_dict = apply_overrides_to_spec(_base_spec(), {})
+        # _base_spec() has no size_mult → should not be introduced by the override function
+        assert spec_dict.get("size_mult", 1.0) == 1.0
+
+    def test_scaffold_has_size_mult_range(self):
+        """_default_spec_scaffold includes size_mult in parameter_search_ranges."""
+        scaffold = _default_spec_scaffold(["some_factor"])
+        assert "size_mult" in scaffold["parameter_search_ranges"]
+        assert scaffold["parameter_search_ranges"]["size_mult"] == [0.4, 1.0, 0.2]

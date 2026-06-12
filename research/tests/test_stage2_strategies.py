@@ -1169,7 +1169,7 @@ class TestStage2MultiEmit:
             )
 
     def test_default_run_emits_all_routed_archetypes(self, tmp_path: Path):
-        """N strategies returned = len(pick_archetypes(usable_factors))."""
+        """2*N strategies returned = 2 * len(pick_archetypes(usable_factors)) (base + regime each)."""
         strategies_dir = tmp_path / "strategies"
         manifests_dir = tmp_path / "manifests"
         _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
@@ -1187,8 +1187,9 @@ class TestStage2MultiEmit:
             sym, strategies_dir, manifests_dir, use_swarm=False
         )
 
-        assert len(results) == len(expected_plans), (
-            f"Expected {len(expected_plans)} strategies (one per archetype plan), "
+        # Each archetype plan now produces 2 strategies: one base + one _regime variant.
+        assert len(results) == len(expected_plans) * 2, (
+            f"Expected {len(expected_plans) * 2} strategies (base + regime per plan), "
             f"got {len(results)}"
         )
 
@@ -1258,7 +1259,7 @@ class TestStage2MultiEmit:
         )
 
     def test_strategy_ids_have_sequential_seq_numbers(self, tmp_path: Path):
-        """strategy_ids contain _s1_, _s2_, ... in order."""
+        """Base strategy_ids contain _s1_, _s2_, ... in order (regime variants excluded)."""
         strategies_dir = tmp_path / "strategies"
         manifests_dir = tmp_path / "manifests"
         _write_factor_manifest(manifests_dir, "btc", self._MIXED_FACTORS)
@@ -1268,9 +1269,11 @@ class TestStage2MultiEmit:
             sym, strategies_dir, manifests_dir, use_swarm=False
         )
 
-        for i, gen in enumerate(results, start=1):
+        # Base strategies (not regime variants) must carry sequential seq numbers.
+        base_results = [g for g in results if not g.strategy_id.endswith("_regime")]
+        for i, gen in enumerate(base_results, start=1):
             assert f"_s{i}_" in gen.strategy_id, (
-                f"Expected _s{i}_ in strategy_id at position {i}, got: {gen.strategy_id}"
+                f"Expected _s{i}_ in base strategy_id at position {i}, got: {gen.strategy_id}"
             )
 
     # ── Test 4: RESEARCH_STAGE2_USE_SWARM env var default is off ─────────
@@ -1341,3 +1344,259 @@ class TestStage2MultiEmit:
         for gen in results:
             raw = json.loads(gen.generation_path.read_text(encoding="utf-8"))
             assert raw["rationale"] is not None, f"rationale is None for {gen.strategy_id}"
+
+
+# ---------------------------------------------------------------------------
+# Task 5: TestRegimeVariantEmit — factory fan-out of regime variants
+# ---------------------------------------------------------------------------
+
+
+class TestRegimeVariantEmit:
+    """Task 5: _generate_for_symbol_multi emits _regime variant for every base plan."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_strategy_runs(self, tmp_path, monkeypatch):
+        """Redirect register_strategy away from the real strategy_runs.json."""
+        import pipeline.strategy_runs as _sr
+        monkeypatch.setattr(
+            _sr, "_DEFAULT_JSON_PATH", tmp_path / "_default_strategy_runs.json"
+        )
+
+    # Single-factor manifest -> pick_archetypes produces exactly 1 plan
+    # (single_factor archetype).  This keeps assertions simple and deterministic.
+    _SINGLE_FACTOR = [
+        _factor("stablecoin_supply_z", "single_use", ic8=0.10),
+    ]
+
+    # Two mixed-sign factors -> 3 plans: single_factor + trend_with_gate + consensus_all
+    _TWO_FACTORS = [
+        _factor("stablecoin_supply_z", "single_use", ic8=0.10),
+        _factor("funding_rate",        "single_use", ic8=-0.08),
+    ]
+
+    def _run(self, tmp_path: Path, factors: list[dict], sym_name: str = "btc",
+             okx_swap: str = "BTC-USDT-SWAP") -> list:
+        """Helper: write manifest, run _generate_for_symbol_multi, return results."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        runs_path = tmp_path / "strategy_runs.json"
+        runs_path.write_text("{}", encoding="utf-8")
+        _write_factor_manifest(manifests_dir, sym_name, factors)
+        sym = _sym_config(sym_name, okx_swap)
+        return _generate_for_symbol_multi(
+            sym, strategies_dir, manifests_dir, use_swarm=False, runs_path=runs_path,
+        ), runs_path
+
+    # ── 5.1: count — 2 base plans → 4 GeneratedStrategy returned ──────────
+
+    def test_regime_variants_emitted_count(self, tmp_path: Path):
+        """With 2 archetype plans, 4 GeneratedStrategy are returned (2 base + 2 regime)."""
+        # Two factors give exactly 3 plans from pick_archetypes; use single-factor
+        # to get 1 plan -> 2 total (base + regime).
+        results, _ = self._run(tmp_path, self._SINGLE_FACTOR)
+        # Determine how many plans the router produces for this manifest
+        manifest = FactorManifest.model_validate(
+            json.loads((tmp_path / "manifests" / "factor_btc.json").read_text())
+        )
+        usable = select_usable_factors(manifest)
+        n_plans = len(pick_archetypes(usable))
+        assert len(results) == n_plans * 2, (
+            f"Expected {n_plans} base + {n_plans} regime = {n_plans * 2} total, "
+            f"got {len(results)}: {[g.strategy_id for g in results]}"
+        )
+
+    def test_regime_variants_emitted_count_two_plans(self, tmp_path: Path):
+        """With N archetype plans, 2*N GeneratedStrategy are returned."""
+        results, _ = self._run(tmp_path, self._TWO_FACTORS)
+        manifest = FactorManifest.model_validate(
+            json.loads((tmp_path / "manifests" / "factor_btc.json").read_text())
+        )
+        usable = select_usable_factors(manifest)
+        n_plans = len(pick_archetypes(usable))
+        assert len(results) == n_plans * 2, (
+            f"Expected {n_plans * 2} strategies (base + regime per plan), "
+            f"got {len(results)}: {[g.strategy_id for g in results]}"
+        )
+
+    def test_regime_variant_ids_have_regime_suffix(self, tmp_path: Path):
+        """Each regime variant strategy_id is exactly '<base_id>_regime'."""
+        results, _ = self._run(tmp_path, self._SINGLE_FACTOR)
+        base_ids = [g.strategy_id for g in results if not g.strategy_id.endswith("_regime")]
+        regime_ids = [g.strategy_id for g in results if g.strategy_id.endswith("_regime")]
+        assert len(base_ids) == len(regime_ids), (
+            "Number of base strategies must equal number of regime variants"
+        )
+        for bid in base_ids:
+            assert f"{bid}_regime" in regime_ids, (
+                f"Expected regime variant '{bid}_regime' not found in {regime_ids}"
+            )
+
+    # ── 5.2: YAML diff — only regime_filter differs ─────────────────────────
+
+    def test_regime_variant_differs_only_in_regime_filter(self, tmp_path: Path):
+        """Regime variant YAML has regime_filter=True; base has it absent or False.
+        All other fields are identical (same content, only regime_filter added)."""
+        results, _ = self._run(tmp_path, self._SINGLE_FACTOR)
+        base_gens = [g for g in results if not g.strategy_id.endswith("_regime")]
+        for base_gen in base_gens:
+            regime_gen = next(
+                g for g in results if g.strategy_id == f"{base_gen.strategy_id}_regime"
+            )
+            base_doc = yaml.safe_load(base_gen.yaml_path.read_text(encoding="utf-8"))
+            regime_doc = yaml.safe_load(regime_gen.yaml_path.read_text(encoding="utf-8"))
+
+            # Regime variant must have regime_filter=True
+            assert regime_doc.get("regime_filter") is True, (
+                f"regime variant {regime_gen.strategy_id} missing regime_filter=True"
+            )
+
+            # Base must not have regime_filter=True (absent or False)
+            assert base_doc.get("regime_filter") is not True, (
+                f"base strategy {base_gen.strategy_id} should not have regime_filter=True"
+            )
+
+            # All other fields must be equal (regime_filter is the only difference)
+            base_copy = {k: v for k, v in base_doc.items() if k != "regime_filter"}
+            regime_copy = {k: v for k, v in regime_doc.items() if k != "regime_filter"}
+            assert base_copy == regime_copy, (
+                f"Regime variant {regime_gen.strategy_id} differs from base in fields "
+                f"beyond regime_filter: "
+                f"{set(base_copy.items()) ^ set(regime_copy.items())}"
+            )
+
+    # ── 5.3: generation.json — regime_overlay + runtime_deps ───────────────
+
+    def test_regime_variant_generation_json_has_regime_overlay(self, tmp_path: Path):
+        """Regime generation.json has regime_overlay=true."""
+        results, _ = self._run(tmp_path, self._SINGLE_FACTOR)
+        regime_gens = [g for g in results if g.strategy_id.endswith("_regime")]
+        assert regime_gens, "No regime variants found"
+        for rgen in regime_gens:
+            raw = json.loads(rgen.generation_path.read_text(encoding="utf-8"))
+            assert raw.get("regime_overlay") is True, (
+                f"{rgen.strategy_id} generation.json missing regime_overlay=True"
+            )
+
+    def test_regime_variant_generation_json_has_runtime_deps(self, tmp_path: Path):
+        """Regime generation.json has runtime_deps pointing to the right regime manifest."""
+        results, _ = self._run(tmp_path, self._SINGLE_FACTOR)
+        regime_gens = [g for g in results if g.strategy_id.endswith("_regime")]
+        assert regime_gens, "No regime variants found"
+        for rgen in regime_gens:
+            raw = json.loads(rgen.generation_path.read_text(encoding="utf-8"))
+            deps = raw.get("runtime_deps", [])
+            assert isinstance(deps, list) and len(deps) > 0, (
+                f"{rgen.strategy_id} generation.json missing runtime_deps"
+            )
+            # Must contain a path matching research/manifests/regime_<symbol>.json
+            import re as _re
+            assert any(
+                _re.search(r"research/manifests/regime_[a-z]+\.json", dep)
+                for dep in deps
+            ), (
+                f"{rgen.strategy_id} runtime_deps {deps!r} does not match "
+                "research/manifests/regime_<symbol>.json"
+            )
+
+    def test_regime_variant_generation_json_symbol_short_btc(self, tmp_path: Path):
+        """runtime_deps path uses 'btc' for a BTC symbol."""
+        results, _ = self._run(tmp_path, self._SINGLE_FACTOR, sym_name="btc", okx_swap="BTC-USDT-SWAP")
+        regime_gens = [g for g in results if g.strategy_id.endswith("_regime")]
+        for rgen in regime_gens:
+            raw = json.loads(rgen.generation_path.read_text(encoding="utf-8"))
+            assert any("regime_btc.json" in dep for dep in raw.get("runtime_deps", [])), (
+                f"Expected 'regime_btc.json' in runtime_deps, got: {raw.get('runtime_deps')}"
+            )
+
+    def test_regime_variant_generation_json_symbol_short_eth(self, tmp_path: Path):
+        """runtime_deps path uses 'eth' for an ETH symbol."""
+        results, _ = self._run(
+            tmp_path, self._SINGLE_FACTOR, sym_name="eth", okx_swap="ETH-USDT-SWAP"
+        )
+        regime_gens = [g for g in results if g.strategy_id.endswith("_regime")]
+        for rgen in regime_gens:
+            raw = json.loads(rgen.generation_path.read_text(encoding="utf-8"))
+            assert any("regime_eth.json" in dep for dep in raw.get("runtime_deps", [])), (
+                f"Expected 'regime_eth.json' in runtime_deps, got: {raw.get('runtime_deps')}"
+            )
+
+    def test_regime_generation_json_inherits_base_fields(self, tmp_path: Path):
+        """Regime generation.json inherits source_run/method/rationale/factors_used from base."""
+        results, _ = self._run(tmp_path, self._SINGLE_FACTOR)
+        base_gens = [g for g in results if not g.strategy_id.endswith("_regime")]
+        for base_gen in base_gens:
+            regime_gen = next(
+                g for g in results if g.strategy_id == f"{base_gen.strategy_id}_regime"
+            )
+            base_raw = json.loads(base_gen.generation_path.read_text(encoding="utf-8"))
+            regime_raw = json.loads(regime_gen.generation_path.read_text(encoding="utf-8"))
+            for field in ("source_run", "method", "rationale", "factors_used"):
+                assert base_raw.get(field) == regime_raw.get(field), (
+                    f"Field '{field}' differs between base and regime generation.json "
+                    f"for {base_gen.strategy_id}: {base_raw.get(field)!r} vs {regime_raw.get(field)!r}"
+                )
+
+    # ── 5.4: registration — both base and regime are registered ────────────
+
+    def test_regime_variant_registered_in_runs_path(self, tmp_path: Path):
+        """Both base and regime strategy_ids are registered in runs_path."""
+        results, runs_path = self._run(tmp_path, self._SINGLE_FACTOR)
+        registered = json.loads(runs_path.read_text(encoding="utf-8"))
+        for gen in results:
+            assert gen.strategy_id in registered, (
+                f"Strategy '{gen.strategy_id}' not registered in runs_path"
+            )
+
+    def test_regime_variant_registered_via_register_strategy(self, tmp_path: Path):
+        """register_strategy is called for each regime variant (not just base)."""
+        strategies_dir = tmp_path / "strategies"
+        manifests_dir = tmp_path / "manifests"
+        runs_path = tmp_path / "strategy_runs.json"
+        runs_path.write_text("{}", encoding="utf-8")
+        _write_factor_manifest(manifests_dir, "btc", self._SINGLE_FACTOR)
+        sym = _sym_config("btc", "BTC-USDT-SWAP")
+
+        with patch("pipeline.stage2_strategies.register_strategy") as mock_reg:
+            mock_reg.return_value = None  # suppress actual writes
+            results = _generate_for_symbol_multi(
+                sym, strategies_dir, manifests_dir, use_swarm=False, runs_path=runs_path,
+            )
+
+        called_ids = [call.kwargs.get("strategy_id") or call.args[0] for call in mock_reg.call_args_list]
+        regime_ids = [sid for sid in called_ids if sid.endswith("_regime")]
+        base_ids = [sid for sid in called_ids if not sid.endswith("_regime")]
+        assert len(regime_ids) > 0, (
+            f"register_strategy was never called for a regime variant; calls: {called_ids}"
+        )
+        assert len(base_ids) > 0, (
+            f"register_strategy was never called for a base strategy; calls: {called_ids}"
+        )
+        assert len(base_ids) == len(regime_ids), (
+            f"Mismatch: {len(base_ids)} base registrations vs {len(regime_ids)} regime registrations"
+        )
+
+    # ── 5.5: regime variant YAML compiles through stage-2b AST check ───────────
+
+    def test_regime_variant_yaml_compiles_through_stage2b(self, tmp_path: Path):
+        """Regime variant YAML passes schema + AST check (spec 5.5).
+
+        Validates that the regime variant YAML produced by _generate_for_symbol_multi
+        can be loaded through StrategySpec.model_validate() and compiled via
+        compile_strategy() without raising a schema or AST error.
+        """
+        from schemas import StrategySpec  # already on sys.path via bootstrap
+        from lib.signal_compiler import compile_strategy  # research/lib/
+
+        results, _ = self._run(tmp_path, self._SINGLE_FACTOR)
+        regime_gens = [g for g in results if g.strategy_id.endswith("_regime")]
+        assert regime_gens, "No regime variants found — test setup error"
+
+        for rgen in regime_gens:
+            yaml_text = rgen.yaml_path.read_text(encoding="utf-8")
+            yaml_dict = yaml.safe_load(yaml_text)
+
+            # Schema validation must not raise
+            spec = StrategySpec.model_validate(yaml_dict)
+
+            # AST compilation must not raise
+            compile_strategy(spec)

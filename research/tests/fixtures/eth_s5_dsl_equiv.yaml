@@ -1,0 +1,36 @@
+name: eth_s5_dsl_test
+archetype: multi_factor_consensus
+symbol: ETH-USDT-SWAP
+timeframe_signal: 8h
+indicators:
+  stablecoin_supply_z:
+    source: stage1:stablecoin_supply_z
+    smoothing: sma_3
+  funding_z:
+    source: stage1:funding_z
+    smoothing: sma_3
+entry_long:
+  description: "stablecoin_supply_z high AND funding_z low, regime != bear, half size"
+  logic: all
+  conditions:
+  - stablecoin_supply_z_percentile_90d >= 70 persist 2/3
+  - funding_z_percentile_90d <= 15 persist 2/3
+entry_short:
+  description: "stablecoin_supply_z low AND funding_z high, regime != bull, half size"
+  logic: all
+  conditions:
+  - stablecoin_supply_z_percentile_90d <= 15 persist 2/3
+  - funding_z_percentile_90d >= 70 persist 2/3
+exit_rules:
+- condition: time_based
+  max_hold_hours: 168
+- condition: take_profit_pct
+  value: 8.5
+- condition: stop_loss_pct
+  value: 3.0
+- condition: signal_invalidation
+  expression: stablecoin_supply_z_percentile_90d between 40,60
+- condition: signal_invalidation
+  expression: funding_z_percentile_90d between 40,60
+regime_filter: true
+size_mult: 0.45

@@ -244,6 +244,7 @@ def apply_overrides_to_spec(base_spec: dict, overrides: dict) -> dict:
       - hold_max_hours      → exit_rules[time_based].max_hold_hours
       - tp_pct              → exit_rules[take_profit_pct].value
       - sl_pct              → exit_rules[stop_loss_pct].value
+      - size_mult           → spec["size_mult"] (position sizing multiplier)
 
     Unknown keys are ignored.
     """
@@ -307,6 +308,10 @@ def apply_overrides_to_spec(base_spec: dict, overrides: dict) -> dict:
             rule["value"] = float(sl)
         elif cond == "signal_invalidation" and lookback is not None:
             rule["expression"] = _rewrite_invalidation_lookback(rule["expression"], int(lookback))
+
+    size_mult = overrides.get("size_mult")
+    if size_mult is not None:
+        spec["size_mult"] = float(size_mult)
 
     return spec
 
