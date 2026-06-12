@@ -399,3 +399,106 @@ def test_size_mult_valid_boundary():
 
     spec_high = StrategySpec.model_validate({**base, "size_mult": 1.0})
     assert spec_high.size_mult == 1.0
+
+
+# ---------------------------------------------------------------------------
+# size_mult compiler tests (Task 2)
+# ---------------------------------------------------------------------------
+
+def test_size_mult_045_in_compiled_code():
+    """Compiled source for size_mult=0.45 must contain float(position) * 0.45."""
+    spec = _make_spec(
+        entry_long_conds=["funding_rate_percentile_90d <= 20.0"],
+        entry_short_conds=["funding_rate_percentile_90d >= 80.0"],
+        exit_rules=[_ExitTimeBased(condition="time_based", max_hold_hours=48)],
+    )
+    spec = spec.model_copy(update={"size_mult": 0.45})
+    source = compile_strategy(spec)
+    assert "float(position) * 0.45" in source
+
+
+def test_size_mult_045_engine_signal(tmp_path):
+    """Exec compiled code with size_mult=0.45; signal at an entry bar equals 0.45.
+
+    The generated engine uses __file__ and load_factor_values(symbol); we write
+    the source to a temp file and monkey-patch load_factor_values so the test is
+    self-contained.
+    """
+    import importlib.util
+    import pandas as pd
+    import numpy as np
+    from unittest.mock import patch
+
+    spec = _make_spec(
+        entry_long_conds=["funding_rate_percentile_90d <= 20.0"],
+        entry_short_conds=["funding_rate_percentile_90d >= 80.0"],
+        exit_rules=[_ExitTimeBased(condition="time_based", max_hold_hours=48)],
+    )
+    spec = spec.model_copy(update={"size_mult": 0.45})
+    source = compile_strategy(spec)
+
+    # Write generated source to a temp file so __file__ is defined
+    engine_file = tmp_path / "signal_engine.py"
+    engine_file.write_text(source, encoding="utf-8")
+
+    # Build synthetic OHLCV with enough hourly bars for the 90d rolling rank.
+    # min_periods = 90*24//2 = 1080, so we need at least ~2500 bars to get any
+    # non-NaN percentile values. Use 3000 bars to be safe.
+    N = 3000
+    idx = pd.date_range("2024-01-01", periods=N, freq="1h")
+    close = pd.Series(np.linspace(100, 110, N), index=idx)
+    ohlcv = pd.DataFrame(
+        {
+            "open": close,
+            "high": close * 1.001,
+            "low": close * 0.999,
+            "close": close,
+            "volume": 1.0,
+        },
+        index=idx,
+    )
+
+    # Factor data: funding_rate cycles so that some bars hit <= 20th percentile.
+    # Use a sine wave: values at the trough will be ranked in the bottom 20%.
+    funding_rate = pd.Series(
+        np.sin(np.linspace(0, 20 * np.pi, N)),
+        index=idx,
+        name="funding_rate",
+    )
+    basis = pd.Series(0.0, index=idx, name="basis")
+    factors_df = pd.DataFrame({"funding_rate": funding_rate, "basis": basis}, index=idx)
+
+    # Load the written module
+    spec_mod = importlib.util.spec_from_file_location("signal_engine_test", engine_file)
+    module = importlib.util.module_from_spec(spec_mod)
+
+    symbol = spec.symbol  # e.g. "ETH-USDT-SWAP"
+    data_map = {symbol: ohlcv}
+
+    with patch("lib.factor_io.load_factor_values", return_value=factors_df):
+        spec_mod.loader.exec_module(module)
+        engine = module.SignalEngine()
+        result = engine.generate(data_map)
+
+    signal = result[symbol]
+
+    # Find bars where signal is non-zero (long or short)
+    nonzero = signal[signal != 0.0]
+    assert len(nonzero) > 0, "Expected at least one non-zero signal bar"
+    # All non-zero signal values must be ±0.45
+    for val in nonzero:
+        assert abs(abs(val) - 0.45) < 1e-9, f"Expected ±0.45, got {val}"
+
+
+def test_size_mult_default_no_change():
+    """Default size_mult=1.0 must produce exactly 'signal.iloc[bar_i] = float(position)' with no '* 1.0'."""
+    spec = _make_spec(
+        entry_long_conds=["funding_rate_percentile_90d <= 20.0"],
+        entry_short_conds=["funding_rate_percentile_90d >= 80.0"],
+        exit_rules=[_ExitTimeBased(condition="time_based", max_hold_hours=48)],
+    )
+    # Default size_mult is 1.0
+    assert spec.size_mult == 1.0
+    source = compile_strategy(spec)
+    assert "signal.iloc[bar_i] = float(position)" in source
+    assert "* 1.0" not in source

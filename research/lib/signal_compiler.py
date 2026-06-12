@@ -290,7 +290,7 @@ def _render_exit_rule_check(
         raise ValueError(f"Unknown exit rule condition: {condition!r}")
 
 
-def _render_exit_state_machine(exit_rules) -> str:
+def _render_exit_state_machine(exit_rules, size_mult: float = 1.0) -> str:
     """Render the full exit state machine loop. Indented at 8 spaces (class method body)."""
     # Indentation levels:
     #   8  = method body
@@ -369,7 +369,7 @@ def _render_exit_state_machine(exit_rules) -> str:
         f"{i20}entry_price = None",
         f"{i20}bars_held = 0",
         f"",
-        f"{i12}signal.iloc[bar_i] = float(position)",
+        f"{i12}signal.iloc[bar_i] = float(position){'' if size_mult == 1.0 else f' * {size_mult}'}",
     ]
 
     return "\n".join(lines)
@@ -418,7 +418,7 @@ def compile_strategy(spec: StrategySpec, yaml_hash: str = "") -> str:
     entry_short_code = _render_entry_block("short", spec.entry_short, indicator_var_map)
 
     # 3. Render exit state machine
-    exit_code = _render_exit_state_machine(spec.exit_rules)
+    exit_code = _render_exit_state_machine(spec.exit_rules, size_mult=spec.size_mult)
 
     # 4. Render template
     template = _jinja_env.get_template("signal_engine.py.j2")
