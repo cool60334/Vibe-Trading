@@ -26,8 +26,7 @@ def _load_regime_series(symbol_short: str, target_index: pd.DatetimeIndex) -> pd
     masking).
     """
     here = Path(__file__).resolve()
-    repo_root = here.parents[3]
-    regime_path = repo_root / "research" / "manifests" / f"regime_{symbol_short}.json"
+    regime_path = here.parents[3] / "manifests" / f"regime_{symbol_short}.json"
     if not regime_path.exists():
         return pd.Series("neutral", index=target_index)
 

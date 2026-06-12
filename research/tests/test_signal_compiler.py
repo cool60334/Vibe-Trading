@@ -555,13 +555,15 @@ def test_regime_mask_blocks_bear_long(tmp_path):
     source = compile_strategy(spec)
 
     # Write compiled source deep enough that here.parents[3] resolves to tmp_path root
-    engine_dir = tmp_path / "a" / "b" / "c" / "d"
+    # parents[3] of tmp_path/a/b/c/signal_engine.py == tmp_path
+    engine_dir = tmp_path / "a" / "b" / "c"
     engine_dir.mkdir(parents=True)
     engine_file = engine_dir / "signal_engine.py"
     engine_file.write_text(source, encoding="utf-8")
 
     # Create regime json: one bear date covering the middle of our data
-    manifests_dir = tmp_path / "research" / "manifests"
+    # With fix: parents[3] == tmp_path, so regime path == tmp_path/manifests/regime_eth.json
+    manifests_dir = tmp_path / "manifests"
     manifests_dir.mkdir(parents=True)
     regime_json = manifests_dir / "regime_eth.json"
     # "bear" for 2024-02-01, "bull" for 2024-01-01 (beginning of data)
@@ -666,8 +668,9 @@ def test_regime_missing_json_fail_soft(tmp_path):
     signal_no_regime = _run_engine(source_no_regime, no_regime_file)
 
     # For the regime engine: _load_regime_series will look for regime_eth.json
-    # relative to __file__ (parents[3]). Since tmp_path has no research/manifests/
-    # directory, the file won't exist → fail-soft → all-neutral → same as no-regime.
+    # relative to __file__ (parents[3] / "manifests"). Since the engine is written
+    # directly to tmp_path with no subdirs, parents[3] is well above tmp_path and
+    # the manifests/ dir won't exist → fail-soft → all-neutral → same as no-regime.
     signal_with_regime = _run_engine(source_with_regime, with_regime_file)
 
     pd.testing.assert_series_equal(
