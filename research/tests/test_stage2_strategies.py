@@ -1536,6 +1536,24 @@ class TestRegimeVariantEmit:
                     f"for {base_gen.strategy_id}: {base_raw.get(field)!r} vs {regime_raw.get(field)!r}"
                 )
 
+    def test_regime_variant_generation_json_validates_against_schema(self, tmp_path: Path):
+        """Regime generation.json (with regime_overlay + runtime_deps) must pass
+        the GenerationBlock schema. Regression: the schema forbids extras, so the
+        two regime-only keys must be declared, else verify_outputs (stage-2 exit
+        gate) FAILs every _regime variant."""
+        results, _ = self._run(tmp_path, self._SINGLE_FACTOR)
+        regime_gens = [g for g in results if g.strategy_id.endswith("_regime")]
+        assert regime_gens, "No regime variants found"
+        # Direct schema round-trip (the check that failed live).
+        for rgen in regime_gens:
+            GenerationBlock.model_validate_json(
+                rgen.generation_path.read_text(encoding="utf-8")
+            )
+        # End-to-end: verify_outputs must mark every strategy (incl. regime) ok.
+        checks = verify_outputs(results)
+        bad = [(c.strategy_id, c.error) for c in checks if not c.ok]
+        assert not bad, f"verify_outputs failed for: {bad}"
+
     # ── 5.4: registration — both base and regime are registered ────────────
 
     def test_regime_variant_registered_in_runs_path(self, tmp_path: Path):

@@ -258,6 +258,16 @@ class GenerationBlock(_Manifest):
         default=None, description="LLM prose — post-hoc rationalisation, not evidence."
     )
     factors_used: List[str] = Field(default_factory=list)
+    regime_overlay: Optional[bool] = Field(
+        default=None,
+        description="True for an archetype's _regime variant (stage-2 emits a "
+        "regime-filtered sibling). None/absent for the base strategy.",
+    )
+    runtime_deps: List[str] = Field(
+        default_factory=list,
+        description="Extra artifacts the strategy needs at runtime, e.g. a "
+        "regime manifest for the _regime variant.",
+    )
 
 
 class ReproducibilityBlock(_Manifest):
