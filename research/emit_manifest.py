@@ -458,10 +458,14 @@ def build_backtest_block(
         _benchmark_from_row(entry.base_run, base_row) if base_row is not None else None
     )
 
-    # ── OOS: held-out walk-forward runs are the only OOS source ────────────
+    # ── OOS: oos_runs takes precedence over walk_forward_runs ───────────────
     oos: BacktestMetrics | None = None
-    if entry.walk_forward_runs:
+    oos_run_name: str | None = None
+    if entry.oos_runs:
+        oos_run_name = entry.oos_runs[0]
+    elif entry.walk_forward_runs:
         oos_run_name = entry.walk_forward_runs[0]
+    if oos_run_name is not None:
         oos_metrics_path = runs_root / oos_run_name / "artifacts" / "metrics.csv"
         oos = metrics_csv_to_backtest_metrics(oos_run_name, oos_metrics_path)
 

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "strategy_id": "eth_s5_half_size",
   "symbol": "ETH",
-  "generated_at": "2026-06-10T14:58:35.462391Z",
+  "generated_at": "2026-06-13T02:46:07.443626Z",
   "pipeline_stage": 5,
   "spec": {
     "source_run": null,

@@ -447,7 +447,7 @@ dashboard 的 promote 按鈕靠 `gate.fatal_fail` 決定是否解鎖。2026-06-0
 
 `max_drawdown`（≤ 0.10）與 `min_profit_factor`（≥ 1.5）門檻不論模式不變。
 
-**OOS 資料來源（`build_backtest_block`）**：`walk_forward_runs[0]`；為空 → `oos = None`（legacy 路徑）。
+**OOS 資料來源（`build_backtest_block`）**：優先用 `oos_runs[0]`；若 `oos_runs` 為空則 fallback `walk_forward_runs[0]`；兩者皆空 → `oos = None`（legacy 路徑）。
 
 **`alpha_not_fee_illusion` 行為**：
 - 有 stress 資料（`stress_runs` 非空）→ `fatal=True`；worst sharpe ≤ 0 → hard block。

@@ -99,6 +99,7 @@ def _make_entry(
     spec_yaml: str = "research/strategies/s1.yaml",
     sweep_run: str | None = None,
     walk_forward_runs: tuple[str, ...] = (),
+    oos_runs: tuple[str, ...] = (),
 ) -> StrategyRunsEntry:
     import types
 
@@ -110,6 +111,7 @@ def _make_entry(
         stress_runs=types.MappingProxyType(stress_runs or {}),
         sweep_run=sweep_run,
         walk_forward_runs=walk_forward_runs,
+        oos_runs=oos_runs,
     )
 
 
@@ -670,6 +672,55 @@ class TestOosSource:
         base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
         _write_metrics_csv(base_csv, _good_metrics_row())
         entry = _make_entry(base_run="base", walk_forward_runs=())
+        bt = build_backtest_block(entry, runs_root)
+        assert bt is not None
+        assert bt.oos is None
+
+
+# ─── (e2b) TestOosSourceFallback ───────────────────────────────────────────────
+
+
+class TestOosSourceFallback:
+    """Tests for oos_runs precedence over walk_forward_runs in build_backtest_block."""
+
+    def test_walk_forward_used_when_oos_runs_empty(self, tmp_path):
+        """oos_runs=[] + walk_forward_runs present → oos populated from wf run."""
+        runs_root = tmp_path / "runs"
+        base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
+        wf_csv = runs_root / "wf_run" / "artifacts" / "metrics.csv"
+        _write_metrics_csv(base_csv, _good_metrics_row())
+        _write_metrics_csv(wf_csv, _good_metrics_row())
+        entry = _make_entry(base_run="base", walk_forward_runs=("wf_run",), oos_runs=())
+        bt = build_backtest_block(entry, runs_root)
+        assert bt is not None
+        assert bt.oos is not None
+        assert bt.oos.source_run == "wf_run"
+
+    def test_oos_runs_take_precedence_over_walk_forward(self, tmp_path):
+        """oos_runs non-empty → oos populated from oos_runs[0], not walk_forward."""
+        runs_root = tmp_path / "runs"
+        base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
+        oos_csv = runs_root / "foo_oos_2024" / "artifacts" / "metrics.csv"
+        wf_csv = runs_root / "foo_wf" / "artifacts" / "metrics.csv"
+        _write_metrics_csv(base_csv, _good_metrics_row())
+        _write_metrics_csv(oos_csv, {**_good_metrics_row(), "sharpe": "1.23"})
+        _write_metrics_csv(wf_csv, {**_good_metrics_row(), "sharpe": "0.50"})
+        entry = _make_entry(
+            base_run="base",
+            walk_forward_runs=("foo_wf",),
+            oos_runs=("foo_oos_2024",),
+        )
+        bt = build_backtest_block(entry, runs_root)
+        assert bt is not None
+        assert bt.oos is not None
+        assert bt.oos.source_run == "foo_oos_2024"
+
+    def test_both_empty_oos_is_none(self, tmp_path):
+        """oos_runs=[] + walk_forward_runs=() → oos is None."""
+        runs_root = tmp_path / "runs"
+        base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
+        _write_metrics_csv(base_csv, _good_metrics_row())
+        entry = _make_entry(base_run="base", walk_forward_runs=(), oos_runs=())
         bt = build_backtest_block(entry, runs_root)
         assert bt is not None
         assert bt.oos is None

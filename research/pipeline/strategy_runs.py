@@ -100,6 +100,14 @@ class StrategyRunsEntry:
     manifest's ``walk_forward`` block. Empty when no walk-forward test exists.
     """
 
+    oos_runs: tuple[str, ...] = ()
+    """
+    Explicit out-of-sample slice run directories (optional). When non-empty,
+    takes precedence over walk_forward_runs as the OOS data source in
+    emit_manifest.build_backtest_block. Backward-compatible: absent from JSON
+    means empty tuple.
+    """
+
 
 @dataclasses.dataclass(frozen=True)
 class StrategyRunsMap:
@@ -266,6 +274,20 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
                     f"'walk_forward_runs[{i}]' must be a string, got {type(v).__name__}."
                 )
 
+        # Optional: explicit OOS slice runs (backward-compatible).
+        oos_runs_raw = entry_raw.get("oos_runs", [])
+        if not isinstance(oos_runs_raw, list):
+            raise TypeError(
+                f"strategy_runs.json: entry for strategy_id '{strategy_id}': "
+                f"'oos_runs' must be a JSON array (list), got {type(oos_runs_raw).__name__}."
+            )
+        for i, v in enumerate(oos_runs_raw):
+            if not isinstance(v, str):
+                raise TypeError(
+                    f"strategy_runs.json: entry for strategy_id '{strategy_id}': "
+                    f"'oos_runs[{i}]' must be a string, got {type(v).__name__}."
+                )
+
         entries[strategy_id] = StrategyRunsEntry(
             symbol=symbol,
             spec_yaml=spec_yaml,
@@ -274,6 +296,7 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
             stress_runs=types.MappingProxyType(dict(stress_runs)),
             sweep_run=sweep_run,
             walk_forward_runs=tuple(wf_runs),
+            oos_runs=tuple(oos_runs_raw),
         )
 
     return StrategyRunsMap(entries=types.MappingProxyType(_filter_entries_by_env(entries)))
@@ -336,6 +359,7 @@ def register_strategy(
         "stress_runs": {},
         "sweep_run": None,
         "walk_forward_runs": [],
+        "oos_runs": [],
     }
 
     payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
