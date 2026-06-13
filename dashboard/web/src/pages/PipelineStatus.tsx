@@ -134,16 +134,29 @@ const PER_SYMBOL_STAGES = ["0a", "0", "1", "2", "2.5", "3", "4"]; // no 5 (globa
 
 function SymbolRunControl({
   symbol,
+  runnable,
   onStarted,
   busy,
 }: {
   symbol: string;
+  runnable: boolean;
   onStarted: () => void;
   busy: boolean;
 }) {
   const [stage, setStage] = useState("0a");
   const [stress, setStress] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  if (!runnable) {
+    return (
+      <span
+        className="text-[10px] text-muted-foreground"
+        title={`${symbol} 不在 research_config.yaml — 舊 artifact 殘留,無法跑 pipeline`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        未配置
+      </span>
+    );
+  }
   return (
     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
       <select
@@ -290,7 +303,7 @@ export default function PipelineStatus() {
                   ))}
                 </div>
                 <div className="ml-auto flex items-center gap-3">
-                  <SymbolRunControl symbol={sym.symbol} onStarted={refreshJobs} busy={busy} />
+                  <SymbolRunControl symbol={sym.symbol} runnable={sym.runnable} onStarted={refreshJobs} busy={busy} />
                   <span className="text-xs text-muted-foreground">
                     {sym.strategies.length} 策略
                   </span>

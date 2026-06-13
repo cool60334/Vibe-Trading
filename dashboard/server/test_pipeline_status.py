@@ -62,6 +62,19 @@ def test_discover_symbols_union_config_and_filesystem(tmp_path):
     assert "values_btc" not in syms           # meta file not mistaken for a symbol
 
 
+def test_build_pipeline_status_marks_disk_only_symbol_not_runnable(tmp_path):
+    """A symbol present only on disk (not in research_config) must be flagged
+    runnable=False so the UI disables its Run button — the run endpoint would
+    400 on it. Config symbols stay runnable=True."""
+    md = tmp_path / "research" / "manifests"
+    md.mkdir(parents=True)
+    (md / "factor_btc.json").write_text("{}", encoding="utf-8")
+    (md / "factor_sol.json").write_text("{}", encoding="utf-8")  # disk-only (retired)
+    ps = ps_mod.build_pipeline_status(tmp_path, config_symbols=["btc"])
+    runnable = {s.symbol: s.runnable for s in ps.symbols}
+    assert runnable == {"btc": True, "sol": False}
+
+
 def test_apply_staleness_marks_downstream_stale():
     # (stage_id, label, generated_at, metric_label, metric_value, present)
     raws = [

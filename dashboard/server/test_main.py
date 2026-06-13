@@ -512,3 +512,15 @@ def test_run_stage3_without_stress_still_works(client, monkeypatch):
     )
     assert r.status_code == 201
     assert r.json()["stress"] is False
+
+
+def test_run_unknown_symbol_rejected_with_detail(client, monkeypatch):
+    """A symbol not in research_config (e.g. a retired disk-only symbol) is
+    rejected 400 with a legible detail, not a silent failure."""
+    monkeypatch.setattr("main._config_symbols", lambda: ["btc", "eth"])
+    r = client.post(
+        "/api/pipeline/run",
+        json={"kind": "pipeline", "symbol": "sol"},
+    )
+    assert r.status_code == 400
+    assert "sol" in r.json()["detail"]

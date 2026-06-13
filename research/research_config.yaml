@@ -17,6 +17,10 @@ symbols:
   okx_swap: "ETH-USDT-SWAP"
   ccxt_bybit: "ETH/USDT:USDT"
 
+- name: sol
+  okx_swap: "SOL-USDT-SWAP"
+  ccxt_bybit: "SOL/USDT:USDT"
+
 # ─── 資料抓取參數 ──────────────────────────────────────────────────────────────
 period: 1460         # 回溯天數（約 4 年）— funding 改 ccxt 多年源後可拉長；2022-05 起資料
 interval: "1H"       # K 線週期（OKX bar 格式）

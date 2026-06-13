@@ -237,6 +237,7 @@ def build_pipeline_status(repo_root: Path, config_symbols: list[str]) -> Pipelin
     selection = _load_json(sel_p)
     selection_time = _artifact_time(sel_p, selection) if selection is not None else None
 
+    config_set = set(config_symbols)
     symbols: list[SymbolPipeline] = []
     for sym in discover_symbols(md, config_symbols):
         sym_stages = build_symbol_stages(md, sym)
@@ -247,7 +248,13 @@ def build_pipeline_status(repo_root: Path, config_symbols: list[str]) -> Pipelin
             build_strategy_pipeline(md, sid, seed_time, selection, selection_time)
             for sid in _strategy_ids_for_symbol(md, sym)
         ]
-        symbols.append(SymbolPipeline(symbol=sym, stages=sym_stages, strategies=strategies))
+        # Only config symbols are runnable; disk-only symbols (stale artifacts of
+        # a retired symbol) would 400 at /api/pipeline/run, so flag them so the UI
+        # disables their Run control instead of offering a button that always fails.
+        symbols.append(SymbolPipeline(
+            symbol=sym, stages=sym_stages, strategies=strategies,
+            runnable=sym in config_set,
+        ))
 
     return PipelineStatus(generated_at=now, symbols=symbols)
 

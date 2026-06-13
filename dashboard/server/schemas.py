@@ -777,6 +777,8 @@ class SymbolPipeline(BaseModel):
     symbol: str
     stages: List[StageStatus]          # 0a, 0, 1, 2, 2.5
     strategies: List[StrategyPipeline]
+    runnable: bool = True              # False = disk-only symbol absent from research_config
+                                       # (Run button must stay disabled; backend would 400)
 
 
 class PipelineStatus(BaseModel):

@@ -333,6 +333,7 @@ export interface SymbolPipeline {
   symbol: string;
   stages: StageStatus[];
   strategies: StrategyPipeline[];
+  runnable: boolean;   // false = disk-only symbol not in research_config; Run disabled
 }
 
 export interface PipelineStatus {
@@ -431,8 +432,13 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }).then((r) => {
-      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    }).then(async (r) => {
+      if (!r.ok) {
+        // Surface FastAPI's `detail` (e.g. "unknown symbol 'sol'") instead of a
+        // bare "400 Bad Request" that hides why the run was rejected.
+        const detail = await r.json().then((b) => b?.detail).catch(() => null);
+        throw new Error(detail ? `${r.status} ${detail}` : `${r.status} ${r.statusText}`);
+      }
       return r.json();
     }),
   listPipelineJobs: () => get<PipelineJob[]>("/pipeline/jobs"),
