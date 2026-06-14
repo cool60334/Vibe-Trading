@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+from lib.timeframe import bars_per_hour
+
 
 @dataclass
 class FactorResult:
@@ -21,11 +23,18 @@ class FactorResult:
         return not np.isnan(self.ic) and abs(self.ic) > threshold
 
 
-def add_forward_returns(df: pd.DataFrame, price_col: str, horizons_h: list) -> pd.DataFrame:
-    """Append forward simple returns columns named ret_<h>h for each horizon in hours."""
+def add_forward_returns(
+    df: pd.DataFrame, price_col: str, horizons_h: list, interval: str = "1H"
+) -> pd.DataFrame:
+    """Append forward simple returns columns named ret_<h>h for each horizon in hours.
+
+    `horizons_h` are in HOURS. At sub-hour `interval` they are converted to bars
+    via bars_per_hour so ret_24h always means 24 hours forward, not 24 bars.
+    """
     out = df.copy()
+    bph = bars_per_hour(interval)
     for h in horizons_h:
-        out[f"ret_{h}h"] = out[price_col].shift(-h) / out[price_col] - 1
+        out[f"ret_{h}h"] = out[price_col].shift(-(h * bph)) / out[price_col] - 1
     return out
 
 
