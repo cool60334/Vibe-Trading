@@ -392,6 +392,30 @@ class TestComputeExitCode:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# decide_selected — FATAL gate veto over the diagnosis verdict
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDecideSelected:
+    """A strategy is selected only when diagnosis == 'proceed' AND no FATAL gate
+    failed. fatal_fail=True (e.g. fee-illusion, or no OOS holdout) forces False
+    even on a 'proceed' verdict — selection must agree with the promote gate."""
+
+    def test_proceed_and_not_fatal_is_selected(self):
+        from pipeline.stage5_select import decide_selected
+        assert decide_selected("proceed", fatal_fail=False) is True
+
+    def test_proceed_but_fatal_is_not_selected(self):
+        from pipeline.stage5_select import decide_selected
+        assert decide_selected("proceed", fatal_fail=True) is False
+
+    def test_back_to_stage_4_never_selected(self):
+        from pipeline.stage5_select import decide_selected
+        assert decide_selected("back_to_stage_4", fatal_fail=False) is False
+        assert decide_selected("back_to_stage_4", fatal_fail=True) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # print_summary
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -787,3 +811,19 @@ class TestManifestEmission:
 
         assert "Emitted:" in out_buf.getvalue()
         assert "manifests successfully." in out_buf.getvalue()
+
+    # FATAL-gate veto: a 'proceed' strategy that hard-fails a FATAL gate must
+    # NOT be marked selected=True in selection.json (it would be blocked at the
+    # promote gate anyway). Here the strategy has no OOS holdout run, so the
+    # fatal oos_sharpe_positive gate fails → fatal_fail=True → selected=False.
+    def test_proceed_but_fatal_gate_not_selected(self, tmp_path: Path):
+        strategies = {"btc_fatal": {"symbol": "BTC-USDT-SWAP", "base_run": "run_fatal"}}
+        _setup_strategy(tmp_path, "btc_fatal", "proceed", base_run="run_fatal")
+
+        self._run_main(tmp_path, strategies)
+
+        sel = json.loads(
+            (tmp_path / "research" / "manifests" / "selection.json").read_text(encoding="utf-8")
+        )
+        entry = next(e for e in sel["ranking"] if e["strategy_id"] == "btc_fatal")
+        assert entry["selected"] is False

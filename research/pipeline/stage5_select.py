@@ -62,7 +62,11 @@ for _p in (_RESEARCH_DIR,):
 from pipeline.config import _REPO_ROOT, ResearchConfig, load_config  # noqa: E402
 from pipeline.strategy_runs import StrategyRunsMap, load_strategy_runs  # noqa: E402
 from pipeline.stage3_diagnose import read_metrics_csv  # noqa: E402
-from emit_manifest import emit_manifest_for_strategy  # noqa: E402
+from emit_manifest import (  # noqa: E402
+    build_backtest_block,
+    compute_gate,
+    emit_manifest_for_strategy,
+)
 
 # ── Dashboard schemas path ─────────────────────────────────────────────────────
 _DASHBOARD_SCHEMAS = _REPO_ROOT / "dashboard" / "server"
@@ -202,6 +206,24 @@ def is_eligible(
         return False, f"recommended_action={action!r} (must be in {sorted(_ELIGIBLE_ACTIONS)})"
 
     return True, "eligible"
+
+
+def decide_selected(recommended_action: str, fatal_fail: bool) -> bool:
+    """Whether a strategy should be marked selected=True for testnet promotion.
+
+    selected requires BOTH:
+      1. diagnosis recommended_action == "proceed", AND
+      2. the strategy did not hard-fail a FATAL gate (``fatal_fail`` is False).
+
+    The second clause keeps selection.json consistent with the dashboard promote
+    gate (which blocks on ``gate.fatal_fail``). Without it a fee-illusion
+    strategy — diagnosed "proceed" on a positive OOS sharpe but whose edge
+    vanishes under the cost-stress FATAL gate — would be advertised as selected
+    while being unpromotable. ``fatal_fail`` also covers a missing OOS holdout
+    (the fatal ``oos_sharpe_positive`` gate), so an unvalidated strategy is never
+    marked selected.
+    """
+    return recommended_action == _SELECTED_ACTION and not fatal_fail
 
 
 def build_selection_entry(
@@ -405,10 +427,16 @@ def main() -> None:
 
         score = score_strategy(sharpe_f, drawdown_f, pf_f, tc_f)
 
-        # Determine selected flag from recommended_action.
+        # Determine selected flag from recommended_action, vetoed by the FATAL
+        # gate so selection.json stays consistent with the dashboard promote gate
+        # (a fee-illusion / unvalidated strategy must not advertise as selected).
         diagnosis_data = json.loads(diagnosis_path.read_text(encoding="utf-8"))
         action = diagnosis_data.get("recommended_action", "")
-        selected_flag = action == _SELECTED_ACTION
+        backtest_block = build_backtest_block(entry, runs_root)
+        fatal_fail = (
+            compute_gate(backtest_block).fatal_fail if backtest_block is not None else True
+        )
+        selected_flag = decide_selected(action, fatal_fail)
 
         # Derive short symbol name from entry.symbol (may be "BTC-USDT-SWAP" etc.)
         # Use the first hyphen-delimited token or the whole string if no hyphen.
