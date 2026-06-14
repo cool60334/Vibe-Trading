@@ -126,6 +126,33 @@ def _apply_symbol_filter(cfg: ResearchConfig) -> ResearchConfig:
     return dataclasses.replace(cfg, symbols=tuple(matches))
 
 
+# ─── Interval override ────────────────────────────────────────────────────────
+
+def _apply_interval_override(cfg: ResearchConfig) -> ResearchConfig:
+    """If RESEARCH_INTERVAL is set, return a copy with that candle interval and a
+    namespaced feature store.
+
+    Lets the dashboard / CLI run the pipeline at 15m or 30m without editing the
+    YAML, mirroring RESEARCH_ONLY_SYMBOL. The feature store is suffixed with the
+    interval (e.g. research/manifests/15m) so sub-hour artifacts never clobber the
+    1H ones. Unset or "1H" -> path unchanged (zero regression). Unknown -> ValueError.
+    """
+    iv = os.environ.get("RESEARCH_INTERVAL", "").strip()
+    if not iv:
+        return cfg
+    from lib.timeframe import SUPPORTED_INTERVALS
+
+    if iv not in SUPPORTED_INTERVALS:
+        raise ValueError(
+            f"RESEARCH_INTERVAL={iv!r} is not supported; "
+            f"valid: {sorted(SUPPORTED_INTERVALS)}"
+        )
+    new_store = cfg.feature_store_path
+    if iv != "1H":
+        new_store = f"{cfg.feature_store_path.rstrip('/')}/{iv}"
+    return dataclasses.replace(cfg, interval=iv, feature_store_path=new_store)
+
+
 # ─── Loader ──────────────────────────────────────────────────────────────────
 
 def load_config(path: Path | str | None = None) -> ResearchConfig:
@@ -320,4 +347,4 @@ def load_config(path: Path | str | None = None) -> ResearchConfig:
         append_coverage_threshold=append_coverage_threshold,
         oos_start=oos_start,
     )
-    return _apply_symbol_filter(cfg)
+    return _apply_interval_override(_apply_symbol_filter(cfg))
