@@ -188,13 +188,18 @@ class TestValidFixture:
         result = load_strategy_runs(p)
         assert result.entries["btc_s1_test"].stress_runs == {}
 
-    def test_legacy_oos_runs_key_ignored(self, tmp_path: Path) -> None:
-        """Old strategy_runs.json files may still carry oos_runs — loader ignores it."""
-        data = {"btc_s1_test": {**MINIMAL_VALID_ENTRY, "oos_runs": []}}
+    def test_oos_runs_field_loaded_from_json(self, tmp_path: Path) -> None:
+        """oos_runs is a real field (emit_manifest reads it, taking precedence over
+        walk_forward_runs): an empty list loads to an empty tuple, a populated list
+        loads into the field. (Re-added in 3957a6b after the B4 removal in 7ee12c0.)"""
+        data = {
+            "btc_s1_empty": {**MINIMAL_VALID_ENTRY, "oos_runs": []},
+            "btc_s1_filled": {**MINIMAL_VALID_ENTRY, "oos_runs": ["btc_s1_oos_2024"]},
+        }
         p = write_json(tmp_path, data)
         result = load_strategy_runs(p)
-        assert "btc_s1_test" in result.entries
-        assert not hasattr(result.entries["btc_s1_test"], "oos_runs")
+        assert result.entries["btc_s1_empty"].oos_runs == ()
+        assert result.entries["btc_s1_filled"].oos_runs == ("btc_s1_oos_2024",)
 
     def test_multiple_entries_parsed(self, tmp_path: Path) -> None:
         entry2 = {**MINIMAL_VALID_ENTRY, "spec_yaml": "research/strategies/strategy_S2.yaml"}
