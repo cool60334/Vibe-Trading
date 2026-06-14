@@ -135,6 +135,7 @@ _TIER_TABLE = [
 ]
 
 FUNDING_HOURS = {0, 8, 16}
+_SUB_HOUR_INTERVALS: frozenset[str] = frozenset({"15m", "30m"})
 
 
 def _maintenance_rate(notional_usd: float) -> float:
@@ -179,8 +180,7 @@ def calc_crypto_funding_fee(
     hour = timestamp.hour if hasattr(timestamp, "hour") else 0
     minute = timestamp.minute if hasattr(timestamp, "minute") else 0
 
-    _SUB_HOUR = {"1m", "5m", "15m", "30m"}
-    if interval in _SUB_HOUR:
+    if interval in _SUB_HOUR_INTERVALS:
         # Settlement-only: charge once at each 8h boundary bar; no daily fallback
         # (continuous sub-hour bars include the exact 00/08/16 bars).
         if hour in FUNDING_HOURS and minute == 0:
