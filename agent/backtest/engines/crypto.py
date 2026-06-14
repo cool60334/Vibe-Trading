@@ -37,6 +37,7 @@ class CryptoEngine(BaseEngine):
         self.taker_rate: float = config.get("taker_rate", 0.0005)
         self.slippage_rate: float = config.get("slippage", 0.0005)
         self.funding_rate: float = config.get("funding_rate", 0.0001)
+        self.interval: str = config.get("interval", "1D")
         self._funding_applied: set = set()   # (symbol, date, hour) — per-slot dedup
         self._funding_daily_done: set = set()  # (symbol, date) — daily fallback dedup
 
@@ -66,6 +67,7 @@ class CryptoEngine(BaseEngine):
         fee = calc_crypto_funding_fee(
             symbol, bar, timestamp, self.positions,
             self.funding_rate, self._funding_applied, self._funding_daily_done,
+            interval=self.interval,
         )
         self.capital -= fee
 

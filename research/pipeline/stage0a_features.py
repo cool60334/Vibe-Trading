@@ -66,6 +66,7 @@ from lib.indicators import compute_indicator_pool
 from lib.factor_io import dump_features, dump_evidence
 from lib.factor_metrics import add_forward_returns, evaluate_factor, FactorResult
 from lib.derived_factors import basis_factors, funding_factors, oi_factors
+from lib.timeframe import bars_per_hour
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -145,17 +146,19 @@ def _rolling_zscore(series: pd.Series, window: int = 720, min_periods: int = 30)
 
 
 def apply_ic_eval_transform(
-    feat_name: str, series: pd.Series
+    feat_name: str, series: pd.Series, interval: str = "1H"
 ) -> tuple[pd.Series, str | None]:
     """Return (series_for_ic, transform_label) for honest screening IC.
 
     Measurement-layer only — does not mutate the stored feature. Features not
-    listed are returned unchanged with a ``None`` label.
+    listed are returned unchanged with a ``None`` label. `interval` scales the
+    720h rolling z-score window so it stays 30 days at any candle size.
     """
     if feat_name in _IC_STATIONARY_TRANSFORM:
         kind = _IC_STATIONARY_TRANSFORM[feat_name]
         if kind == "zscore_720h":
-            return _rolling_zscore(series), kind
+            bph = bars_per_hour(interval)
+            return _rolling_zscore(series, window=720 * bph, min_periods=30 * bph), kind
 
     if feat_name in _IC_NATIVE_FREQ:
         rule = _IC_NATIVE_FREQ[feat_name]
@@ -205,6 +208,7 @@ def build_feature_dict(
     dict[str, pd.Series]  — all values aligned to candles.index.
     """
     features: dict[str, pd.Series] = {}
+    bph = bars_per_hour(config.interval)
 
     # ── Price-based indicator pool ────────────────────────────────────────────
     indicators = compute_indicator_pool(candles, config)
@@ -224,7 +228,7 @@ def build_feature_dict(
     _oi_col = next((c for c in ("open_interest", "oi") if oi_df is not None and c in oi_df.columns), None)
     if oi_df is not None and not oi_df.empty and _oi_col is not None:
         oi_on_candle = oi_df[_oi_col].reindex(candle_idx, method="ffill")
-        oi_change = oi_on_candle.pct_change(periods=24)
+        oi_change = oi_on_candle.pct_change(periods=24 * bph)
         oi_change.name = "oi_change_24h"
         features["oi_change_24h"] = oi_change
 
@@ -235,9 +239,9 @@ def build_feature_dict(
         and "stablecoin_supply" in stablecoin_df.columns
     ):
         sc_aligned = stablecoin_df["stablecoin_supply"].reindex(candle_idx, method="ffill")
-        # 30-day rolling z-score (720 hours)
-        roll_mean = sc_aligned.rolling(720, min_periods=30).mean()
-        roll_std = sc_aligned.rolling(720, min_periods=30).std()
+        # 30-day rolling z-score (720 hours), scaled to candle interval
+        roll_mean = sc_aligned.rolling(720 * bph, min_periods=30 * bph).mean()
+        roll_std = sc_aligned.rolling(720 * bph, min_periods=30 * bph).std()
         sc_z = (sc_aligned - roll_mean) / roll_std.replace(0, float("nan"))
         sc_z.name = "stablecoin_supply_z"
         features["stablecoin_supply_z"] = sc_z
@@ -258,6 +262,7 @@ def compute_evidence_entries(
     feature_dict: dict[str, pd.Series],
     horizons_h: tuple[int, ...],
     price_col: str = "close",
+    interval: str = "1H",
 ) -> list[dict]:
     """Compute multi-horizon IC/IR for every feature and return evidence entries.
 
@@ -271,6 +276,10 @@ def compute_evidence_entries(
         Forward-return horizons in hours.
     price_col:
         Column in candles to use as price for forward returns.
+    interval:
+        Candle interval string (e.g. "1H", "15m", "30m"). Passed to
+        add_forward_returns, apply_ic_eval_transform, and evaluate_factor so
+        they can scale bar-count windows correctly.
 
     Returns
     -------
@@ -280,19 +289,19 @@ def compute_evidence_entries(
     # Build base DataFrame with price column
     base_df = pd.DataFrame({"price": candles[price_col]}, index=candles.index)
     # Add forward returns once for all horizons
-    base_df = add_forward_returns(base_df, "price", list(horizons_h))
+    base_df = add_forward_returns(base_df, "price", list(horizons_h), interval=interval)
 
     entries: list[dict] = []
     for feat_name, feat_series in feature_dict.items():
         # Apply measurement-layer IC correction (stationary transform / native-freq
         # subsample) so the screening IC is honest. Stored feature is untouched.
-        eval_series, ic_transform = apply_ic_eval_transform(feat_name, feat_series)
+        eval_series, ic_transform = apply_ic_eval_transform(feat_name, feat_series, interval=interval)
 
         # Attach the feature column
         df = base_df.copy()
         df[feat_name] = eval_series
 
-        results: list[FactorResult] = evaluate_factor(df, feat_name, list(horizons_h))
+        results: list[FactorResult] = evaluate_factor(df, feat_name, list(horizons_h), interval=interval)
 
         # Build ic_by_horizon dict: {horizon_int: ic_float}
         ic_by_horizon: dict[int, float | None] = {}
@@ -500,7 +509,7 @@ def _process_symbol(
 
         # ── 6. Compute multi-horizon IC/IR ───────────────────────────────────
         log.info("%s: computing multi-horizon IC/IR...", sym)
-        entries = compute_evidence_entries(candles, feature_dict, cfg.horizons_h)
+        entries = compute_evidence_entries(candles, feature_dict, cfg.horizons_h, interval=cfg.interval)
         sorted_entries = sort_evidence_by_ic(entries)
 
         # ── 7. Write evidence JSON ───────────────────────────────────────────

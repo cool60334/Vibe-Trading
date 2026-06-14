@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+from lib.timeframe import bars_per_day, bars_per_hour
+
 
 @dataclass
 class FactorResult:
@@ -21,11 +23,18 @@ class FactorResult:
         return not np.isnan(self.ic) and abs(self.ic) > threshold
 
 
-def add_forward_returns(df: pd.DataFrame, price_col: str, horizons_h: list) -> pd.DataFrame:
-    """Append forward simple returns columns named ret_<h>h for each horizon in hours."""
+def add_forward_returns(
+    df: pd.DataFrame, price_col: str, horizons_h: list, interval: str = "1H"
+) -> pd.DataFrame:
+    """Append forward simple returns columns named ret_<h>h for each horizon in hours.
+
+    `horizons_h` are in HOURS. At sub-hour `interval` they are converted to bars
+    via bars_per_hour so ret_24h always means 24 hours forward, not 24 bars.
+    """
     out = df.copy()
+    bph = bars_per_hour(interval)
     for h in horizons_h:
-        out[f"ret_{h}h"] = out[price_col].shift(-h) / out[price_col] - 1
+        out[f"ret_{h}h"] = out[price_col].shift(-(h * bph)) / out[price_col] - 1
     return out
 
 
@@ -70,11 +79,15 @@ def evaluate_factor(
     horizons_h: list,
     rolling_window_days: int = 30,
     min_samples: int = 200,
+    interval: str = "1H",
 ) -> list:
     """Compute IC + IR for one factor across multiple forward-return horizons.
 
     Expects df to already contain ret_<h>h columns (use add_forward_returns first).
+    The rolling-IR window/step are in DAYS internally and convert to bars via
+    `interval` so a "30-day" window is 30 days at any candle size.
     """
+    bpd = bars_per_day(interval)
     results: list = []
     for h in horizons_h:
         ret_col = f"ret_{h}h"
@@ -90,8 +103,8 @@ def evaluate_factor(
             df,
             factor_col,
             ret_col,
-            window_bars=rolling_window_days * 24,
-            step_bars=24,
+            window_bars=rolling_window_days * bpd,
+            step_bars=bpd,
             min_samples=min_samples,
         )
         if rolling.size > 0 and rolling.std(ddof=0) > 0:

@@ -493,3 +493,35 @@ def test_load_config_unknown_env_symbol_raises(monkeypatch):
     monkeypatch.setenv("RESEARCH_ONLY_SYMBOL", "zzz")
     with pytest.raises(ValueError, match="RESEARCH_ONLY_SYMBOL"):
         load_config(_REAL_CONFIG)
+
+
+# ─── Unit: RESEARCH_INTERVAL env var override ────────────────────────────────
+
+def test_load_config_interval_override_sets_interval(monkeypatch):
+    monkeypatch.setenv("RESEARCH_INTERVAL", "15m")
+    cfg = load_config(_REAL_CONFIG)
+    assert cfg.interval == "15m"
+
+
+def test_load_config_interval_override_namespaces_feature_store(monkeypatch):
+    monkeypatch.setenv("RESEARCH_INTERVAL", "15m")
+    cfg = load_config(_REAL_CONFIG)
+    assert cfg.feature_store_path.rstrip("/").endswith("/15m")
+
+
+def test_load_config_interval_1H_leaves_feature_store_unchanged(monkeypatch):
+    monkeypatch.setenv("RESEARCH_INTERVAL", "1H")
+    cfg = load_config(_REAL_CONFIG)
+    assert not cfg.feature_store_path.rstrip("/").endswith("/1H")
+
+
+def test_load_config_no_interval_env_unchanged(monkeypatch):
+    monkeypatch.delenv("RESEARCH_INTERVAL", raising=False)
+    cfg = load_config(_REAL_CONFIG)
+    assert cfg.interval in {"15m", "30m", "1H"}  # whatever the YAML ships
+
+
+def test_load_config_unknown_interval_raises(monkeypatch):
+    monkeypatch.setenv("RESEARCH_INTERVAL", "7m")
+    with pytest.raises(ValueError, match="RESEARCH_INTERVAL"):
+        load_config(_REAL_CONFIG)

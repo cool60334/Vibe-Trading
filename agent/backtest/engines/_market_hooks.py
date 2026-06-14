@@ -135,6 +135,7 @@ _TIER_TABLE = [
 ]
 
 FUNDING_HOURS = {0, 8, 16}
+_SUB_HOUR_INTERVALS: frozenset[str] = frozenset({"15m", "30m"})
 
 
 def _maintenance_rate(notional_usd: float) -> float:
@@ -153,6 +154,7 @@ def calc_crypto_funding_fee(
     funding_rate: float,
     applied_set: set,
     daily_done_set: set,
+    interval: str = "1D",
 ) -> float:
     """Calculate crypto funding fee for one symbol.
 
@@ -164,6 +166,9 @@ def calc_crypto_funding_fee(
         funding_rate: Fixed rate per settlement.
         applied_set: (symbol, date, hour) dedup set — mutated.
         daily_done_set: (symbol, date) dedup set — mutated.
+        interval: Bar interval string (e.g. "15m", "30m", "1H", "1D").
+                  Sub-hour intervals use settlement-only logic (charge only at
+                  the exact 00:00/08:00/16:00 bars, no daily fallback).
 
     Returns:
         Fee amount (positive = longs pay, negative = longs receive).
@@ -173,17 +178,30 @@ def calc_crypto_funding_fee(
 
     current_date = timestamp.date()
     hour = timestamp.hour if hasattr(timestamp, "hour") else 0
+    minute = timestamp.minute if hasattr(timestamp, "minute") else 0
 
-    if hour in FUNDING_HOURS:
-        key = (symbol, current_date, hour)
-        if key in applied_set:
+    if interval in _SUB_HOUR_INTERVALS:
+        # Settlement-only: charge once at each 8h boundary bar; no daily fallback
+        # (continuous sub-hour bars include the exact 00/08/16 bars).
+        if hour in FUNDING_HOURS and minute == 0:
+            key = (symbol, current_date, hour)
+            if key in applied_set:
+                return 0.0
+            applied_set.add(key)
+        else:
             return 0.0
-        applied_set.add(key)
     else:
-        day_key = (symbol, current_date)
-        if day_key in daily_done_set:
-            return 0.0
-        daily_done_set.add(day_key)
+        # Legacy 1H/daily path — unchanged.
+        if hour in FUNDING_HOURS:
+            key = (symbol, current_date, hour)
+            if key in applied_set:
+                return 0.0
+            applied_set.add(key)
+        else:
+            day_key = (symbol, current_date)
+            if day_key in daily_done_set:
+                return 0.0
+            daily_done_set.add(day_key)
 
     pos = positions.get(symbol)
     if pos is None:
