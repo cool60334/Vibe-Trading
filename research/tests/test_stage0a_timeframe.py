@@ -60,3 +60,15 @@ def test_oi_change_window_scales_to_24h_in_bars():
         expected.reset_index(drop=True),
         check_names=False,
     )
+
+
+import inspect
+
+from pipeline import stage0a_features as s0a
+
+
+def test_stage0a_passes_interval_to_compute_evidence_entries():
+    src = inspect.getsource(s0a)
+    # The production call site must forward the configured interval, otherwise
+    # evidence IC silently reverts to 1H scaling on a 15m run.
+    assert "compute_evidence_entries(candles, feature_dict, cfg.horizons_h, interval=cfg.interval)" in src

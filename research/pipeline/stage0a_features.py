@@ -509,7 +509,7 @@ def _process_symbol(
 
         # ── 6. Compute multi-horizon IC/IR ───────────────────────────────────
         log.info("%s: computing multi-horizon IC/IR...", sym)
-        entries = compute_evidence_entries(candles, feature_dict, cfg.horizons_h)
+        entries = compute_evidence_entries(candles, feature_dict, cfg.horizons_h, interval=cfg.interval)
         sorted_entries = sort_evidence_by_ic(entries)
 
         # ── 7. Write evidence JSON ───────────────────────────────────────────
