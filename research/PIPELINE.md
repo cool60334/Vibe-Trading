@@ -41,7 +41,9 @@
 | Stage 4 | `stage4_optimize.py` | 參數優化：deterministic grid sweep。**設 `oos_start` 時只在 train 掃參、掃完自動跑 held-out OOS holdout** 寫入 walk_forward |
 | Stage 5 | `stage5_select.py` | 策略挑選：純 Python 加權算分，挑 `recommended_action != back_to_stage_2`，`proceed` 標 selected=True，寫 `selection.json`；完成後**自動為每個策略 emit `manifest.json`**（存至 `research/manifests/<strategy_id>/manifest.json`），dashboard `GET /api/strategies` 即可列出並進行 promote 流程 |
 
-執行順序：`0a → 0 → 1 → 2 → 2b → 2.5 → 3 → 3-diag → 4 → 3 (re-verify) → 5`。
+執行順序：`0a → 0 → 1 → 2 → 2b → 2.5 → 3 → 3-diag → 4 → 3-diag → 5`。
+
+> 🔁 **3-diag 跑兩次（重要）**：stage 4 會 gate 在 `diagnosis.json` 存在，所以 diag 必須**先**跑一次；但也是 stage 4 才產出 walk-forward holdout（寫 `walk_forward_runs`），而 3-diag 要**讀得到 holdout 才會 OOS-aware**。因此 stage 4 之後**再跑一次 3-diag**，產出真正以 held-out OOS 為錨的 `recommended_action` 供 stage 5 挑選。少了第二趟，乾淨首跑的 diag 只看 in-sample base 指標（trade gate 50），會把 **OOS 交易數過少**的策略誤判成 `proceed`（實例：BTC s1_regime in-sample 117 筆過關，但 OOS 僅 13 筆應 back_to_stage_4）。手動逐 stage 跑時也要記得 stage 4 後補跑一次 3-diag。
 
 > Stage 5 額外產出：除 `selection.json` 外，還會對 `strategy_runs.json` 裡**全部策略**（含未入選）emit `research/manifests/<strategy_id>/manifest.json`。此為 **derived artifact**，請勿手動編輯——下次 `stage5_select` 跑完會自動覆寫。
 
@@ -331,6 +333,8 @@ Base run 完成後，檢驗策略是否「適合此 archetype」。若：
 ## Stage 3-diag — 回測診斷
 
 讀 base run（train 窗）+ Stage 4 best（`optimization.json`）+ **walk-forward holdout 指標**（`manifest.walk_forward`）做概念層路由，吐 `recommended_action`：
+
+> 🔁 **OOS-aware 需在 stage 4 之後跑**：diag 的 walk-forward 指標來自 `strategy_runs.json` 的 `walk_forward_runs`，那是 **stage 4** 才寫入的 holdout run。所以 pipeline 在 stage 4 後**再跑一次 3-diag**（見上方執行順序）；stage 4 之前的第一趟 diag 只為滿足 stage 4 的 `diagnosis.json` gate，其 verdict 會被第二趟覆寫。
 - `proceed`：概念成立，可進 Stage 5。
 - `back_to_stage_4`：有潛力但要調參。
 - `back_to_stage_2`：概念有缺陷（如 OOS 負 sharpe），回去重做策略。

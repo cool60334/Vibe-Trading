@@ -15,8 +15,27 @@ def test_allowed_stage_ids_are_ui_stages():
 
 def test_pipeline_sequence_full_chain():
     assert pj.pipeline_sequence() == [
-        "0a", "0", "1", "2", "2b", "2.5", "3", "3diag", "4", "5"
+        "0a", "0", "1", "2", "2b", "2.5", "3", "3diag", "4", "3diag", "5"
     ]
+
+
+def test_pipeline_runs_diagnosis_after_stage4_for_oos_aware_verdict():
+    """stage3-diag must run AFTER stage4 so it consumes the walk-forward holdout.
+
+    stage4_optimize.py writes walk_forward_runs (the OOS holdout) only at the END
+    of stage 4, and stage3_diagnose reads entry.walk_forward_runs to become
+    OOS-aware. A diag pass must ALSO precede stage4 because stage4 gates on
+    diagnosis.json existing. So the canonical chain needs a diag pass on BOTH
+    sides of stage 4; the post-stage4 pass is the authoritative OOS verdict that
+    stage 5 (selection) consumes.
+    """
+    seq = pj.pipeline_sequence()
+    diag_idxs = [i for i, s in enumerate(seq) if s == "3diag"]
+    stage4_idx = seq.index("4")
+    assert any(i < stage4_idx for i in diag_idxs), "need a diag pass before stage4 (satisfies stage4's diagnosis.json gate)"
+    assert any(i > stage4_idx for i in diag_idxs), "need a diag pass after stage4 (OOS-aware authoritative verdict)"
+    # stage 5 selection reads the post-stage4 diagnosis, so it runs after every diag pass
+    assert seq.index("5") > max(diag_idxs)
 
 
 def test_stage_command_maps_to_module():

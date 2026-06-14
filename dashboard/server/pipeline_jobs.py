@@ -28,7 +28,14 @@ _STAGE_MODULE = {
 }
 
 # Full ordered chain for a kind="pipeline" job.
-_PIPELINE_SEQUENCE = ["0a", "0", "1", "2", "2b", "2.5", "3", "3diag", "4", "5"]
+# NOTE: "3diag" runs TWICE on purpose. stage4_optimize gates on diagnosis.json
+# existing, so a diag pass must PRECEDE stage 4. But stage 4 is also what writes
+# walk_forward_runs (the held-out OOS holdout), and stage3_diagnose only becomes
+# OOS-aware once it can read that run — so a second diag pass AFTER stage 4
+# produces the authoritative OOS verdict that stage 5 selection consumes. Without
+# it, a clean first run diagnoses on in-sample base metrics and wrongly passes
+# strategies with too few OOS trades. See research/PIPELINE.md "Stage 3-diag".
+_PIPELINE_SEQUENCE = ["0a", "0", "1", "2", "2b", "2.5", "3", "3diag", "4", "3diag", "5"]
 
 # Stages exposed as individual UI "Run" buttons (2b / 3diag are chain-only).
 _UI_STAGE_IDS = ["0a", "0", "1", "2", "2.5", "3", "4", "5"]
