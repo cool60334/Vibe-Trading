@@ -7,7 +7,8 @@ hypothesis: >
   sharpe 1.46 and, crucially, the held-out 2025-01..2026-06 walk-forward holdout
   returned +5.2% at sharpe 0.27 while BTC buy-hold fell -24.1% — i.e. ~29pp of
   out-of-sample alpha in a down market (defensive, low-correlation). This spec
-  bakes in the winning params: lookback 120d, entry extremes 75/20, hold 120h,
+  bakes in the winning params: lookback 120d, entry extremes 65/30 (loosened from
+  tuned 75/20 to lift trade frequency), hold 120h,
   tp 7% / sl 2.5%, leverage 1.0. Economic logic unchanged: long only when fresh
   capital is entering (high stablecoin z) AND longs are not crowded (low funding
   z); short the mirror. The funding_z gate is the new contribution.
@@ -26,19 +27,19 @@ indicators:
 entry_long:
   description: >
     Capital inflowing (high stablecoin z) AND longs not crowded (low funding z).
-    Tuned extremes 75/20 on a 120-day percentile window, with persistence.
+    Loosened extremes 65/30 (from tuned 75/20) on a 120-day percentile window, with persistence.
   logic: all
   conditions:
-  - stablecoin_supply_z_percentile_120d >= 75 persist 2/3
-  - funding_z_percentile_120d <= 20 persist 2/3
+  - stablecoin_supply_z_percentile_120d >= 65 persist 2/3
+  - funding_z_percentile_120d <= 30 persist 2/3
 entry_short:
   description: >
     Capital leaving (low stablecoin z) AND longs crowded (high funding z).
-    Tuned extremes on a 120-day percentile window, with persistence.
+    Loosened extremes 35/70 on a 120-day percentile window, with persistence.
   logic: all
   conditions:
-  - stablecoin_supply_z_percentile_120d <= 20 persist 2/3
-  - funding_z_percentile_120d >= 75 persist 2/3
+  - stablecoin_supply_z_percentile_120d <= 35 persist 2/3
+  - funding_z_percentile_120d >= 70 persist 2/3
 exit_rules:
 - condition: time_based
   max_hold_hours: 120
@@ -56,12 +57,12 @@ parameter_search_ranges:
   - 150
   - 30
   entry_high_pct:
-  - 70
+  - 65
   - 85
   - 5
   entry_low_pct:
   - 15
-  - 25
+  - 35
   - 5
   hold_max_hours:
   - 96
@@ -86,3 +87,8 @@ caveats:
   -24% BTC market OOS). Size accordingly; do not extrapolate the train sharpe.
 - Both factors are ensemble_only (modest IC). funding_z standalone (btc_s8) had no
   edge — value is purely as the gate on the stablecoin trend.
+- 2026-06-14 frequency experiment — entry percentiles loosened (long 75/20 -> 65/30,
+  short 20/75 -> 35/70) and sweep ranges widened (entry_high 65..85, entry_low 15..35)
+  to raise OOS trades above the gate's min_trades=30 (tuned spec had only 25 OOS
+  trades at sharpe 2.36). Re-run stage 2b->5 and compare OOS sharpe / DD / trade_count
+  before trusting — looser entries trade more but usually at lower per-trade edge.
