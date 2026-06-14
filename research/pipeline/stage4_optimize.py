@@ -90,6 +90,7 @@ class OptimizationCheckResult:
     strategy_id: str
     ok: bool
     error: str | None = None
+    skipped: bool = False  # True = intentional skip (archetype_misfit), not a failure
 
 
 @dataclasses.dataclass
@@ -475,9 +476,21 @@ def verify_optimization(optimization_path: Path) -> OptimizationCheckResult:
 
 
 def compute_exit_code(results: list[OptimizationCheckResult]) -> int:
+    """0 when stage 4 succeeded: ≥1 strategy optimized and no genuine failures.
+
+    archetype_misfit skips (ok=False, skipped=True) are an expected, designed
+    outcome — stage 3 already flagged the archetype as unsuitable and the remedy
+    is a redesign, not a pipeline abort — so they are non-fatal. Genuine failures
+    (missing diagnosis/yaml, invalid schema, crash) stay fatal so the pipeline
+    still surfaces real breakage. Stage 5 then selects from what did optimize.
+    """
     if not results:
         return 1
-    return 0 if all(r.ok for r in results) else 1
+    if any((not r.ok) and (not r.skipped) for r in results):
+        return 1
+    if not any(r.ok for r in results):
+        return 1  # everything was skipped — nothing optimized
+    return 0
 
 
 def print_summary(results: list[OptimizationCheckResult]) -> None:
@@ -485,13 +498,19 @@ def print_summary(results: list[OptimizationCheckResult]) -> None:
     print("Stage-4 Optimization summary")
     print("=" * 60)
     for r in results:
-        status = "OK" if r.ok else "FAIL"
-        msg = "optimization.json present and valid" if r.ok else f"FAILED — {r.error}"
+        if r.ok:
+            status, msg = "OK", "optimization.json present and valid"
+        elif r.skipped:
+            status, msg = "SKIP", f"skipped — {r.error}"
+        else:
+            status, msg = "FAIL", f"FAILED — {r.error}"
         print(f"  [{status}] {r.strategy_id}: {msg}")
     total = len(results)
     passed = sum(1 for r in results if r.ok)
-    print(f"\n{passed}/{total} strategies optimized.")
-    print("Stage 4 " + ("PASSED" if total and passed == total else "FAILED"))
+    skipped = sum(1 for r in results if not r.ok and r.skipped)
+    failed = sum(1 for r in results if not r.ok and not r.skipped)
+    print(f"\n{passed}/{total} strategies optimized ({skipped} skipped, {failed} failed).")
+    print("Stage 4 " + ("PASSED" if compute_exit_code(results) == 0 else "FAILED"))
     print("=" * 60)
 
 
@@ -527,7 +546,9 @@ def _optimize_strategy(
                     f"skipping sweep (re-run stage 3 after redesigning the strategy)"
                 )
                 print(f"  [SKIP] {msg}")
-                return OptimizationCheckResult(strategy_id=strategy_id, ok=False, error=msg)
+                return OptimizationCheckResult(
+                    strategy_id=strategy_id, ok=False, skipped=True, error=msg
+                )
         except (OSError, json.JSONDecodeError):
             pass  # Unreadable sentinel: proceed normally (fail-open)
 

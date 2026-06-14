@@ -34,6 +34,7 @@ if str(_DASHBOARD_SCHEMAS) not in sys.path:
 from pipeline.stage4_optimize import (  # noqa: E402
     OptimizationCheckResult,
     _optimize_strategy,
+    compute_exit_code,
 )
 
 
@@ -128,6 +129,7 @@ class TestStage4ArchetypeMisfitGuard:
         assert isinstance(result, OptimizationCheckResult)
         assert result.strategy_id == strategy_id
         assert result.ok is False
+        assert result.skipped is True  # intentional skip, must be non-fatal
         assert "archetype_misfit" in (result.error or "")
 
         # Sweep machinery was never invoked
@@ -208,3 +210,31 @@ class TestStage4ArchetypeMisfitGuard:
             f"Guard incorrectly fired when sentinel was absent; error: {result.error!r}"
         )
         assert "diagnosis" in (result.error or "").lower()
+
+
+class TestComputeExitCodeSkipSemantics:
+    """compute_exit_code: archetype_misfit skips are non-fatal; real failures are fatal."""
+
+    def _ok(self, sid="a"):
+        return OptimizationCheckResult(strategy_id=sid, ok=True)
+
+    def _skip(self, sid="m"):
+        return OptimizationCheckResult(strategy_id=sid, ok=False, skipped=True, error="archetype_misfit")
+
+    def _fail(self, sid="f"):
+        return OptimizationCheckResult(strategy_id=sid, ok=False, error="diagnosis.json missing")
+
+    def test_optimized_plus_misfit_skip_is_success(self):
+        """≥1 optimized + only misfit skips → exit 0 (the BTC pipeline case)."""
+        assert compute_exit_code([self._ok("s1"), self._ok("s2"), self._skip("s3"), self._skip("s4")]) == 0
+
+    def test_real_failure_is_fatal(self):
+        """A genuine failure (missing diagnosis/yaml/schema) still aborts."""
+        assert compute_exit_code([self._ok(), self._fail()]) == 1
+
+    def test_all_skipped_is_failure(self):
+        """Nothing optimized → exit 1 even though all were 'skips'."""
+        assert compute_exit_code([self._skip("a"), self._skip("b")]) == 1
+
+    def test_empty_is_failure(self):
+        assert compute_exit_code([]) == 1
