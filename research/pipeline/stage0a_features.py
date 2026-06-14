@@ -66,6 +66,7 @@ from lib.indicators import compute_indicator_pool
 from lib.factor_io import dump_features, dump_evidence
 from lib.factor_metrics import add_forward_returns, evaluate_factor, FactorResult
 from lib.derived_factors import basis_factors, funding_factors, oi_factors
+from lib.timeframe import bars_per_hour
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -145,17 +146,19 @@ def _rolling_zscore(series: pd.Series, window: int = 720, min_periods: int = 30)
 
 
 def apply_ic_eval_transform(
-    feat_name: str, series: pd.Series
+    feat_name: str, series: pd.Series, interval: str = "1H"
 ) -> tuple[pd.Series, str | None]:
     """Return (series_for_ic, transform_label) for honest screening IC.
 
     Measurement-layer only — does not mutate the stored feature. Features not
-    listed are returned unchanged with a ``None`` label.
+    listed are returned unchanged with a ``None`` label. `interval` scales the
+    720h rolling z-score window so it stays 30 days at any candle size.
     """
     if feat_name in _IC_STATIONARY_TRANSFORM:
         kind = _IC_STATIONARY_TRANSFORM[feat_name]
         if kind == "zscore_720h":
-            return _rolling_zscore(series), kind
+            bph = bars_per_hour(interval)
+            return _rolling_zscore(series, window=720 * bph, min_periods=30 * bph), kind
 
     if feat_name in _IC_NATIVE_FREQ:
         rule = _IC_NATIVE_FREQ[feat_name]
@@ -258,6 +261,7 @@ def compute_evidence_entries(
     feature_dict: dict[str, pd.Series],
     horizons_h: tuple[int, ...],
     price_col: str = "close",
+    interval: str = "1H",
 ) -> list[dict]:
     """Compute multi-horizon IC/IR for every feature and return evidence entries.
 
@@ -271,6 +275,10 @@ def compute_evidence_entries(
         Forward-return horizons in hours.
     price_col:
         Column in candles to use as price for forward returns.
+    interval:
+        Candle interval string (e.g. "1H", "15m", "30m"). Passed to
+        add_forward_returns, apply_ic_eval_transform, and evaluate_factor so
+        they can scale bar-count windows correctly.
 
     Returns
     -------
@@ -280,19 +288,19 @@ def compute_evidence_entries(
     # Build base DataFrame with price column
     base_df = pd.DataFrame({"price": candles[price_col]}, index=candles.index)
     # Add forward returns once for all horizons
-    base_df = add_forward_returns(base_df, "price", list(horizons_h))
+    base_df = add_forward_returns(base_df, "price", list(horizons_h), interval=interval)
 
     entries: list[dict] = []
     for feat_name, feat_series in feature_dict.items():
         # Apply measurement-layer IC correction (stationary transform / native-freq
         # subsample) so the screening IC is honest. Stored feature is untouched.
-        eval_series, ic_transform = apply_ic_eval_transform(feat_name, feat_series)
+        eval_series, ic_transform = apply_ic_eval_transform(feat_name, feat_series, interval=interval)
 
         # Attach the feature column
         df = base_df.copy()
         df[feat_name] = eval_series
 
-        results: list[FactorResult] = evaluate_factor(df, feat_name, list(horizons_h))
+        results: list[FactorResult] = evaluate_factor(df, feat_name, list(horizons_h), interval=interval)
 
         # Build ic_by_horizon dict: {horizon_int: ic_float}
         ic_by_horizon: dict[int, float | None] = {}
