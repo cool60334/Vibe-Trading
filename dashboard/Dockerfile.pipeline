@@ -27,6 +27,11 @@ COPY pyproject.toml LICENSE README.md ./
 COPY agent/ agent/
 RUN pip install --no-cache-dir -e .
 
+# Stage 2b shells out to `python -m pytest` to smoke-test each compiled
+# signal_engine.py (research/pipeline/stage2b_compile_signal.py). pytest is a
+# dev-only extra in pyproject, so install it explicitly for the runtime image.
+RUN pip install --no-cache-dir pytest
+
 # Dashboard server modules — pipeline_manager + pipeline_jobs (the queue runner).
 COPY dashboard/server/ /app/server/
 
