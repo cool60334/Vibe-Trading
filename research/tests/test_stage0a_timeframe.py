@@ -34,3 +34,29 @@ def test_compute_evidence_entries_15m_oracle_has_high_ic():
     )
     assert entries[0]["feature_key"] == "oracle"
     assert entries[0]["ic_by_horizon"][4] > 0.95
+
+
+from pipeline.config import load_config
+from pipeline.stage0a_features import build_feature_dict
+
+
+def _cfg(interval):
+    cfg = load_config()  # real config; we only need its shape
+    import dataclasses
+    return dataclasses.replace(cfg, interval=interval)
+
+
+def test_oi_change_window_scales_to_24h_in_bars():
+    idx = pd.date_range("2025-01-01", periods=300, freq="15min")
+    candles = pd.DataFrame(
+        {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}, index=idx
+    )
+    oi = pd.DataFrame({"open_interest": np.arange(len(idx), dtype=float)}, index=idx)
+    feats = build_feature_dict(candles, _cfg("15m"), oi_df=oi)
+    # oi_change_24h must be pct_change over 24h == 96 bars at 15m.
+    expected = oi["open_interest"].pct_change(periods=24 * 4)
+    pd.testing.assert_series_equal(
+        feats["oi_change_24h"].reset_index(drop=True),
+        expected.reset_index(drop=True),
+        check_names=False,
+    )

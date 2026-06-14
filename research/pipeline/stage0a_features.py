@@ -208,6 +208,7 @@ def build_feature_dict(
     dict[str, pd.Series]  — all values aligned to candles.index.
     """
     features: dict[str, pd.Series] = {}
+    bph = bars_per_hour(config.interval)
 
     # ── Price-based indicator pool ────────────────────────────────────────────
     indicators = compute_indicator_pool(candles, config)
@@ -227,7 +228,7 @@ def build_feature_dict(
     _oi_col = next((c for c in ("open_interest", "oi") if oi_df is not None and c in oi_df.columns), None)
     if oi_df is not None and not oi_df.empty and _oi_col is not None:
         oi_on_candle = oi_df[_oi_col].reindex(candle_idx, method="ffill")
-        oi_change = oi_on_candle.pct_change(periods=24)
+        oi_change = oi_on_candle.pct_change(periods=24 * bph)
         oi_change.name = "oi_change_24h"
         features["oi_change_24h"] = oi_change
 
@@ -238,9 +239,9 @@ def build_feature_dict(
         and "stablecoin_supply" in stablecoin_df.columns
     ):
         sc_aligned = stablecoin_df["stablecoin_supply"].reindex(candle_idx, method="ffill")
-        # 30-day rolling z-score (720 hours)
-        roll_mean = sc_aligned.rolling(720, min_periods=30).mean()
-        roll_std = sc_aligned.rolling(720, min_periods=30).std()
+        # 30-day rolling z-score (720 hours), scaled to candle interval
+        roll_mean = sc_aligned.rolling(720 * bph, min_periods=30 * bph).mean()
+        roll_std = sc_aligned.rolling(720 * bph, min_periods=30 * bph).std()
         sc_z = (sc_aligned - roll_mean) / roll_std.replace(0, float("nan"))
         sc_z.name = "stablecoin_supply_z"
         features["stablecoin_supply_z"] = sc_z
