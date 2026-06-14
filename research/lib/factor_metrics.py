@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from lib.timeframe import bars_per_hour
+from lib.timeframe import bars_per_day, bars_per_hour
 
 
 @dataclass
@@ -79,11 +79,15 @@ def evaluate_factor(
     horizons_h: list,
     rolling_window_days: int = 30,
     min_samples: int = 200,
+    interval: str = "1H",
 ) -> list:
     """Compute IC + IR for one factor across multiple forward-return horizons.
 
     Expects df to already contain ret_<h>h columns (use add_forward_returns first).
+    The rolling-IR window/step are in DAYS internally and convert to bars via
+    `interval` so a "30-day" window is 30 days at any candle size.
     """
+    bpd = bars_per_day(interval)
     results: list = []
     for h in horizons_h:
         ret_col = f"ret_{h}h"
@@ -99,8 +103,8 @@ def evaluate_factor(
             df,
             factor_col,
             ret_col,
-            window_bars=rolling_window_days * 24,
-            step_bars=24,
+            window_bars=rolling_window_days * bpd,
+            step_bars=bpd,
             min_samples=min_samples,
         )
         if rolling.size > 0 and rolling.std(ddof=0) > 0:

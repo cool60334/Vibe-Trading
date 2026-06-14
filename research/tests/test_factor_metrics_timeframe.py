@@ -26,3 +26,22 @@ def test_forward_returns_15m_scales_horizon_hours_to_bars():
     out = add_forward_returns(df, "close", [2], interval="15m")
     # 2h horizon at 15m == 2*4 == 8 bars forward
     assert out["ret_2h"].iloc[0] == pytest.approx(px.iloc[8] / px.iloc[0] - 1)
+
+
+import numpy as np
+
+from lib.factor_metrics import evaluate_factor
+
+
+def test_evaluate_factor_accepts_interval_and_scales_window():
+    # 15m bars: a factor equal to the realised forward 4h return is a perfect
+    # predictor; IC at the 4h horizon must be ~1 once horizon hours scale to bars.
+    idx = pd.date_range("2025-01-01", periods=4000, freq="15min")
+    rng = np.random.default_rng(0)
+    px = pd.Series(100 + np.cumsum(rng.normal(0, 1, len(idx))), index=idx)
+    df = pd.DataFrame({"close": px})
+    df = add_forward_returns(df, "close", [4], interval="15m")
+    df["oracle"] = df["ret_4h"]  # factor == the thing it predicts
+    results = evaluate_factor(df, "oracle", [4], interval="15m")
+    r4 = next(r for r in results if r.horizon == "4h")
+    assert r4.ic > 0.95
