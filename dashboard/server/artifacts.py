@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +23,31 @@ def _load_json(path: Path) -> Optional[dict]:
 def _manifests_base(repo_root: Path, interval: str = "1H") -> Path:
     base = repo_root / "research" / "manifests"
     return base if interval.strip().upper() == "1H" else base / interval.strip()
+
+
+_INTERVAL_DIR_RE = re.compile(r"^\d+[mH]$")  # 15m, 30m, 4H, ...
+
+
+def _dir_has_manifests(d: Path) -> bool:
+    return any(d.glob("*/manifest.json")) or any(d.glob("factor_*.json"))
+
+
+def discover_intervals(repo_root: Path) -> list[str]:
+    """Intervals with data: '1H' if the manifests root has manifests, plus any
+    sub-hour subdir (name like 15m/30m) that has manifests. Sorted, 1H first.
+    Always returns at least ['1H'] so the selector is never empty.
+    """
+    base = repo_root / "research" / "manifests"
+    out: list[str] = []
+    if base.is_dir():
+        if _dir_has_manifests(base):
+            out.append("1H")
+        subs = sorted(
+            d.name for d in base.iterdir()
+            if d.is_dir() and _INTERVAL_DIR_RE.match(d.name) and _dir_has_manifests(d)
+        )
+        out.extend(subs)
+    return out or ["1H"]
 
 
 # ---------------------------------------------------------------------------

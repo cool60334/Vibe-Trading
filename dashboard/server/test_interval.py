@@ -40,3 +40,19 @@ def test_list_strategy_manifests_reads_namespaced(tmp_path):
 def test_list_strategy_manifests_missing_interval_returns_empty(tmp_path):
     (tmp_path / "research" / "manifests").mkdir(parents=True)
     assert artifacts.list_strategy_manifests(tmp_path, "15m") == []
+
+
+def test_discover_intervals_root_only(tmp_path):
+    _write_manifest(tmp_path / "research" / "manifests", "eth_1h")
+    assert artifacts.discover_intervals(tmp_path) == ["1H"]
+
+
+def test_discover_intervals_includes_subhour(tmp_path):
+    _write_manifest(tmp_path / "research" / "manifests", "eth_1h")
+    _write_manifest(tmp_path / "research" / "manifests" / "30m", "eth_30m")
+    _write_manifest(tmp_path / "research" / "manifests" / "15m", "eth_15m")
+    assert artifacts.discover_intervals(tmp_path) == ["1H", "15m", "30m"]
+
+
+def test_discover_intervals_empty_defaults_1H(tmp_path):
+    assert artifacts.discover_intervals(tmp_path) == ["1H"]
