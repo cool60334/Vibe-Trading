@@ -1,8 +1,15 @@
 # research/tests/test_intraday_factors.py
 """Intraday OHLCV factor correctness + causality — run from research/ (pytest tests/)."""
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
+
+_RESEARCH_DIR = Path(__file__).resolve().parents[1]
+if str(_RESEARCH_DIR) not in sys.path:
+    sys.path.insert(0, str(_RESEARCH_DIR))
 
 from lib.indicators import (
     _mom_4,
