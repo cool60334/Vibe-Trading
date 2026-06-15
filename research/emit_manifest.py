@@ -851,7 +851,8 @@ def main() -> None:
     runs_map = load_strategy_runs()
 
     runs_root = _REPO_ROOT / "runs"
-    manifests_dir = _REPO_ROOT / "research" / "manifests"
+    from lib.timeframe import active_manifests_dir
+    manifests_dir = active_manifests_dir()
 
     print("=" * 60)
     print("emit_manifest — Strategy Manifest Emitter")

@@ -61,14 +61,9 @@ from schemas import CandidatesManifest, FactorCandidate, FactorEntry, FactorMani
 
 
 def resolve_manifests_dir() -> Path:
-    """Return the repo-relative path to research/manifests/.
-
-    Uses the same repo-root resolution as pipeline.config (_REPO_ROOT derived
-    from __file__), so this never contains a hardcoded Windows user path.
-    """
-    # _CFG_REPO_ROOT is computed from pipeline/config.py two parents up, giving
-    # the same repo root regardless of CWD or OS.
-    return _CFG_REPO_ROOT / "research" / "manifests"
+    """Return the manifests dir for the active RESEARCH_INTERVAL (interval-namespaced)."""
+    from lib.timeframe import active_manifests_dir
+    return active_manifests_dir()
 
 
 def verdict_from_ic(ic: float) -> FactorVerdict:

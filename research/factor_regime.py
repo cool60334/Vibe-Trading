@@ -231,8 +231,8 @@ def enrich_manifest(
 
 
 def _resolve_manifests_dir() -> Path:
-    """Return research/manifests/ (same resolution as factor_extended.py)."""
-    return _CFG_REPO_ROOT / "research" / "manifests"
+    from lib.timeframe import active_manifests_dir
+    return active_manifests_dir()
 
 
 def _load_factor_values(manifests_dir: Path, sym_name: str) -> pd.DataFrame | None:
