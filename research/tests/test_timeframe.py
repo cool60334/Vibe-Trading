@@ -1,7 +1,9 @@
 """Tests for research/lib/timeframe.py — run from research/ (pytest tests/)."""
+from pathlib import Path
+
 import pytest
 
-from lib.timeframe import SUPPORTED_INTERVALS, bars_per_day, bars_per_hour
+from lib.timeframe import SUPPORTED_INTERVALS, active_manifests_dir, bars_per_day, bars_per_hour
 
 
 def test_bars_per_hour_known_intervals():
@@ -25,11 +27,6 @@ def test_unsupported_interval_raises():
         bars_per_hour("4H")
 
 
-from pathlib import Path
-
-from lib.timeframe import active_manifests_dir
-
-
 def test_active_manifests_dir_default_is_root(monkeypatch):
     monkeypatch.delenv("RESEARCH_INTERVAL", raising=False)
     p = active_manifests_dir()
@@ -49,6 +46,5 @@ def test_active_manifests_dir_subhour_is_namespaced(monkeypatch):
 
 def test_active_manifests_dir_invalid_raises(monkeypatch):
     monkeypatch.setenv("RESEARCH_INTERVAL", "7m")
-    import pytest
     with pytest.raises(ValueError, match="RESEARCH_INTERVAL"):
         active_manifests_dir()
