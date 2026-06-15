@@ -23,3 +23,32 @@ def test_supported_intervals_set():
 def test_unsupported_interval_raises():
     with pytest.raises(ValueError, match="unsupported interval"):
         bars_per_hour("4H")
+
+
+from pathlib import Path
+
+from lib.timeframe import active_manifests_dir
+
+
+def test_active_manifests_dir_default_is_root(monkeypatch):
+    monkeypatch.delenv("RESEARCH_INTERVAL", raising=False)
+    p = active_manifests_dir()
+    assert p.name == "manifests" and p.parent.name == "research"
+
+
+def test_active_manifests_dir_1H_is_root(monkeypatch):
+    monkeypatch.setenv("RESEARCH_INTERVAL", "1H")
+    assert active_manifests_dir().name == "manifests"
+
+
+def test_active_manifests_dir_subhour_is_namespaced(monkeypatch):
+    monkeypatch.setenv("RESEARCH_INTERVAL", "30m")
+    p = active_manifests_dir()
+    assert p.name == "30m" and p.parent.name == "manifests"
+
+
+def test_active_manifests_dir_invalid_raises(monkeypatch):
+    monkeypatch.setenv("RESEARCH_INTERVAL", "7m")
+    import pytest
+    with pytest.raises(ValueError, match="RESEARCH_INTERVAL"):
+        active_manifests_dir()

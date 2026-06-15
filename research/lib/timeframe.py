@@ -7,6 +7,12 @@ these to stay correct when the pipeline runs at 15m/30m instead of legacy 1H.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+_RESEARCH_DIR = Path(__file__).resolve().parent.parent  # research/lib/../ = research/
+_MANIFESTS_BASE = _RESEARCH_DIR / "manifests"
+
 # OKX bar strings → bars per hour. Keys match calc_bars_per_year's _BARS_PER_DAY
 # table and the research_config.yaml `interval` field. All values are integers
 # (sub-hour intervals divide an hour evenly), so hour→bar conversions never
@@ -32,3 +38,19 @@ def bars_per_hour(interval: str) -> int:
 def bars_per_day(interval: str) -> int:
     """Number of candle bars in one 24h day at `interval`."""
     return bars_per_hour(interval) * 24
+
+
+def active_manifests_dir() -> Path:
+    """Manifests directory for the active RESEARCH_INTERVAL.
+
+    research/manifests for 1H or unset (zero 1H regression); research/manifests/<interval>
+    for a supported sub-hour interval. Raises ValueError for an unsupported value.
+    """
+    iv = os.environ.get("RESEARCH_INTERVAL", "").strip()
+    if not iv or iv == "1H":
+        return _MANIFESTS_BASE
+    if iv not in SUPPORTED_INTERVALS:
+        raise ValueError(
+            f"RESEARCH_INTERVAL={iv!r} is not supported; valid: {sorted(SUPPORTED_INTERVALS)}"
+        )
+    return _MANIFESTS_BASE / iv
