@@ -92,11 +92,25 @@ Six intraday OHLCV factors were added to the pipeline (`mom_4/8/16`, `rvol_ratio
 
 ### BTC @ 30m
 
-_Results pending (stage0a + stage0 running at time of report). Update below when complete._
+| Factor | IC@1h | IC@8h | IC@24h | IR | Note |
+|--------|-------|-------|--------|----|------|
+| `oi_mom` | +0.030 | **+0.264** | **+0.472** | — | Strong but tiny sample (n≈325) |
+| `oi_price_divergence` | −0.026 | **−0.274** | −0.204 | — | Strong inverse, small n |
+| `stablecoin_supply_z` | −0.010 | +0.060 | +0.037 | — | Daily-level signal |
+| `funding_z` | −0.026 | −0.027 | **−0.048** | −1.42 | Consistent contrarian |
+| `stoch_k` | −0.061 | −0.019 | −0.014 | −1.09 | Contrarian ✓ |
+| **`mom_4`** | **−0.054** | −0.021 | −0.015 | **−1.07** | **New, contrarian** ✓ |
+| `rsi_14` | −0.050 | −0.026 | −0.024 | −1.18 | Contrarian ✓ |
+| `roc_10` | −0.050 | −0.027 | −0.019 | −1.05 | Contrarian ✓ |
+| **`mom_8`** | **−0.048** | −0.025 | −0.018 | **−0.99** | **New, contrarian** |
+| **`mom_16`** | **−0.042** | −0.022 | −0.022 | **−0.98** | **New, contrarian** |
+| **`rvol_ratio_8_32`** | — | — | — | — | **Not in top-12, noise** |
+| **`range_expansion_16`** | — | — | — | — | **Noise** |
+| **`volume_zscore_8`** | — | — | — | — | **Noise** |
 
-| Factor | IC@1h | IC@4h | IC@8h | IC@24h | IR | Note |
-|--------|-------|-------|-------|--------|----|------|
-| _TBD_ | — | — | — | — | — | |
+**Stage 0 candidates selected:** `stoch_k`, `mom_4`, `rsi_14`, `roc_10` (4 candidates — all contrarian momentum)
+
+**Stage 5: not run** (stages 1–5 skipped — stage3 uses 1H candles regardless of interval; true 30m backtest pending stage3 fix)
 
 ---
 
