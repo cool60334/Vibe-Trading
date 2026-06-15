@@ -96,6 +96,13 @@ _INDICATOR_CATEGORY: dict[str, str] = {
     "obv": "volume",
     "mfi_14": "volume",
     "volume_zscore_20": "volume",
+    # intraday OHLCV
+    "mom_4": "momentum",
+    "mom_8": "momentum",
+    "mom_16": "momentum",
+    "rvol_ratio_8_32": "volatility",
+    "range_expansion_16": "volatility",
+    "volume_zscore_8": "volume",
     # non-price
     "funding_rate_raw": "funding",
     "oi_change_24h": "oi",
