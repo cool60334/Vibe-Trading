@@ -478,12 +478,22 @@ def main(run_dir: Path) -> None:
     if source == "auto":
         loader = _AutoLoader(data_map)
 
-    if engine_type == "options":
-        from backtest.engines.options_portfolio import run_options_backtest
-        run_options_backtest(config, loader, signal_engine, run_dir, bars_per_year=bars_per_year)
-    else:
-        market_engine = _create_market_engine(effective_source, config, codes)
-        market_engine.run_backtest(config, loader, signal_engine, run_dir, bars_per_year=bars_per_year)
+    try:
+        if engine_type == "options":
+            from backtest.engines.options_portfolio import run_options_backtest
+            run_options_backtest(config, loader, signal_engine, run_dir, bars_per_year=bars_per_year)
+        else:
+            market_engine = _create_market_engine(effective_source, config, codes)
+            market_engine.run_backtest(config, loader, signal_engine, run_dir, bars_per_year=bars_per_year)
+    except KeyError as exc:
+        # The signal engine referenced a data column not present (e.g. a 1H-only
+        # strategy whose factor isn't a candidate at this sub-hour interval). This
+        # is skippable, not a hard failure — exit with a distinct code (3) and a
+        # structured marker so the caller (stage3) can SKIP rather than FAIL the
+        # whole pipeline. See research/pipeline/stage3_backtest.classify_backtest_proc.
+        print(json.dumps({"error_kind": "missing_data_column", "missing_key": str(exc),
+                          "error": f"signal engine references missing column {exc}"}))
+        sys.exit(3)
 
 
 def _create_market_engine(source: str, config: dict, codes: List[str]):

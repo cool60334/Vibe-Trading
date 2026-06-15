@@ -90,9 +90,35 @@ class BacktestRunResult:
     error: str | None = None  # description if ok=False
     archetype_misfit: bool = False  # True when the fail-fast guard triggered
     skipped_window: bool = False  # True when regime window lies outside train (skipped, not run)
+    skipped_missing_factor: bool = False  # True when the strategy's factor is absent at this interval
 
 
 # ─── Pure-logic helpers (testable, network-free) ──────────────────────────────
+
+
+_MISSING_FACTOR_EXIT = 3  # runner exit code: signal engine referenced a column not in its data
+
+
+def classify_backtest_proc(run_name: str, returncode: int, stderr: str) -> "BacktestRunResult | None":
+    """Map a finished backtest-runner process to a result, or None on success.
+
+    Exit code 3 = the runner signalled a missing data column (e.g. a 1H-only
+    strategy whose factor isn't a candidate at this sub-hour interval). That is a
+    SKIP, not a FAIL — one interval-incompatible strategy must not block the run.
+    Any other non-zero code is a real failure. Returns None on success so the
+    caller proceeds to verify artifacts.
+    """
+    if returncode == _MISSING_FACTOR_EXIT:
+        return BacktestRunResult(
+            run_name=run_name, ok=True, skipped_missing_factor=True,
+            error="signal engine references a factor/column absent at this interval",
+        )
+    if returncode != 0:
+        msg = f"backtest runner exited with code {returncode}"
+        if stderr:
+            msg += f": {stderr.strip()[:300]}"
+        return BacktestRunResult(run_name=run_name, ok=False, error=msg)
+    return None
 
 
 def symbol_to_short(symbol: str) -> str:
@@ -648,6 +674,8 @@ def print_summary(results: list[BacktestRunResult]) -> None:
             print(f"  [SKIP] {r.run_name}: skipped (archetype_misfit)")
         elif r.ok and r.skipped_window:
             print(f"  [SKIP] {r.run_name}: window outside train (skipped)")
+        elif r.ok and r.skipped_missing_factor:
+            print(f"  [SKIP] {r.run_name}: factor absent at this interval (skipped)")
         elif r.ok:
             print(f"  [OK] {r.run_name}: artifacts present")
         else:
@@ -804,12 +832,11 @@ def _run_backtest_for_run(
 
     if proc.stdout:
         print(proc.stdout.rstrip())
-    if proc.returncode != 0:
-        msg = f"backtest runner exited with code {proc.returncode}"
-        if proc.stderr:
-            msg += f": {proc.stderr.strip()[:300]}"
-        print(f"  [FAIL] {msg}")
-        return BacktestRunResult(run_name=run_name, ok=False, error=msg)
+    classified = classify_backtest_proc(run_name, proc.returncode, proc.stderr or "")
+    if classified is not None:
+        tag = "SKIP" if classified.ok else "FAIL"
+        print(f"  [{tag}] {classified.error}")
+        return classified
 
     # ── Verify artifacts ───────────────────────────────────────────────────────
     print(f"  [3/3] Verifying artifacts …")
@@ -835,7 +862,8 @@ def main() -> None:
     runs_map: StrategyRunsMap = load_strategy_runs()
 
     runs_root = _REPO_ROOT / "runs"
-    manifests_dir = _REPO_ROOT / "research" / "manifests"
+    from lib.timeframe import active_manifests_dir
+    manifests_dir = active_manifests_dir()
     strategies_code_dir = _REPO_ROOT / "research" / "strategies" / "code"
 
     print("=" * 60)
