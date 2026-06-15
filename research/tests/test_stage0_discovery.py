@@ -760,3 +760,42 @@ class TestEnrichmentFailSoft:
         # Other structural fields must NOT be overwritten by the swarm.
         assert manifest.candidates[0].feature_key == "stablecoin_supply_z"
         assert manifest.candidates[0].expected_ic_sign == "+"
+
+
+# ---------------------------------------------------------------------------
+# Sub-hour manifests_dir wiring
+# ---------------------------------------------------------------------------
+
+
+class TestComputeManifestsDir:
+    """_compute_manifests_dir must derive the path from cfg.feature_store_path, not hardcode it.
+
+    Regression guard for: manifests_dir = _CFG_REPO_ROOT / "research" / "manifests"
+    which silently read 1H evidence when RESEARCH_INTERVAL was sub-hour.
+    """
+
+    def test_1H_gives_base_manifests_path(self, tmp_path):
+        from pipeline.config import _REPO_ROOT
+        from pipeline.stage0_discovery import _compute_manifests_dir
+
+        cfg = _make_minimal_cfg()  # interval="1H", feature_store_path="research/manifests"
+        result = _compute_manifests_dir(cfg, _REPO_ROOT)
+        assert result == _REPO_ROOT / "research" / "manifests"
+
+    def test_15m_gives_namespaced_path(self, monkeypatch):
+        from pipeline.config import _REPO_ROOT, load_config
+        from pipeline.stage0_discovery import _compute_manifests_dir
+
+        monkeypatch.setenv("RESEARCH_INTERVAL", "15m")
+        cfg = load_config()
+        result = _compute_manifests_dir(cfg, _REPO_ROOT)
+        assert result.name == "15m", f"expected .../15m, got {result}"
+
+    def test_30m_gives_namespaced_path(self, monkeypatch):
+        from pipeline.config import _REPO_ROOT, load_config
+        from pipeline.stage0_discovery import _compute_manifests_dir
+
+        monkeypatch.setenv("RESEARCH_INTERVAL", "30m")
+        cfg = load_config()
+        result = _compute_manifests_dir(cfg, _REPO_ROOT)
+        assert result.name == "30m", f"expected .../30m, got {result}"

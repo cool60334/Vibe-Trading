@@ -796,6 +796,16 @@ def _process_symbol(
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
 
+def _compute_manifests_dir(cfg: ResearchConfig, repo_root: Path) -> Path:
+    """Return the manifests directory, derived from cfg.feature_store_path.
+
+    For sub-hour intervals cfg.feature_store_path is already namespaced
+    (e.g. 'research/manifests/15m'), so this correctly separates artifacts
+    from 1H runs. Never hardcode 'research/manifests'.
+    """
+    return repo_root / cfg.feature_store_path
+
+
 def _load_raw_config_yaml() -> dict[str, Any]:
     """Re-read research_config.yaml as a raw dict for stage0_selector overrides.
 
@@ -858,7 +868,7 @@ def main() -> None:
     use_swarm: bool = bool(args.use_swarm)
 
     cfg: ResearchConfig = load_config()
-    manifests_dir = _CFG_REPO_ROOT / "research" / "manifests"
+    manifests_dir = _compute_manifests_dir(cfg, _CFG_REPO_ROOT)
 
     # Override cache TTL when --force / env var is set.
     effective_cache_days = 0 if force else cfg.discovery_cache_days

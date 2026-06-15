@@ -525,3 +525,33 @@ def test_load_config_unknown_interval_raises(monkeypatch):
     monkeypatch.setenv("RESEARCH_INTERVAL", "7m")
     with pytest.raises(ValueError, match="RESEARCH_INTERVAL"):
         load_config(_REAL_CONFIG)
+
+
+def test_subhour_profile_adds_intraday_factors_and_horizons(monkeypatch):
+    from pipeline.config import _INTRADAY_FACTORS, _INTRADAY_HORIZONS_H
+
+    monkeypatch.setenv("RESEARCH_INTERVAL", "15m")
+    cfg = load_config(_REAL_CONFIG)
+    assert cfg.horizons_h == _INTRADAY_HORIZONS_H
+    for name in _INTRADAY_FACTORS:
+        assert name in cfg.indicator_pool
+
+
+def test_30m_profile_adds_intraday_factors_and_horizons(monkeypatch):
+    from pipeline.config import _INTRADAY_FACTORS, _INTRADAY_HORIZONS_H
+
+    monkeypatch.setenv("RESEARCH_INTERVAL", "30m")
+    cfg = load_config(_REAL_CONFIG)
+    assert cfg.horizons_h == _INTRADAY_HORIZONS_H
+    for name in _INTRADAY_FACTORS:
+        assert name in cfg.indicator_pool
+
+
+def test_1H_profile_leaves_pool_and_horizons_untouched(monkeypatch):
+    from pipeline.config import _INTRADAY_FACTORS
+
+    monkeypatch.setenv("RESEARCH_INTERVAL", "1H")
+    cfg = load_config(_REAL_CONFIG)
+    # 1H keeps the YAML horizons and base pool — no intraday factors.
+    assert "mom_8" not in cfg.indicator_pool
+    assert all(f not in cfg.indicator_pool for f in _INTRADAY_FACTORS)

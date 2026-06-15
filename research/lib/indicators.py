@@ -229,6 +229,39 @@ def _volume_zscore_20(candles: pd.DataFrame) -> pd.Series:
     return (volume - volume.rolling(20).mean()) / volume.rolling(20).std()
 
 
+# ─── Intraday OHLCV factors (bar-native windows) ──────────────────────────────
+
+def _mom_4(candles: pd.DataFrame) -> pd.Series:
+    return candles["close"].pct_change(4)
+
+
+def _mom_8(candles: pd.DataFrame) -> pd.Series:
+    return candles["close"].pct_change(8)
+
+
+def _mom_16(candles: pd.DataFrame) -> pd.Series:
+    return candles["close"].pct_change(16)
+
+
+def _rvol_ratio_8_32(candles: pd.DataFrame) -> pd.Series:
+    """Realised-vol breakout: 8-bar return stdev over 32-bar return stdev."""
+    ret = candles["close"].pct_change()
+    short = ret.rolling(8).std()
+    long = ret.rolling(32).std()
+    return short / long.replace(0, np.nan)
+
+
+def _range_expansion_16(candles: pd.DataFrame) -> pd.Series:
+    """Current bar range relative to its 16-bar average."""
+    rng = candles["high"] - candles["low"]
+    return rng / rng.rolling(16).mean().replace(0, np.nan)
+
+
+def _volume_zscore_8(candles: pd.DataFrame) -> pd.Series:
+    v = candles["volume"]
+    return (v - v.rolling(8).mean()) / v.rolling(8).std()
+
+
 # ─── Dispatch table ───────────────────────────────────────────────────────────
 
 _INDICATOR_DISPATCH: dict[str, object] = {
@@ -245,6 +278,13 @@ _INDICATOR_DISPATCH: dict[str, object] = {
     "obv": _obv,
     "mfi_14": _mfi_14,
     "volume_zscore_20": _volume_zscore_20,
+    # intraday OHLCV
+    "mom_4": _mom_4,
+    "mom_8": _mom_8,
+    "mom_16": _mom_16,
+    "rvol_ratio_8_32": _rvol_ratio_8_32,
+    "range_expansion_16": _range_expansion_16,
+    "volume_zscore_8": _volume_zscore_8,
 }
 
 
