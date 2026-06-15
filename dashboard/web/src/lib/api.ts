@@ -290,6 +290,7 @@ export interface StrategyRow {
   sharpe: number | null;
   max_drawdown: number | null;
   red_flags: RedFlagCode[];
+  interval: string;
 }
 
 export interface PipelineRow {
@@ -378,15 +379,19 @@ export interface PipelineJobDetail extends PipelineJob {
 // ---------------------------------------------------------------------------
 
 export const api = {
-  strategies: (): Promise<StrategyRow[]> => get("/strategies"),
-  strategy: (id: string): Promise<StrategyManifest> => get(`/strategies/${id}`),
+  strategies: (interval = "1H"): Promise<StrategyRow[]> => get(`/strategies?interval=${interval}`),
+  strategy: (id: string, interval = "1H"): Promise<StrategyManifest> =>
+    get(`/strategies/${id}?interval=${interval}`),
   equity: (id: string, run?: string): Promise<EquityPoint[]> =>
     get(`/strategies/${id}/equity${run ? `?run=${run}` : ""}`),
   trades: (id: string, run?: string): Promise<Record<string, unknown>[]> =>
     get(`/strategies/${id}/trades${run ? `?run=${run}` : ""}`),
-  factorAnalysis: (): Promise<FactorManifest[]> => get("/factor-analysis"),
-  regime: (symbol: string): Promise<Record<string, unknown>> => get(`/regime?symbol=${symbol}`),
-  selection: (): Promise<SelectionManifest> => get("/selection"),
+  factorAnalysis: (interval = "1H"): Promise<FactorManifest[]> =>
+    get(`/factor-analysis?interval=${interval}`),
+  regime: (symbol: string, interval = "1H"): Promise<Record<string, unknown>> =>
+    get(`/regime?symbol=${symbol}&interval=${interval}`),
+  selection: (interval = "1H"): Promise<SelectionManifest> => get(`/selection?interval=${interval}`),
+  intervals: (): Promise<string[]> => get("/intervals"),
   pipeline: (): Promise<PipelineRow[]> => get("/pipeline"),
   testnet: (): Promise<TestnetStatus[]> => get("/testnet"),
   testnetDetail: (id: string): Promise<TestnetStatus> => get(`/testnet/${id}`),
