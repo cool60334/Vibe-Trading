@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import {
   api,
   type StrategyManifest,
@@ -546,6 +546,8 @@ function TradeTablePanel({ trades }: { trades: Record<string, unknown>[] }) {
 export default function StrategyDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const interval = params.get("interval") || "1H";
 
   const [manifest, setManifest] = useState<StrategyManifest | null>(null);
   const [equity, setEquity] = useState<EquityPoint[]>([]);
@@ -559,10 +561,10 @@ export default function StrategyDetail() {
   useEffect(() => {
     if (!id) return;
     Promise.all([
-      api.strategy(id),
+      api.strategy(id, interval),
       api.equity(id).catch(() => [] as EquityPoint[]),
       api.trades(id).catch(() => [] as Record<string, unknown>[]),
-      api.factorAnalysis().catch(() => [] as FactorManifest[]),
+      api.factorAnalysis(interval).catch(() => [] as FactorManifest[]),
       api.promoteStatus(id).catch(() => ({ promoted: false })),
     ])
       .then(([m, eq, tr, factors, promote]) => {
@@ -578,7 +580,7 @@ export default function StrategyDetail() {
         setError(e.message);
         setLoading(false);
       });
-  }, [id]);
+  }, [id, interval]);
 
   if (loading) {
     return (

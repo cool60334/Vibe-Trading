@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useInterval } from "@/hooks/useInterval";
 import { api, type FactorManifest, type FactorEntry, type FactorVerdict, type FactorStability } from "../lib/api";
 import { cn } from "../lib/utils";
 
@@ -204,10 +205,11 @@ export default function FactorReport() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeSymbol, setActiveSymbol] = useState<string>("");
+  const [interval] = useInterval();
 
   useEffect(() => {
     api
-      .factorAnalysis()
+      .factorAnalysis(interval === "all" ? "1H" : interval)
       .then((data) => {
         setManifests(data);
         if (data.length > 0) setActiveSymbol(data[0].symbol);
@@ -217,7 +219,7 @@ export default function FactorReport() {
         setError(e.message);
         setLoading(false);
       });
-  }, []);
+  }, [interval]);
 
   if (loading) {
     return (
@@ -252,10 +254,11 @@ export default function FactorReport() {
     <div className="p-6 space-y-4 max-w-5xl mx-auto">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-2xl font-semibold">因子分析</h1>
-        <span className="text-xs text-muted-foreground">
-          {active.factors.length} 個因子 · {active.period_days} 天 · 生成於{" "}
-          {new Date(active.generated_at).toLocaleString("zh-TW")}
-        </span>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span>時間級別：{interval === "all" ? "1H" : interval}</span>
+          <span>{active.factors.length} 個因子 · {active.period_days} 天 · 生成於{" "}
+          {new Date(active.generated_at).toLocaleString("zh-TW")}</span>
+        </div>
       </div>
 
       {/* Symbol tabs */}
