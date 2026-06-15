@@ -17,3 +17,13 @@ def test_intraday_factors_have_categories():
     assert _INDICATOR_CATEGORY["rvol_ratio_8_32"] == "volatility"
     assert _INDICATOR_CATEGORY["range_expansion_16"] == "volatility"
     assert _INDICATOR_CATEGORY["volume_zscore_8"] == "volume"
+
+
+from lib.indicators import _INDICATOR_DISPATCH
+from pipeline.config import _INTRADAY_FACTORS
+
+
+def test_intraday_factor_names_match_dispatch():
+    # Every name the sub-hour profile injects must be computable.
+    for name in _INTRADAY_FACTORS:
+        assert name in _INDICATOR_DISPATCH, f"{name} missing from _INDICATOR_DISPATCH"

@@ -128,14 +128,22 @@ def _apply_symbol_filter(cfg: ResearchConfig) -> ResearchConfig:
 
 # ─── Interval override ────────────────────────────────────────────────────────
 
-def _apply_interval_override(cfg: ResearchConfig) -> ResearchConfig:
-    """If RESEARCH_INTERVAL is set, return a copy with that candle interval and a
-    namespaced feature store.
+# Sub-hour profile constants — factors and forward-return horizons applied when
+# RESEARCH_INTERVAL is a sub-hour value. Names must exist in _INDICATOR_DISPATCH.
+_INTRADAY_FACTORS: tuple[str, ...] = (
+    "mom_4", "mom_8", "mom_16",
+    "rvol_ratio_8_32", "range_expansion_16", "volume_zscore_8",
+)
+_INTRADAY_HORIZONS_H: tuple[int, ...] = (1, 2, 4, 8, 24)
 
-    Lets the dashboard / CLI run the pipeline at 15m or 30m without editing the
-    YAML, mirroring RESEARCH_ONLY_SYMBOL. The feature store is suffixed with the
-    interval (e.g. research/manifests/15m) so sub-hour artifacts never clobber the
-    1H ones. Unset or "1H" -> path unchanged (zero regression). Unknown -> ValueError.
+
+def _apply_interval_override(cfg: ResearchConfig) -> ResearchConfig:
+    """If RESEARCH_INTERVAL is set, return a copy reflecting that candle interval.
+
+    For "1H" only the interval label changes (zero regression). For a sub-hour
+    interval the full intraday profile applies: feature store namespaced by
+    interval, short intraday forward-return horizons, and the intraday OHLCV
+    factors appended to the pool. Unset -> unchanged. Unknown -> ValueError.
     """
     iv = os.environ.get("RESEARCH_INTERVAL", "").strip()
     if not iv:
@@ -147,10 +155,14 @@ def _apply_interval_override(cfg: ResearchConfig) -> ResearchConfig:
             f"RESEARCH_INTERVAL={iv!r} is not supported; "
             f"valid: {sorted(SUPPORTED_INTERVALS)}"
         )
-    new_store = cfg.feature_store_path
+    changes: dict = {"interval": iv}
     if iv != "1H":
-        new_store = f"{cfg.feature_store_path.rstrip('/')}/{iv}"
-    return dataclasses.replace(cfg, interval=iv, feature_store_path=new_store)
+        changes["feature_store_path"] = f"{cfg.feature_store_path.rstrip('/')}/{iv}"
+        changes["horizons_h"] = _INTRADAY_HORIZONS_H
+        changes["indicator_pool"] = tuple(cfg.indicator_pool) + tuple(
+            f for f in _INTRADAY_FACTORS if f not in cfg.indicator_pool
+        )
+    return dataclasses.replace(cfg, **changes)
 
 
 # ─── Loader ──────────────────────────────────────────────────────────────────
