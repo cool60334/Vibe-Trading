@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type StrategyRow, type RedFlagCode } from "../lib/api";
+import { useInterval } from "@/hooks/useInterval";
 import { cn } from "../lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -16,7 +17,7 @@ function PipelineStrip({ rows }: { rows: StrategyRow[] }) {
       <div className="text-xs font-medium text-muted-foreground mb-2">Pipeline 進度</div>
       <div className="flex flex-col gap-1.5">
         {rows.map((r) => (
-          <div key={r.strategy_id} className="flex items-center gap-2 text-xs">
+          <div key={`${r.interval}_${r.strategy_id}`} className="flex items-center gap-2 text-xs">
             <span className="w-32 truncate font-mono text-foreground">{r.strategy_id}</span>
             <div className="flex gap-1">
               {STAGE_LABELS.map((label, i) => (
@@ -122,14 +123,16 @@ const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
 export default function Compare() {
   const navigate = useNavigate();
+  const [interval] = useInterval();
   const [rows, setRows] = useState<StrategyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeCoin, setActiveCoin] = useState<string>("ALL");
 
   useEffect(() => {
+    setLoading(true);
     api
-      .strategies()
+      .strategies(interval)
       .then((data) => {
         setRows(data);
         setLoading(false);
@@ -138,7 +141,7 @@ export default function Compare() {
         setError(e.message);
         setLoading(false);
       });
-  }, []);
+  }, [interval]);
 
   const symbols = ["ALL", ...Array.from(new Set(rows.map((r) => r.symbol))).sort()];
   const filtered = activeCoin === "ALL" ? rows : rows.filter((r) => r.symbol === activeCoin);
@@ -190,7 +193,7 @@ export default function Compare() {
       {/* Comparison table */}
       {filtered.length === 0 ? (
         <div className="rounded-lg border p-8 text-center text-sm text-muted-foreground">
-          無策略資料
+          {interval === "all" ? "尚無任何策略" : `尚無 ${interval} 策略 — 該時間級別的 pipeline 可能還沒跑或進行中`}
         </div>
       ) : (
         <div className="rounded-lg border overflow-x-auto">
@@ -199,6 +202,7 @@ export default function Compare() {
               <tr className="border-b bg-muted/50 text-xs text-muted-foreground uppercase tracking-wide">
                 <th className="px-4 py-3 text-left">策略</th>
                 <th className="px-4 py-3 text-left">幣種</th>
+                <th className="px-4 py-3 text-left">級別</th>
                 <th className="px-4 py-3 text-right">Sharpe</th>
                 <th className="px-4 py-3 text-right">Max DD</th>
                 <th className="px-4 py-3 text-center">Stage</th>
@@ -209,8 +213,8 @@ export default function Compare() {
             <tbody className="divide-y">
               {filtered.map((row) => (
                 <tr
-                  key={row.strategy_id}
-                  onClick={() => navigate(`/strategies/${row.strategy_id}`)}
+                  key={`${row.interval}_${row.strategy_id}`}
+                  onClick={() => navigate(`/strategies/${row.strategy_id}?interval=${row.interval}`)}
                   className={cn(
                     "cursor-pointer transition-colors hover:bg-muted/40",
                     row.gate_fatal && "bg-red-50/50 dark:bg-red-950/20",
@@ -221,6 +225,11 @@ export default function Compare() {
                     {row.strategy_id}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{row.symbol}</td>
+                  <td className="px-4 py-3">
+                    <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                      {row.interval}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-right tabular-nums">
                     <MetricCell value={row.sharpe} formatter={fmtSharpe} />
                   </td>
