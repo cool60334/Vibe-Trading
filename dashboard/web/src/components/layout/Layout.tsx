@@ -2,6 +2,7 @@ import { Outlet, NavLink } from "react-router-dom";
 import { BarChart2, TrendingUp, FlaskConical, Workflow, Moon, Sun } from "lucide-react";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { cn } from "@/lib/utils";
+import { IntervalSelector } from "./IntervalSelector";
 
 const NAV = [
   { to: "/", label: "Strategies", icon: BarChart2, end: true },
@@ -33,6 +34,7 @@ export function Layout() {
             </NavLink>
           ))}
         </nav>
+        <IntervalSelector />
         <button onClick={toggle} className="ml-auto p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
           {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </button>
