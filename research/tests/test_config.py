@@ -537,6 +537,16 @@ def test_subhour_profile_adds_intraday_factors_and_horizons(monkeypatch):
         assert name in cfg.indicator_pool
 
 
+def test_30m_profile_adds_intraday_factors_and_horizons(monkeypatch):
+    from pipeline.config import _INTRADAY_FACTORS, _INTRADAY_HORIZONS_H
+
+    monkeypatch.setenv("RESEARCH_INTERVAL", "30m")
+    cfg = load_config(_REAL_CONFIG)
+    assert cfg.horizons_h == _INTRADAY_HORIZONS_H
+    for name in _INTRADAY_FACTORS:
+        assert name in cfg.indicator_pool
+
+
 def test_1H_profile_leaves_pool_and_horizons_untouched(monkeypatch):
     from pipeline.config import _INTRADAY_FACTORS
 
