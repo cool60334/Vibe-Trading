@@ -556,7 +556,8 @@ def main() -> None:
     """Stage-2.5 entry point: orchestrate, verify, report, exit."""
     cfg: ResearchConfig = load_config()
     symbols = cfg.symbol_names()
-    manifests_dir = _REPO_ROOT / "research" / "manifests"
+    from lib.timeframe import active_manifests_dir
+    manifests_dir = active_manifests_dir()
 
     print("=" * 60)
     print("Stage 2.5 — Market Regime Detection")

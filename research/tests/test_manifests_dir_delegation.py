@@ -22,3 +22,14 @@ def test_resolvers_root_when_unset(monkeypatch):
     import factor_extended
     importlib.reload(factor_extended)
     assert factor_extended.resolve_manifests_dir().name == "manifests"
+
+
+def test_stage2_5_regime_main_uses_active_manifests_dir():
+    # regime_<sym>.json must namespace by interval like the other resolvers.
+    # main() resolves the dir inline, so lock the wiring at the source level.
+    import inspect
+
+    from pipeline import stage2_5_regime
+
+    src = inspect.getsource(stage2_5_regime.main)
+    assert "active_manifests_dir()" in src
