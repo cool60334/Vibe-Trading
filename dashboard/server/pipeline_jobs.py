@@ -44,6 +44,10 @@ _UI_STAGE_IDS = ["0a", "0", "1", "2", "2.5", "3", "4", "5"]
 # (5 = global selection; 2b = compiles all — both stay all-scope.)
 SYMBOL_AWARE_STAGES = {"0a", "0", "1", "2", "2.5", "3", "3diag", "4"}
 
+# Mirror of research/lib/timeframe.SUPPORTED_INTERVALS — kept local so the
+# dashboard server need not import the research package. Update both together.
+SUPPORTED_INTERVALS = frozenset({"15m", "30m", "1H"})
+
 
 def allowed_stage_ids() -> list[str]:
     return list(_UI_STAGE_IDS)
@@ -110,7 +114,12 @@ def list_jobs(repo_root, limit: int = 50) -> list[dict]:
 
 
 def create_job(repo_root, kind: str, stage: Optional[str] = None,
-               symbol: Optional[str] = None, stress: bool = False) -> dict:
+               symbol: Optional[str] = None, stress: bool = False,
+               interval: str = "1H") -> dict:
+    if interval not in SUPPORTED_INTERVALS:
+        raise ValueError(
+            f"invalid interval {interval!r}; valid: {sorted(SUPPORTED_INTERVALS)}"
+        )
     if kind == "stage":
         if stage not in allowed_stage_ids():
             raise ValueError(f"invalid stage {stage!r}")
@@ -127,6 +136,7 @@ def create_job(repo_root, kind: str, stage: Optional[str] = None,
         "kind": kind,
         "stage": stage,
         "symbol": symbol,
+        "interval": interval,
         "stress": bool(stress) and kind == "stage" and stage == "3",
         "status": "queued",
         "created_at": _now(),

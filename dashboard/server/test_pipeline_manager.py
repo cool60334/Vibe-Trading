@@ -9,15 +9,22 @@ from pipeline_manager import Manager
 
 
 def _runner(codes):
-    """Injectable runner: records (stage, symbol, stress), returns codes.get(stage, 0)."""
-    calls = []
+    """Injectable runner: records (stage, symbol, stress), returns codes.get(stage, 0).
 
-    def run(repo_root, stage_id, symbol, fp, stress=False):
+    Also records per-stage interval in ``run.intervals`` so interval-threading
+    tests can assert without changing the ``calls`` tuple shape other tests use.
+    """
+    calls = []
+    intervals = []
+
+    def run(repo_root, stage_id, symbol, fp, stress=False, interval="1H"):
         calls.append((stage_id, symbol, stress))
-        fp.write(f"ran {stage_id} symbol={symbol} stress={stress}\n")
+        intervals.append((stage_id, interval))
+        fp.write(f"ran {stage_id} symbol={symbol} stress={stress} interval={interval}\n")
         return codes.get(stage_id, 0)
 
     run.calls = calls
+    run.intervals = intervals
     return run
 
 
@@ -131,6 +138,27 @@ def test_non_stress_job_threads_stress_false(tmp_path):
     assert r.calls == [("3", "eth", False)]
 
 
+def test_stage_job_threads_interval(tmp_path):
+    pj.create_job(tmp_path, kind="stage", stage="1", interval="30m")
+    r = _runner({})
+    Manager(tmp_path, runner=r).scan_once()
+    assert r.intervals == [("1", "30m")]
+
+
+def test_pipeline_job_threads_interval_to_every_step(tmp_path):
+    pj.create_job(tmp_path, kind="pipeline", interval="15m")
+    r = _runner({})
+    Manager(tmp_path, runner=r).scan_once()
+    assert all(iv == "15m" for _, iv in r.intervals)
+
+
+def test_job_without_interval_defaults_1h(tmp_path):
+    pj.create_job(tmp_path, kind="stage", stage="1")
+    r = _runner({})
+    Manager(tmp_path, runner=r).scan_once()
+    assert r.intervals == [("1", "1H")]
+
+
 # ---------------------------------------------------------------------------
 # _default_runner argv tests
 # ---------------------------------------------------------------------------
@@ -140,6 +168,7 @@ def _capture_argv(monkeypatch):
 
     def fake_run(argv, **kwargs):
         captured["argv"] = argv
+        captured["env"] = kwargs.get("env", {})
 
         class _R:
             returncode = 0
@@ -166,3 +195,16 @@ def test_default_runner_non_stage3_stress_omits_flag(tmp_path, monkeypatch):
     captured = _capture_argv(monkeypatch)
     pm._default_runner(tmp_path, "1", "eth", io.StringIO(), stress=True)
     assert "--stress" not in captured["argv"]
+
+
+def test_default_runner_sub_hour_interval_sets_env(tmp_path, monkeypatch):
+    captured = _capture_argv(monkeypatch)
+    pm._default_runner(tmp_path, "1", "eth", io.StringIO(), interval="30m")
+    assert captured["env"].get("RESEARCH_INTERVAL") == "30m"
+
+
+def test_default_runner_1h_interval_omits_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_INTERVAL", "stale")  # must be scrubbed
+    captured = _capture_argv(monkeypatch)
+    pm._default_runner(tmp_path, "1", "eth", io.StringIO(), interval="1H")
+    assert "RESEARCH_INTERVAL" not in captured["env"]

@@ -29,11 +29,13 @@ logger = logging.getLogger("pipeline.manager")
 
 
 def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_fp,
-                    stress: bool = False) -> int:
+                    stress: bool = False, interval: str = "1H") -> int:
     """Run one stage as ``python -m research.pipeline.<module>``; stdout+stderr
     stream into the job's log file. If ``symbol`` is set, scope it via
     RESEARCH_ONLY_SYMBOL. If ``stress`` is set AND this is stage 3, append
-    ``--stress`` so stage 3 also runs the 2x/3x cost-stress sweep. Returns the
+    ``--stress`` so stage 3 also runs the 2x/3x cost-stress sweep. A sub-hour
+    ``interval`` is applied globally via RESEARCH_INTERVAL (the config loader's
+    interval override); "1H" leaves it unset for zero regression. Returns the
     process exit code."""
     argv = [sys.executable, *pj.stage_command(stage_id)]
     if stress and stage_id == "3":
@@ -44,6 +46,10 @@ def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_f
         env["RESEARCH_ONLY_SYMBOL"] = symbol
     else:
         env.pop("RESEARCH_ONLY_SYMBOL", None)
+    if interval and interval != "1H":
+        env["RESEARCH_INTERVAL"] = interval
+    else:
+        env.pop("RESEARCH_INTERVAL", None)
     proc = subprocess.run(
         argv, cwd=str(repo_root), env=env,
         stdout=log_fp, stderr=subprocess.STDOUT, text=True,
@@ -105,7 +111,7 @@ class Manager:
                 )
                 rc = self._runner(
                     self.repo_root, step["stage"], step_symbol, fp,
-                    job.get("stress", False),
+                    job.get("stress", False), job.get("interval", "1H"),
                 )
 
             step["exit_code"] = rc

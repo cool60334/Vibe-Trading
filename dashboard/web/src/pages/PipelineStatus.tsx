@@ -32,15 +32,20 @@ function StageChip({ s }: { s: StageStatus }) {
 }
 
 const RUNNABLE_STAGES = ["0a", "0", "1", "2", "2.5", "3", "4", "5"];
+// Mirror of pipeline_jobs.SUPPORTED_INTERVALS — intervals the runner can target.
+// Unlike the nav IntervalSelector (which only lists intervals that already have
+// data), this offers every runnable interval so you can generate intraday data.
+const RUNNABLE_INTERVALS = ["1H", "30m", "15m"];
 
 function RunBar({ onStarted, busy }: { onStarted: () => void; busy: boolean }) {
   const [stage, setStage] = useState("0a");
+  const [interval, setIv] = useState("1H");
   const [err, setErr] = useState<string | null>(null);
 
   async function run(kind: "stage" | "pipeline") {
     setErr(null);
     try {
-      await api.runPipeline(kind === "stage" ? { kind, stage } : { kind: "pipeline" });
+      await api.runPipeline(kind === "stage" ? { kind, stage, interval } : { kind: "pipeline", interval });
       onStarted();
     } catch (e) {
       setErr(String(e));
@@ -65,6 +70,18 @@ function RunBar({ onStarted, busy }: { onStarted: () => void; busy: boolean }) {
         {RUNNABLE_STAGES.map((s) => (
           <option key={s} value={s}>
             stage {s}
+          </option>
+        ))}
+      </select>
+      <select
+        value={interval}
+        onChange={(e) => setIv(e.target.value)}
+        title="時間級別 — 非 1H 會以 RESEARCH_INTERVAL 跑 intraday"
+        className="border rounded-md px-1.5 py-1 bg-background"
+      >
+        {RUNNABLE_INTERVALS.map((iv) => (
+          <option key={iv} value={iv}>
+            {iv}
           </option>
         ))}
       </select>
@@ -110,7 +127,7 @@ function JobsPanel({
         {jobs.slice(0, 10).map((j) => (
           <div key={j.job_id} className="flex items-center gap-2 text-xs">
             <button onClick={() => onSelect(j.job_id)} className="font-mono truncate w-52 text-left hover:underline">
-              {j.kind === "pipeline" ? "全 pipeline" : `stage ${j.stage}${j.stress ? " +stress" : ""}`} · {j.job_id.slice(-6)}
+              {j.kind === "pipeline" ? "全 pipeline" : `stage ${j.stage}${j.stress ? " +stress" : ""}`}{j.interval && j.interval !== "1H" ? ` @${j.interval}` : ""} · {j.job_id.slice(-6)}
             </button>
             <span className={cn("w-20", color(j.status))}>{j.status}</span>
             {(j.status === "queued" || j.status === "running") && (
@@ -144,6 +161,7 @@ function SymbolRunControl({
   busy: boolean;
 }) {
   const [stage, setStage] = useState("0a");
+  const [interval, setIv] = useState("1H");
   const [stress, setStress] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   if (!runnable) {
@@ -171,6 +189,18 @@ function SymbolRunControl({
           </option>
         ))}
       </select>
+      <select
+        value={interval}
+        onChange={(e) => setIv(e.target.value)}
+        title="時間級別"
+        className="border rounded px-1 py-0.5 text-[11px] bg-background"
+      >
+        {RUNNABLE_INTERVALS.map((iv) => (
+          <option key={iv} value={iv}>
+            {iv}
+          </option>
+        ))}
+      </select>
       {stage === "3" && (
         <label className="flex items-center gap-0.5 text-[11px] text-muted-foreground">
           <input
@@ -188,8 +218,8 @@ function SymbolRunControl({
           api
             .runPipeline(
               stage === "__all__"
-                ? { kind: "pipeline", symbol }
-                : { kind: "stage", stage, symbol, stress: stage === "3" && stress },
+                ? { kind: "pipeline", symbol, interval }
+                : { kind: "stage", stage, symbol, stress: stage === "3" && stress, interval },
             )
             .then(onStarted)
             .catch((e: unknown) => setErr(String(e)));

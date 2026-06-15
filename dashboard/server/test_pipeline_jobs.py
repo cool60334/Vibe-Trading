@@ -198,6 +198,17 @@ def test_create_job_symbol_defaults_none(tmp_path):
     assert job["symbol"] is None
 
 
+def test_create_job_stores_interval(tmp_path):
+    job = pj.create_job(tmp_path, kind="stage", stage="1", interval="30m")
+    assert job["interval"] == "30m"
+    assert pj.read_job(tmp_path, job["job_id"])["interval"] == "30m"
+
+
+def test_create_job_interval_defaults_1h(tmp_path):
+    job = pj.create_job(tmp_path, kind="pipeline")
+    assert job["interval"] == "1H"
+
+
 def test_endpoint_run_with_symbol(tmp_path, monkeypatch):
     # seed a config so _config_symbols() returns btc/eth
     research = tmp_path / "research"
@@ -220,4 +231,22 @@ horizons_h: [8, 24, 72, 168]
     ok = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "3", "symbol": "btc"})
     assert ok.status_code == 201 and ok.json()["symbol"] == "btc"
     bad = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "3", "symbol": "zzz"})
+    assert bad.status_code == 400
+
+
+def test_endpoint_run_with_interval(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    ok = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "1", "interval": "30m"})
+    assert ok.status_code == 201 and ok.json()["interval"] == "30m"
+
+
+def test_endpoint_run_defaults_interval_1h(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    body = c.post("/api/pipeline/run", json={"kind": "pipeline"}).json()
+    assert body["interval"] == "1H"
+
+
+def test_endpoint_run_rejects_bad_interval(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    bad = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "1", "interval": "7x"})
     assert bad.status_code == 400

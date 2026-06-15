@@ -245,6 +245,7 @@ class PipelineRunRequest(BaseModel):
     stage: Optional[str] = None
     symbol: Optional[str] = None
     stress: bool = False
+    interval: str = "1H"
 
 
 @app.post("/api/pipeline/run", status_code=201)
@@ -254,7 +255,9 @@ def run_pipeline(body: PipelineRunRequest) -> dict:
     if body.symbol is not None and body.symbol not in _config_symbols():
         raise HTTPException(status_code=400, detail=f"unknown symbol {body.symbol!r}")
     try:
-        return pipeline_jobs.create_job(REPO_ROOT, body.kind, body.stage, body.symbol, body.stress)
+        return pipeline_jobs.create_job(
+            REPO_ROOT, body.kind, body.stage, body.symbol, body.stress, body.interval
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

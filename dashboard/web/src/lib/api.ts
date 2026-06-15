@@ -359,6 +359,7 @@ export interface PipelineJob {
   kind: "stage" | "pipeline";
   stage: string | null;
   symbol: string | null;
+  interval: string;
   status: JobStatus;
   created_at: string;
   started_at: string | null;
@@ -432,7 +433,7 @@ export const api = {
   traderProcess: (testnetId: string, strategyId: string): Promise<{ running: boolean; pid: number | null }> =>
     get(`/testnet/${testnetId}/process?strategy_id=${encodeURIComponent(strategyId)}`),
   getPipelineStatus: () => get<PipelineStatus>("/pipeline/status"),
-  runPipeline: (body: { kind: "stage" | "pipeline"; stage?: string; symbol?: string; stress?: boolean }): Promise<PipelineJob> =>
+  runPipeline: (body: { kind: "stage" | "pipeline"; stage?: string; symbol?: string; stress?: boolean; interval?: string }): Promise<PipelineJob> =>
     fetch(`${BASE}/pipeline/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
