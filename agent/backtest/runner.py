@@ -11,6 +11,7 @@ import ast
 import importlib.util
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -311,6 +312,17 @@ def _group_codes_by_source(codes: List[str]) -> Dict[str, List[str]]:
     return groups
 
 
+def _apply_run_interval_env(config: dict) -> str:
+    """Set RESEARCH_INTERVAL from the run's config so factor_io (called inside the
+    signal engine) resolves the interval-namespaced manifests dir. The run's
+    config.json is the authoritative source — this overrides any stale shell value
+    and prevents cross-run leakage. Returns the applied interval.
+    """
+    interval = str(config.get("interval", "1H"))
+    os.environ["RESEARCH_INTERVAL"] = interval
+    return interval
+
+
 def _get_loader(source: str):
     """Return a DataLoader class for a source name, with fallback.
 
@@ -389,6 +401,7 @@ def main(run_dir: Path) -> None:
     config = raw_config
     source = config.get("source", "tushare")
     codes = config.get("codes", [])
+    _apply_run_interval_env(config)
 
     # Load signal engine
     signal_path = run_dir / "code" / "signal_engine.py"
