@@ -48,6 +48,7 @@ from lib.ccxt_data import fetch_oi_history_bybit, fetch_funding_history_multiyea
 from lib.defillama_data import fetch_stablecoin_supply
 from lib.factor_io import load_features, dump_factor_values
 from lib.factor_metrics import FactorResult, add_forward_returns, evaluate_factor
+from lib.timeframe import bars_per_hour
 from lib.okx_data import fetch_candles, fetch_funding_history
 from lib.report import build_factor_report
 from lib.sentiment import fetch_fear_greed
@@ -243,7 +244,7 @@ def _run_symbol_legacy(
             print(f"  {factor}: all NaN, skipping")
             continue
         factor_series_dict[factor] = df[factor]
-        res = evaluate_factor(df, factor, horizons)
+        res = evaluate_factor(df, factor, horizons, interval=cfg.interval)
         for r in res:
             print(f"  {factor:>16} @ {r.horizon:>5}: IC={r.ic:+.4f} IR={r.ir:+.3f} n={r.n_samples}")
         all_results.extend(res)
@@ -324,7 +325,7 @@ def _run_symbol_dynamic(
             print(f"  {cand.name}: all NaN, skipping")
             continue
         factor_series_dict[cand.name] = series
-        res = evaluate_factor(df, cand.name, horizons)
+        res = evaluate_factor(df, cand.name, horizons, interval=cfg.interval)
         for r in res:
             print(f"  {cand.name:>24} @ {r.horizon:>5}: IC={r.ic:+.4f} IR={r.ir:+.3f} n={r.n_samples}")
         all_results.extend(res)
@@ -361,8 +362,8 @@ def run_symbol(sym: SymbolConfig, cfg: ResearchConfig, manifests_dir: Path) -> N
     )
     print(f"     rows: {len(funding)}  range: {funding.index.min()} ~ {funding.index.max()}")
 
-    print(f"[2/5] hourly candles (history endpoint, last {period_days}d)")
-    candles = fetch_candles(sym.okx_swap, period_days, bar="1H", use_history_endpoint=True)
+    print(f"[2/5] candles @ {cfg.interval} (history endpoint, last {period_days}d)")
+    candles = fetch_candles(sym.okx_swap, period_days, bar=cfg.interval, use_history_endpoint=True)
     print(f"     rows: {len(candles)}  range: {candles.index.min()} ~ {candles.index.max()}")
 
     print(f"[3/5] Bybit hourly OI history (last {period_days}d)")
@@ -403,14 +404,14 @@ def run_symbol(sym: SymbolConfig, cfg: ResearchConfig, manifests_dir: Path) -> N
     if not oi_hist.empty:
         oi_h = oi_hist.reindex(candles.index, method="ffill")
         df["oi"] = oi_h["oi"]
-        df["oi_change_24h"] = df["oi"].pct_change(24)  # stationarize OI
+        df["oi_change_24h"] = df["oi"].pct_change(24 * bars_per_hour(cfg.interval))  # 24h, scaled to bars
     else:
         df["oi_change_24h"] = pd.NA
 
     fng_h = fng.reindex(candles.index, method="ffill").bfill()
     df["fng"] = fng_h["fng"]
 
-    df = add_forward_returns(df, "close", horizons)
+    df = add_forward_returns(df, "close", horizons, interval=cfg.interval)
 
     # ── Decision table (D5 from design.md) ────────────────────────────────────
     #   RESEARCH_LEGACY_FACTORS=1   → always legacy

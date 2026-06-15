@@ -33,3 +33,25 @@ def test_stage2_5_regime_main_uses_active_manifests_dir():
 
     src = inspect.getsource(stage2_5_regime.main)
     assert "active_manifests_dir()" in src
+
+
+def test_factor_extended_fetches_candles_at_cfg_interval():
+    # stage1's factor_extended must fetch candles + compute forward returns / IC at
+    # cfg.interval, else factor_values is always 1H (the 30m-backtest-is-really-1H bug).
+    import inspect
+
+    import factor_extended
+
+    src = inspect.getsource(factor_extended)
+    assert "bar=cfg.interval" in src
+    assert "interval=cfg.interval" in src  # add_forward_returns + evaluate_factor
+
+
+def test_factor_regime_fetches_candles_at_cfg_interval():
+    import inspect
+
+    import factor_regime
+
+    src = inspect.getsource(factor_regime)
+    assert "bar=cfg.interval" in src
+    assert "interval=cfg.interval" in src

@@ -53,8 +53,13 @@ def _default_manifests_dir() -> Path:
     return active_manifests_dir()
 
 
-def _warn_if_index_freq_mismatch(df: "pd.DataFrame") -> None:
-    """Warn if the parquet's median index spacing doesn't match RESEARCH_INTERVAL."""
+def _check_index_freq(df: "pd.DataFrame") -> None:
+    """Raise if the parquet's median index spacing doesn't match RESEARCH_INTERVAL.
+
+    Hard-fail (not a warning): loading a mismatched-interval factor parquet would
+    silently produce a fake backtest (e.g. 1H factors in a 30m run). Raising is
+    deterministic regardless of the process warning filter.
+    """
     iv = os.environ.get("RESEARCH_INTERVAL", "").strip()
     if not iv or len(df) < 3:
         return
@@ -68,11 +73,10 @@ def _warn_if_index_freq_mismatch(df: "pd.DataFrame") -> None:
         return
     median_min = deltas.median().total_seconds() / 60.0
     if abs(median_min - expected_min) > 0.5:
-        warnings.warn(
+        raise ValueError(
             f"factor_values index spacing ~{median_min:.0f}m != expected {expected_min:.0f}m "
-            f"for RESEARCH_INTERVAL={iv!r}; loaded a mismatched-interval parquet.",
-            UserWarning,
-            stacklevel=2,
+            f"for RESEARCH_INTERVAL={iv!r}: loaded a mismatched-interval parquet "
+            f"(re-run stage1 at this interval)."
         )
 
 
@@ -189,7 +193,7 @@ def load_factor_values(symbol: str, manifests_dir: Path | None = None) -> pd.Dat
         )
 
     df = pd.read_parquet(parquet_path, engine="pyarrow")
-    _warn_if_index_freq_mismatch(df)
+    _check_index_freq(df)
     return df
 
 

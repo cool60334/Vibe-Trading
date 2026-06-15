@@ -31,11 +31,14 @@ def test_load_factor_values_reads_namespaced_dir(monkeypatch, tmp_path):
     assert list(out.columns) == ["mom_4"] and len(out) == 10
 
 
-def test_load_factor_values_warns_on_index_freq_mismatch(monkeypatch, tmp_path):
+def test_load_factor_values_raises_on_index_freq_mismatch(monkeypatch, tmp_path):
+    # A mismatched-interval parquet must hard-fail (not warn): a 1H parquet in a
+    # 30m run would otherwise silently produce a fake backtest. Deterministic
+    # regardless of the process warning filter.
     monkeypatch.setattr(factor_io, "_MANIFESTS_BASE_OVERRIDE", tmp_path, raising=False)
     monkeypatch.setenv("RESEARCH_INTERVAL", "30m")
     sub = tmp_path / "30m"
     idx = pd.date_range("2025-01-01", periods=10, freq="1h", tz="UTC")  # 1H data, 30m expected
     factor_io.dump_factor_values("eth", {"mom_4": pd.Series(range(10), index=idx, dtype="float64")}, sub)
-    with pytest.warns(UserWarning, match="index spacing"):
+    with pytest.raises(ValueError, match="index spacing"):
         factor_io.load_factor_values("eth")

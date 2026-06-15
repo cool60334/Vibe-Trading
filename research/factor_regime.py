@@ -272,8 +272,8 @@ def run_symbol_regime(sym: SymbolConfig, cfg: ResearchConfig, manifests_dir: Pat
     print(f"     factors: {list(fv.columns)}  rows: {len(fv)}")
 
     # ── Close candles for forward returns + regime detection ─────────────────────
-    print(f"[2/3] hourly candles (last {period_days}d)")
-    candles = fetch_candles(sym.okx_swap, period_days, bar="1H", use_history_endpoint=True)
+    print(f"[2/3] candles @ {cfg.interval} (last {period_days}d)")
+    candles = fetch_candles(sym.okx_swap, period_days, bar=cfg.interval, use_history_endpoint=True)
     print(f"     rows: {len(candles)}")
 
     # ── Funding for the regime mania/capitulation override (fail-soft) ───────────
@@ -296,7 +296,7 @@ def run_symbol_regime(sym: SymbolConfig, cfg: ResearchConfig, manifests_dir: Pat
     if funding is not None and not funding.empty:
         fund_h = funding.reindex(df.index, method="ffill").bfill()
 
-    df = add_forward_returns(df, "close", horizons)
+    df = add_forward_returns(df, "close", horizons, interval=cfg.interval)
 
     # Compute daily close for regime detection
     daily_close = daily_close_from_hourly(df, col="close")
