@@ -17,6 +17,8 @@ Public API:
 from __future__ import annotations
 
 import json
+import os
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,7 +37,43 @@ FEATURES_SCHEMA_VERSION = 1
 #   factor_io.py -> lib/ -> research/
 _LIB_DIR = Path(__file__).resolve().parent       # research/lib/
 _RESEARCH_DIR = _LIB_DIR.parent                  # research/
-_DEFAULT_MANIFESTS_DIR = _RESEARCH_DIR / "manifests"
+# Test hook: when set (monkeypatched), the manifests base is taken from here
+# instead of the active_manifests_dir() helper. None in production.
+_MANIFESTS_BASE_OVERRIDE: "Path | None" = None
+
+
+def _default_manifests_dir() -> Path:
+    """Active manifests dir: interval-namespaced via RESEARCH_INTERVAL."""
+    if _MANIFESTS_BASE_OVERRIDE is not None:
+        iv = os.environ.get("RESEARCH_INTERVAL", "").strip()
+        if iv and iv != "1H":
+            return _MANIFESTS_BASE_OVERRIDE / iv
+        return _MANIFESTS_BASE_OVERRIDE
+    from lib.timeframe import active_manifests_dir
+    return active_manifests_dir()
+
+
+def _warn_if_index_freq_mismatch(df: "pd.DataFrame") -> None:
+    """Warn if the parquet's median index spacing doesn't match RESEARCH_INTERVAL."""
+    iv = os.environ.get("RESEARCH_INTERVAL", "").strip()
+    if not iv or len(df) < 3:
+        return
+    try:
+        from lib.timeframe import bars_per_hour
+        expected_min = 60 / bars_per_hour(iv)
+    except Exception:
+        return
+    deltas = df.index.to_series().diff().dropna()
+    if deltas.empty:
+        return
+    median_min = deltas.median().total_seconds() / 60.0
+    if abs(median_min - expected_min) > 0.5:
+        warnings.warn(
+            f"factor_values index spacing ~{median_min:.0f}m != expected {expected_min:.0f}m "
+            f"for RESEARCH_INTERVAL={iv!r}; loaded a mismatched-interval parquet.",
+            UserWarning,
+            stacklevel=2,
+        )
 
 
 def _symbol_short(symbol: str) -> str:
@@ -141,7 +179,7 @@ def load_factor_values(symbol: str, manifests_dir: Path | None = None) -> pd.Dat
         "run stage1_factors first" as a hint.
     """
     sym_short = _symbol_short(symbol)
-    mdir = manifests_dir if manifests_dir is not None else _DEFAULT_MANIFESTS_DIR
+    mdir = manifests_dir if manifests_dir is not None else _default_manifests_dir()
     parquet_path = mdir / f"factor_values_{sym_short}.parquet"
 
     if not parquet_path.exists():
@@ -150,7 +188,9 @@ def load_factor_values(symbol: str, manifests_dir: Path | None = None) -> pd.Dat
             "run stage1_factors first to generate factor parquet files."
         )
 
-    return pd.read_parquet(parquet_path, engine="pyarrow")
+    df = pd.read_parquet(parquet_path, engine="pyarrow")
+    _warn_if_index_freq_mismatch(df)
+    return df
 
 
 def load_factor_meta(symbol: str, manifests_dir: Path | None = None) -> dict:
@@ -171,7 +211,7 @@ def load_factor_meta(symbol: str, manifests_dir: Path | None = None) -> dict:
         If schema_version != SCHEMA_VERSION.
     """
     sym_short = _symbol_short(symbol)
-    mdir = manifests_dir if manifests_dir is not None else _DEFAULT_MANIFESTS_DIR
+    mdir = manifests_dir if manifests_dir is not None else _default_manifests_dir()
     meta_path = mdir / f"factor_values_{sym_short}.meta.json"
 
     if not meta_path.exists():
@@ -285,7 +325,7 @@ def load_features(symbol: str, manifests_dir: Path | None = None) -> pd.DataFram
         If the parquet file does not exist.
     """
     sym_short = _symbol_short(symbol)
-    mdir = manifests_dir if manifests_dir is not None else _DEFAULT_MANIFESTS_DIR
+    mdir = manifests_dir if manifests_dir is not None else _default_manifests_dir()
     parquet_path = mdir / f"features_{sym_short}.parquet"
 
     if not parquet_path.exists():
@@ -314,7 +354,7 @@ def load_features_meta(symbol: str, manifests_dir: Path | None = None) -> dict:
         If schema_version != FEATURES_SCHEMA_VERSION.
     """
     sym_short = _symbol_short(symbol)
-    mdir = manifests_dir if manifests_dir is not None else _DEFAULT_MANIFESTS_DIR
+    mdir = manifests_dir if manifests_dir is not None else _default_manifests_dir()
     meta_path = mdir / f"features_{sym_short}.meta.json"
 
     if not meta_path.exists():
@@ -389,7 +429,7 @@ def load_evidence(symbol: str, manifests_dir: Path | None = None) -> list | dict
         If the evidence JSON does not exist.
     """
     sym_short = _symbol_short(symbol)
-    mdir = manifests_dir if manifests_dir is not None else _DEFAULT_MANIFESTS_DIR
+    mdir = manifests_dir if manifests_dir is not None else _default_manifests_dir()
     json_path = mdir / f"evidence_{sym_short}.json"
 
     if not json_path.exists():
@@ -434,7 +474,7 @@ def append_feature_column(
     ValueError
         If the reindexed series is all-NaN or coverage is below threshold.
     """
-    mdir = manifests_dir if manifests_dir is not None else _DEFAULT_MANIFESTS_DIR
+    mdir = manifests_dir if manifests_dir is not None else _default_manifests_dir()
 
     # Load existing data (may raise FileNotFoundError).
     df = load_features(symbol, manifests_dir=mdir)
