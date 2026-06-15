@@ -56,3 +56,48 @@ def test_discover_intervals_includes_subhour(tmp_path):
 
 def test_discover_intervals_empty_defaults_1H(tmp_path):
     assert artifacts.discover_intervals(tmp_path) == ["1H"]
+
+
+from fastapi.testclient import TestClient
+
+import main
+
+
+def test_api_strategies_passes_interval(monkeypatch):
+    seen = {}
+
+    def fake_list(repo_root, interval="1H"):
+        seen["interval"] = interval
+        return []
+
+    monkeypatch.setattr(main.artifacts, "list_strategy_manifests", fake_list)
+    client = TestClient(main.app)
+    client.get("/api/strategies?interval=15m")
+    assert seen["interval"] == "15m"
+
+
+def test_api_strategies_all_merges_and_tags(monkeypatch):
+    monkeypatch.setattr(main.artifacts, "discover_intervals", lambda r: ["1H", "30m"])
+
+    class M:
+        def __init__(self, sid):
+            self.strategy_id = sid
+            self.symbol = "ETH-USDT-SWAP"
+            self.pipeline_stage = 5
+            from datetime import datetime, timezone
+            self.generated_at = datetime(2026, 6, 15, tzinfo=timezone.utc)
+            self.gate = None
+            self.backtest = None
+
+    monkeypatch.setattr(main.artifacts, "list_strategy_manifests",
+                        lambda r, interval="1H": [M(f"s_{interval}")])
+    client = TestClient(main.app)
+    rows = client.get("/api/strategies?interval=all").json()
+    by_iv = {r["interval"]: r["strategy_id"] for r in rows}
+    assert by_iv == {"1H": "s_1H", "30m": "s_30m"}
+
+
+def test_api_intervals_endpoint(monkeypatch):
+    monkeypatch.setattr(main.artifacts, "discover_intervals", lambda r: ["1H", "15m"])
+    client = TestClient(main.app)
+    assert client.get("/api/intervals").json() == ["1H", "15m"]

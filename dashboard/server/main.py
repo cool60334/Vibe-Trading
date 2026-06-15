@@ -48,28 +48,39 @@ def health() -> dict:
 # 3.4 Strategy list & detail
 # ---------------------------------------------------------------------------
 
+def _strategy_row(m, interval: str) -> dict:
+    return {
+        "strategy_id": m.strategy_id,
+        "symbol": m.symbol,
+        "pipeline_stage": m.pipeline_stage,
+        "generated_at": m.generated_at.isoformat(),
+        "gate_pass": m.gate.overall_pass if m.gate else None,
+        "gate_fatal": m.gate.fatal_fail if m.gate else None,
+        "sharpe": m.backtest.in_sample.sharpe if m.backtest else None,
+        "max_drawdown": m.backtest.in_sample.max_drawdown if m.backtest else None,
+        "red_flags": [f.value for f in m.gate.red_flags] if m.gate else [],
+        "interval": interval,
+    }
+
+
+@app.get("/api/intervals")
+def list_intervals() -> list[str]:
+    return artifacts.discover_intervals(REPO_ROOT)
+
+
 @app.get("/api/strategies")
-def list_strategies() -> list[dict]:
-    manifests = artifacts.list_strategy_manifests(REPO_ROOT)
-    return [
-        {
-            "strategy_id": m.strategy_id,
-            "symbol": m.symbol,
-            "pipeline_stage": m.pipeline_stage,
-            "generated_at": m.generated_at.isoformat(),
-            "gate_pass": m.gate.overall_pass if m.gate else None,
-            "gate_fatal": m.gate.fatal_fail if m.gate else None,
-            "sharpe": m.backtest.in_sample.sharpe if m.backtest else None,
-            "max_drawdown": m.backtest.in_sample.max_drawdown if m.backtest else None,
-            "red_flags": [f.value for f in m.gate.red_flags] if m.gate else [],
-        }
-        for m in manifests
-    ]
+def list_strategies(interval: str = Query("1H")) -> list[dict]:
+    if interval == "all":
+        rows: list[dict] = []
+        for iv in artifacts.discover_intervals(REPO_ROOT):
+            rows.extend(_strategy_row(m, iv) for m in artifacts.list_strategy_manifests(REPO_ROOT, iv))
+        return rows
+    return [_strategy_row(m, interval) for m in artifacts.list_strategy_manifests(REPO_ROOT, interval)]
 
 
 @app.get("/api/strategies/{strategy_id}")
-def get_strategy(strategy_id: str) -> StrategyManifest:
-    manifest = artifacts.get_strategy_manifest(REPO_ROOT, strategy_id)
+def get_strategy(strategy_id: str, interval: str = Query("1H")) -> StrategyManifest:
+    manifest = artifacts.get_strategy_manifest(REPO_ROOT, strategy_id, interval)
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
     return manifest
@@ -160,23 +171,25 @@ from schemas import FactorManifest, SelectionManifest
 
 
 @app.get("/api/factor-analysis")
-def get_factor_analysis() -> list[FactorManifest]:
-    return artifacts.list_factor_manifests(REPO_ROOT)
+def get_factor_analysis(interval: str = Query("1H")) -> list[FactorManifest]:
+    iv = "1H" if interval == "all" else interval
+    return artifacts.list_factor_manifests(REPO_ROOT, iv)
 
 
 @app.get("/api/regime")
 def get_regime(
     symbol: str = Query(..., description="Trading symbol, e.g. 'BTC'"),
+    interval: str = Query("1H"),
 ) -> dict[str, Any]:
-    data = artifacts.get_regime_manifest(REPO_ROOT, symbol)
+    data = artifacts.get_regime_manifest(REPO_ROOT, symbol, "1H" if interval == "all" else interval)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Regime manifest for '{symbol}' not found")
     return data
 
 
 @app.get("/api/selection")
-def get_selection() -> SelectionManifest:
-    manifest = artifacts.get_selection_manifest(REPO_ROOT)
+def get_selection(interval: str = Query("1H")) -> SelectionManifest:
+    manifest = artifacts.get_selection_manifest(REPO_ROOT, "1H" if interval == "all" else interval)
     if manifest is None:
         raise HTTPException(status_code=404, detail="Selection manifest not found")
     return manifest
