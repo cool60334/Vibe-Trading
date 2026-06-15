@@ -19,12 +19,17 @@ def _load_json(path: Path) -> Optional[dict]:
         return None
 
 
+def _manifests_base(repo_root: Path, interval: str = "1H") -> Path:
+    base = repo_root / "research" / "manifests"
+    return base if interval == "1H" else base / interval
+
+
 # ---------------------------------------------------------------------------
 # Strategy manifests — research/manifests/<strategy_id>/manifest.json
 # ---------------------------------------------------------------------------
 
-def list_strategy_manifests(repo_root: Path) -> list[StrategyManifest]:
-    base = repo_root / "research" / "manifests"
+def list_strategy_manifests(repo_root: Path, interval: str = "1H") -> list[StrategyManifest]:
+    base = _manifests_base(repo_root, interval)
     manifests: list[StrategyManifest] = []
     if not base.is_dir():
         return manifests
@@ -38,8 +43,8 @@ def list_strategy_manifests(repo_root: Path) -> list[StrategyManifest]:
     return manifests
 
 
-def get_strategy_manifest(repo_root: Path, strategy_id: str) -> Optional[StrategyManifest]:
-    path = repo_root / "research" / "manifests" / strategy_id / "manifest.json"
+def get_strategy_manifest(repo_root: Path, strategy_id: str, interval: str = "1H") -> Optional[StrategyManifest]:
+    path = _manifests_base(repo_root, interval) / strategy_id / "manifest.json"
     raw = _load_json(path)
     if raw is None:
         return None
@@ -53,8 +58,8 @@ def get_strategy_manifest(repo_root: Path, strategy_id: str) -> Optional[Strateg
 # Factor manifests — research/manifests/factor_<symbol>.json
 # ---------------------------------------------------------------------------
 
-def list_factor_manifests(repo_root: Path) -> list[FactorManifest]:
-    base = repo_root / "research" / "manifests"
+def list_factor_manifests(repo_root: Path, interval: str = "1H") -> list[FactorManifest]:
+    base = _manifests_base(repo_root, interval)
     manifests: list[FactorManifest] = []
     if not base.is_dir():
         return manifests
@@ -68,8 +73,8 @@ def list_factor_manifests(repo_root: Path) -> list[FactorManifest]:
     return manifests
 
 
-def get_factor_manifest(repo_root: Path, symbol: str) -> Optional[FactorManifest]:
-    path = repo_root / "research" / "manifests" / f"factor_{symbol}.json"
+def get_factor_manifest(repo_root: Path, symbol: str, interval: str = "1H") -> Optional[FactorManifest]:
+    path = _manifests_base(repo_root, interval) / f"factor_{symbol}.json"
     raw = _load_json(path)
     if raw is None:
         return None
@@ -83,8 +88,8 @@ def get_factor_manifest(repo_root: Path, symbol: str) -> Optional[FactorManifest
 # Selection manifest — research/manifests/selection.json
 # ---------------------------------------------------------------------------
 
-def get_selection_manifest(repo_root: Path) -> Optional[SelectionManifest]:
-    path = repo_root / "research" / "manifests" / "selection.json"
+def get_selection_manifest(repo_root: Path, interval: str = "1H") -> Optional[SelectionManifest]:
+    path = _manifests_base(repo_root, interval) / "selection.json"
     raw = _load_json(path)
     if raw is None:
         return None
@@ -98,8 +103,8 @@ def get_selection_manifest(repo_root: Path) -> Optional[SelectionManifest]:
 # Regime manifest — research/manifests/regime_<symbol>.json (raw dict)
 # ---------------------------------------------------------------------------
 
-def get_regime_manifest(repo_root: Path, symbol: str) -> Optional[dict]:
-    path = repo_root / "research" / "manifests" / f"regime_{symbol}.json"
+def get_regime_manifest(repo_root: Path, symbol: str, interval: str = "1H") -> Optional[dict]:
+    path = _manifests_base(repo_root, interval) / f"regime_{symbol}.json"
     return _load_json(path)
 
 
