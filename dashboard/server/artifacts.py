@@ -21,7 +21,7 @@ def _load_json(path: Path) -> Optional[dict]:
 
 def _manifests_base(repo_root: Path, interval: str = "1H") -> Path:
     base = repo_root / "research" / "manifests"
-    return base if interval == "1H" else base / interval
+    return base if interval.strip().upper() == "1H" else base / interval.strip()
 
 
 # ---------------------------------------------------------------------------
