@@ -15,11 +15,9 @@ Dashboard 能依時間級別（1H / 15m / 30m）檢視 strategies 與 factors，
 
 前端只能顯示 API 給的；API 給 `artifacts.py` 找到的；`artifacts.py` 目前**寫死 `research/manifests/` root**（`*/manifest.json` 一層、`factor_*.json`、`selection.json`、`regime_*.json`），interval-namespaced 的東西全看不到。所以需四層：write-side → read 層 → API → 前端。
 
-## 3. Prerequisite P（write-side namespacing）— 多數已完成
+## 3. Prerequisite P（write-side namespacing）— ✅ 完成
 
-stage3 interval-namespacing 修復（commits 9a0d1f6→b0a0a7a）已把下列 namespace 到 `manifests/<iv>/`：strategy manifest、selection.json、factor_<sym>.json、factor_values、features、evidence（經 `active_manifests_dir()` + Phase 1 feature_store_path）。
-
-**唯一剩餘**：`regime_<sym>.json` — `stage2_5_regime.main()` 未跟上、仍寫 root。P 收斂為：讓 stage2_5_regime 的 manifests_dir 也走 `active_manifests_dir()`（與其他 resolver 一致）+ 驗證全 write-side 一致。
+stage3 interval-namespacing 修復（commits 9a0d1f6→b0a0a7a）+ regime 補洞（3652784）已把**全部** write-side namespace 到 `manifests/<iv>/`：strategy manifest、selection.json、factor_<sym>.json、factor_values、features、evidence、**regime_<sym>.json**（全經 `active_manifests_dir()` + Phase 1 feature_store_path）。**P 全綠，前端案可直接假設 write-side 完整。** 本案只剩 read 層 + API + 前端三層。
 
 ## 4. 決策（brainstorm + Gemini review 採納）
 
@@ -48,7 +46,7 @@ API      dashboard/server/main.py               ?interval= query + 新 /api/inte
 
 ## 6. 受影響檔案
 
-**後端 research**：`research/pipeline/stage2_5_regime.py`（regime namespace，補完 P）。
+**後端 research**：無（P 已於 3652784 完成，regime 已 namespace）。
 **後端 dashboard**：
 - `dashboard/server/artifacts.py` — list_strategy_manifests / get_strategy_manifest / list_factor_manifests / get_factor_manifest / get_selection_manifest / get_regime_manifest 加 `interval`；新 `discover_intervals(repo_root)`。
 - `dashboard/server/main.py` — `/api/strategies`、`/strategies/{id}`、`/factor-analysis`、`/selection`、`/regime`、`/pipeline` 加 `interval` query；新 `/api/intervals`。
@@ -78,7 +76,6 @@ artifacts `interval="1H"` 預設 → root（與現況逐字同）；前端預設
 | dashboard 與 research 各自解析 manifests 路徑、漂移 | 規則一行（root vs `/<iv>`）、兩邊文件註明同約定；artifacts 不跨套件 import |
 | `/api/intervals` 掃到只有部分 stage 的 interval（半成品） | 空狀態處理；discover 以「有 manifest.json 或 evidence」為準 |
 | URL param 在頁間遺失 | NavLink/連結一律帶 `?interval=`；`useInterval` 集中處理 |
-| regime 仍 root（P 未補完）→ regime 視圖跨 interval 錯 | P 把 stage2_5_regime 補上再做 read 層 |
 
 ## 10. 不在範圍
 
