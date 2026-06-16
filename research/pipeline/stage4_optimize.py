@@ -531,6 +531,27 @@ def _optimize_strategy(
 ) -> OptimizationCheckResult:
     print(f"\n{'='*60}\n[stage4] Strategy: {strategy_id}\n{'='*60}")
 
+    # ── Missing-factor guard ──────────────────────────────────────────────────
+    # stage 3 leaves missing_factor.json when a base run is skipped because its
+    # factor is absent at the configured interval. There is no diagnosis.json or
+    # metrics to optimize against, so skip cleanly (non-fatal) — one interval-
+    # incompatible strategy must not fail the stage. Checked before the archetype
+    # guard: the base run never executed at this interval, so any archetype_misfit
+    # verdict on disk is stale.
+    missing_factor_path = manifests_dir / strategy_id / "missing_factor.json"
+    if missing_factor_path.exists():
+        try:
+            mf_data = json.loads(missing_factor_path.read_text(encoding="utf-8"))
+            if mf_data.get("missing_factor"):
+                reason = mf_data.get("reason", "see missing_factor.json")
+                msg = f"missing_factor sentinel present ({reason}) — skipping sweep"
+                print(f"  [SKIP] {msg}")
+                return OptimizationCheckResult(
+                    strategy_id=strategy_id, ok=False, skipped=True, error=msg
+                )
+        except (OSError, json.JSONDecodeError):
+            pass  # Unreadable sentinel: proceed normally (fail-open)
+
     # ── Archetype-misfit guard ────────────────────────────────────────────────
     # If stage 3 flagged this strategy as a hopeless base run, skip the sweep
     # entirely to avoid wasting compute on a concept that stage 3 already

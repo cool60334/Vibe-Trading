@@ -212,6 +212,111 @@ class TestStage4ArchetypeMisfitGuard:
         assert "diagnosis" in (result.error or "").lower()
 
 
+def _write_missing_factor(manifests_dir: Path, strategy_id: str, flag: bool = True) -> None:
+    """Write a missing_factor.json sentinel to manifests/<strategy_id>/."""
+    sentinel_dir = manifests_dir / strategy_id
+    sentinel_dir.mkdir(parents=True, exist_ok=True)
+    sentinel = {
+        "missing_factor": flag,
+        "reason": "signal engine references a factor/column absent at this interval",
+        "interval": "1H",
+    }
+    (sentinel_dir / "missing_factor.json").write_text(
+        json.dumps(sentinel, indent=2), encoding="utf-8"
+    )
+
+
+class TestStage4MissingFactorGuard:
+    """_optimize_strategy() skips cleanly when a missing_factor.json sentinel exists."""
+
+    def test_missing_factor_skips_sweep(self, tmp_path):
+        strategy_id = "sol_s2_stablecoin_trend_gated"
+        manifests_dir = tmp_path / "manifests"
+        runs_root = tmp_path / "runs"
+        strategies_dir = tmp_path / "strategies"
+        runs_root.mkdir(parents=True)
+        strategies_dir.mkdir(parents=True)
+
+        # Sentinel present, NO diagnosis.json (diag also skipped this strategy).
+        _write_missing_factor(manifests_dir, strategy_id, flag=True)
+
+        result = _optimize_strategy(
+            strategy_id=strategy_id,
+            entry=_make_strategy_entry(symbol="SOL-USDT-SWAP"),
+            cfg=_make_research_config(),
+            runs_root=runs_root,
+            strategies_dir=strategies_dir,
+            manifests_dir=manifests_dir,
+            max_combos=10,
+            seed=42,
+            window=None,
+            oos_win=None,
+        )
+        # Non-fatal skip, NOT a diagnosis.json failure.
+        assert result.ok is False
+        assert result.skipped is True
+        assert "missing_factor" in (result.error or "")
+        assert "diagnosis" not in (result.error or "").lower()
+
+    def test_missing_factor_wins_over_stale_archetype(self, tmp_path):
+        """Base never ran at this interval -> missing_factor reason, not stale misfit."""
+        strategy_id = "sol_s1_multi_factor_consensus"
+        manifests_dir = tmp_path / "manifests"
+        runs_root = tmp_path / "runs"
+        strategies_dir = tmp_path / "strategies"
+        runs_root.mkdir(parents=True)
+        strategies_dir.mkdir(parents=True)
+
+        # Both sentinels on disk (committed stale archetype + fresh missing_factor).
+        _write_archetype_misfit(manifests_dir, strategy_id, flag=True)
+        _write_missing_factor(manifests_dir, strategy_id, flag=True)
+
+        result = _optimize_strategy(
+            strategy_id=strategy_id,
+            entry=_make_strategy_entry(symbol="SOL-USDT-SWAP"),
+            cfg=_make_research_config(),
+            runs_root=runs_root,
+            strategies_dir=strategies_dir,
+            manifests_dir=manifests_dir,
+            max_combos=10,
+            seed=42,
+            window=None,
+            oos_win=None,
+        )
+        assert result.ok is False
+        assert result.skipped is True
+        # Distinctive reason phrases (not in the tmp path) prove which guard won.
+        assert "absent at this interval" in (result.error or "")
+        assert "deeply negative sharpe" not in (result.error or "")
+
+    def test_absent_sentinel_falls_through_to_diagnosis_gate(self, tmp_path):
+        strategy_id = "btc_s1_no_sentinel"
+        manifests_dir = tmp_path / "manifests"
+        runs_root = tmp_path / "runs"
+        strategies_dir = tmp_path / "strategies"
+        runs_root.mkdir(parents=True)
+        strategies_dir.mkdir(parents=True)
+
+        # No sentinel at all -> falls through to diagnosis.json gate (a real
+        # FAIL, not a skip). Use result.skipped to distinguish — the tmp path
+        # string itself can contain the substring "missing_factor".
+        result = _optimize_strategy(
+            strategy_id=strategy_id,
+            entry=_make_strategy_entry(),
+            cfg=_make_research_config(),
+            runs_root=runs_root,
+            strategies_dir=strategies_dir,
+            manifests_dir=manifests_dir,
+            max_combos=10,
+            seed=42,
+            window=None,
+            oos_win=None,
+        )
+        assert result.ok is False
+        assert result.skipped is False
+        assert "diagnosis" in (result.error or "").lower()
+
+
 class TestComputeExitCodeSkipSemantics:
     """compute_exit_code: archetype_misfit skips are non-fatal; real failures are fatal."""
 
