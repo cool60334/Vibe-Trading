@@ -8,6 +8,7 @@ buyer, fill at ask); True => aggressive SELL (taker is seller, fill at bid).
 from __future__ import annotations
 
 import hashlib as _hashlib
+import inspect as _inspect
 import json as _json
 import subprocess as _subprocess
 from datetime import datetime, timezone
@@ -77,7 +78,7 @@ def _git_sha() -> str:
 
 
 def _logic_hash() -> str:
-    return _hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+    return _hashlib.sha256(_inspect.getsource(aggregate).encode()).hexdigest()[:16]
 
 
 def _cache_path(symbol: str, interval: str, dest_dir: Path) -> Path:
@@ -107,7 +108,10 @@ def write_cache(df: pl.DataFrame, symbol: str, interval: str, dest_dir: Path,
 
 def read_cache(symbol: str, interval: str, dest_dir: Path) -> pl.DataFrame:
     p = _cache_path(symbol, interval, dest_dir)
-    meta = _json.loads(p.with_suffix(".meta.json").read_text())
+    meta_path = p.with_suffix(".meta.json")
+    if not meta_path.exists():
+        raise ValueError(f"cache meta missing for {p.name} — re-run aggregation")
+    meta = _json.loads(meta_path.read_text())
     if meta.get("version") != AGG_VERSION:
         raise ValueError(
             f"cache version mismatch for {p.name}: meta={meta.get('version')} "

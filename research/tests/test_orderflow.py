@@ -1,4 +1,6 @@
 # research/tests/test_orderflow.py
+import json
+
 import polars as pl
 import pytest
 
@@ -92,10 +94,6 @@ def test_usd_notional_buckets():
     assert out["vol_50_200k"] == pytest.approx(30.0)
     assert out["vol_gt200k"] == pytest.approx(200.0)
     assert out["vol_10_50k"] == pytest.approx(0.0)
-
-
-# append to research/tests/test_orderflow.py
-import json
 
 
 def test_cache_roundtrip_writes_meta(tmp_path):
