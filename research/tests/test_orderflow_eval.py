@@ -78,3 +78,17 @@ def test_quantile_returns_monotone():
     q = quantile_returns(factor, price, fwd_bars=1, n_q=5)
     assert q.index.tolist() == [0, 1, 2, 3, 4]
     assert q.iloc[-1] > q.iloc[0]  # monotone increasing
+
+
+from lib.orderflow_eval import incremental_ic
+
+
+def test_incremental_ic_removes_shared_component():
+    idx = pd.date_range("2025-01-01", periods=200, freq="15min", tz="UTC")
+    rng = np.random.default_rng(0)
+    control = pd.Series(rng.normal(size=200), index=idx)
+    # factor is a pure copy of control -> zero incremental signal
+    factor = control.copy()
+    price = pd.Series(100 + np.cumsum(control.values), index=idx)  # return ~ control
+    inc = incremental_ic(factor, control, price, fwd_bars=1)
+    assert abs(inc) < 0.1  # residual carries no independent predictive power

@@ -115,3 +115,30 @@ def quantile_returns(
     df = pd.concat([factor.rename("f"), fwd.rename("r")], axis=1).dropna()
     df["q"] = pd.qcut(df["f"], n_q, labels=False, duplicates="drop")
     return df.groupby("q")["r"].mean()
+
+
+def incremental_ic(factor: pd.Series, control: pd.Series, price: pd.Series, fwd_bars: int) -> float:
+    """IC of `factor` residualized on `control` vs forward return.
+
+    Computes the marginal predictive contribution of `factor` beyond what `control`
+    already explains. The factor is projected onto the control via OLS (+intercept),
+    and the residual is correlated (Spearman) against the fwd_bars-ahead return.
+
+    When `control` is a constant Series (e.g. pd.Series(0.0, ...)), the OLS
+    design matrix is rank-deficient but numpy lstsq returns the least-norm solution;
+    the fitted values are constant, so the residual equals the demeaned factor.
+    Spearman rank correlation is mean-invariant, so the result equals the raw
+    standalone factor IC.
+    """
+    df = pd.concat([factor.rename("f"), control.rename("c")], axis=1).dropna()
+    # OLS residual of f on c (+intercept)
+    c = df["c"].values
+    A = np.vstack([c, np.ones_like(c)]).T
+    coef, *_ = np.linalg.lstsq(A, df["f"].values, rcond=None)
+    resid_vals = df["f"].values - A @ coef
+    # Guard: near-constant residual means the factor is fully explained by the
+    # control — no orthogonal component exists, so incremental IC is 0.
+    if np.std(resid_vals) < 1e-12:
+        return 0.0
+    resid = pd.Series(resid_vals, index=df.index)
+    return _ic(resid, _fwd_return(price, fwd_bars))
