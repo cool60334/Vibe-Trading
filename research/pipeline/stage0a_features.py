@@ -119,6 +119,11 @@ _INDICATOR_CATEGORY: dict[str, str] = {
     "oi_z": "oi",
     "oi_price_divergence": "oi",
     "oi_mom": "oi",
+    # order-flow (intraday)
+    "trade_imbalance": "orderflow",
+    "trade_count_imbalance": "orderflow",
+    "large_trade_ratio": "orderflow",
+    "price_impact": "orderflow",
 }
 
 _NON_PRICE_FEATURES = {"funding_rate_raw", "oi_change_24h", "stablecoin_supply_z"}

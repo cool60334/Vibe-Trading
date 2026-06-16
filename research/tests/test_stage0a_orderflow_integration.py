@@ -1,6 +1,7 @@
 # research/tests/test_stage0a_orderflow_integration.py
+import dataclasses
+
 import pandas as pd
-import pytest
 
 from pipeline.stage0a_features import build_feature_dict, compute_evidence_entries
 from pipeline.config import load_config
@@ -36,6 +37,7 @@ def test_orderflow_features_enter_feature_dict_and_get_ic():
     candles = _candles()
     of = _orderflow_df(candles.index)
     cfg = load_config()  # default config; interval label irrelevant for the dict
+    cfg = dataclasses.replace(cfg, interval="30m")  # override to match 30m fixture candles
     feats = build_feature_dict(candles, cfg, orderflow_df=of)
     assert "trade_imbalance" in feats
     assert "price_impact" in feats
