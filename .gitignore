@@ -163,3 +163,6 @@ install.log
 .agents/
 compact-notes/
 skills-lock.json
+
+# Order-flow POC runtime data (raw dumps + cached bar-level parquet)
+research/data/
