@@ -33,7 +33,10 @@ from lib.okx_data import fetch_candles
 
 SYMBOL = "ETH-USDT-SWAP"
 INTERVAL = "15m"
-DAYS = 30          # lookback for candles (enough for ~2880 15m bars)
+# Candles MUST span the whole order-flow cache (~365 days). DAYS=30 fetched only
+# the last ~14 overlapping days -> tiny noisy sample -> bogus inflated IC. Fetch
+# enough to cover the full cache window (cache starts ~365d ago; pad to 400).
+DAYS = 400
 MAX_BARS = 8       # profile from 1 bar (15 min) to 8 bars (2 h)
 
 of_dir = Path(__file__).parent.parent / "data" / "orderflow"
