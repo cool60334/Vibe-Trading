@@ -30,13 +30,19 @@ def orderflow_factors(
     df = of_df.reindex(candle_idx)
 
     buy_v, sell_v = df["buy_vol"], df["sell_vol"]
-    buy_c, sell_c = df["buy_count"], df["sell_count"]
+    # Cast to Int64 (nullable int) to prevent uint32 underflow when Polars emits uint32
+    buy_c = df["buy_count"].astype("Int64")
+    sell_c = df["sell_count"].astype("Int64")
     total = df["total_vol"]
     large_v = df[list(large_buckets)].sum(axis=1, min_count=1)
 
+    # Convert to float64 for division to get NaN on 0/0, not pd.NA
+    count_diff = (buy_c - sell_c).astype("float64")
+    count_sum = (buy_c + sell_c).astype("float64")
+
     feats = {
         "trade_imbalance": _safe_div(buy_v - sell_v, total),
-        "trade_count_imbalance": _safe_div(buy_c - sell_c, buy_c + sell_c),
+        "trade_count_imbalance": _safe_div(count_diff, count_sum),
         "large_trade_ratio": _safe_div(large_v, total),
         "price_impact": _safe_div(df["close"] - df["open"], total),
     }

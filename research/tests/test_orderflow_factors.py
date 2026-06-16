@@ -53,3 +53,24 @@ def test_reindexes_to_candle_index():
     out = orderflow_factors(of, candle_idx, "30m")
     assert list(out["trade_imbalance"].index) == list(candle_idx)
     assert np.isnan(out["trade_imbalance"].iloc[1])  # missing bar -> NaN, no ffill
+
+
+def test_trade_count_imbalance_no_uint32_underflow():
+    """Polars emits buy_count/sell_count as uint32; subtraction must not wrap."""
+    import polars as pl
+    from lib.orderflow import aggregate
+
+    T0 = 1735689600000  # 2025-01-01T00:00:00Z
+    MIN = 60_000
+    trades = pl.DataFrame({
+        "transact_time": [T0, T0 + MIN, T0 + 2 * MIN],
+        "price": [100.0, 100.0, 100.0],
+        "quantity": [1.0, 1.0, 1.0],
+        "is_buyer_maker": [False, True, True],  # 1 buy, 2 sells
+    })
+    bars = aggregate(trades, "30m").to_pandas().set_index("ts")
+    out = orderflow_factors(bars, bars.index, "30m")
+    # trade_count_imbalance = (1 - 2) / (1 + 2) = -1/3
+    # With uint32 underflow this would be ~4.3e9/3 ≈ 1.4e9 instead of -0.333
+    val = out["trade_count_imbalance"].iloc[0]
+    assert val == pytest.approx(-1 / 3, abs=1e-6), f"got {val!r} — likely uint32 underflow"
