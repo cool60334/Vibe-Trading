@@ -142,3 +142,40 @@ def incremental_ic(factor: pd.Series, control: pd.Series, price: pd.Series, fwd_
         return 0.0
     resid = pd.Series(resid_vals, index=df.index)
     return _ic(resid, _fwd_return(price, fwd_bars))
+
+
+def execution_ic(
+    factor: pd.Series,
+    price: pd.Series,
+    entry_lag_bars: int,
+    hold_bars: int,
+    min_obs: int = 30,
+) -> float:
+    """IC of factor vs the return of entering `entry_lag_bars` after the signal
+    bar's close and holding `hold_bars`. entry_lag_bars=0 == enter at the signal
+    bar's close (the factor-known time). A same-bar lookahead would show a large
+    IC drop from lag 0 to lag 1; a real signal persists.
+
+    Parameters
+    ----------
+    factor:
+        Signal Series aligned to `price`.
+    price:
+        Close-price Series (same index as `factor`).
+    entry_lag_bars:
+        Number of bars after the signal bar before the trade enters.
+        0 = enter immediately at the signal bar's close (tests for lookahead).
+        1 = enter one bar later (realistic execution without lookahead).
+    hold_bars:
+        Number of bars the trade is held before exit.
+    min_obs:
+        Minimum aligned non-NaN rows required; returns NaN below this.
+
+    Returns
+    -------
+    Spearman IC float (NaN when n < min_obs).
+    """
+    entry = price.shift(-entry_lag_bars)
+    exit_ = price.shift(-(entry_lag_bars + hold_bars))
+    fwd = exit_ / entry - 1.0
+    return _ic(factor, fwd, min_n=min_obs)
