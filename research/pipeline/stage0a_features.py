@@ -66,6 +66,7 @@ from lib.indicators import compute_indicator_pool
 from lib.factor_io import dump_features, dump_evidence
 from lib.factor_metrics import add_forward_returns, evaluate_factor, FactorResult
 from lib.derived_factors import basis_factors, funding_factors, oi_factors
+from lib.orderflow_factors import orderflow_factors
 from lib.timeframe import bars_per_hour
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -191,6 +192,7 @@ def build_feature_dict(
     oi_df: pd.DataFrame | None = None,
     stablecoin_df: pd.DataFrame | None = None,
     spot_close: pd.Series | None = None,
+    orderflow_df: pd.DataFrame | None = None,
 ) -> dict[str, pd.Series]:
     """Compute all features and return as a dict of name → Series.
 
@@ -260,6 +262,10 @@ def build_feature_dict(
         features.update(funding_factors(funding_on_candle))
     if oi_on_candle is not None:
         features.update(oi_factors(oi_on_candle, candles["close"]))
+
+    # ── Order-flow factor family (intraday-native, no ffill) ─────────────────
+    if orderflow_df is not None and not orderflow_df.empty:
+        features.update(orderflow_factors(orderflow_df, candle_idx, config.interval))
 
     return features
 
@@ -496,6 +502,18 @@ def _process_symbol(
         # ── 3. Fetch non-price data ──────────────────────────────────────────
         funding_df, oi_df, stablecoin_df = _fetch_non_price_data(sym_cfg, cfg.period)
 
+        # ── 3b. Order-flow cache (POC) ───────────────────────────────────────
+        # research/data/orderflow/of_<sym>_<iv>_vN.parquet
+        orderflow_df = None
+        try:
+            from lib import orderflow as _of
+            of_dir = _REPO_ROOT / "research" / "data" / "orderflow"
+            of_pl = _of.read_cache(sym_cfg.name, cfg.interval, of_dir)
+            orderflow_df = of_pl.to_pandas().set_index("ts")
+            log.info("%s: loaded orderflow cache (%d rows)", sym, len(orderflow_df))
+        except (FileNotFoundError, ValueError):
+            orderflow_df = None  # absent cache -> feature simply not present (1H runs unaffected)
+
         # ── 4. Compute feature dict ──────────────────────────────────────────
         log.info("%s: computing feature pool...", sym)
         feature_dict = build_feature_dict(
@@ -505,6 +523,7 @@ def _process_symbol(
             oi_df=oi_df,
             stablecoin_df=stablecoin_df,
             spot_close=spot_close,
+            orderflow_df=orderflow_df,
         )
         if not feature_dict:
             log.error("%s: feature dict is empty — skipping symbol", sym)
