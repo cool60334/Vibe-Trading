@@ -42,7 +42,8 @@ def download_month(
     dest_dir.mkdir(parents=True, exist_ok=True)
     fname = f"{symbol}-aggTrades-{year:04d}-{month:02d}.zip"
     target = dest_dir / fname
-    if target.exists():
+    chk_sentinel = dest_dir / (fname + ".CHECKSUM")
+    if target.exists() and (not verify or chk_sentinel.exists()):
         return target
 
     url = aggtrades_url(symbol, year, month)
