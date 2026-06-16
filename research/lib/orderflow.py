@@ -21,10 +21,9 @@ def aggregate(trades: pl.DataFrame, interval: str) -> pl.DataFrame:
     """raw aggTrades -> per-bar primitives. `trades` needs columns
     transact_time (ms), price, quantity, is_buyer_maker (+ optional agg_trade_id)."""
     step = _INTERVAL_MS[interval]
-    df = trades
+    df = trades.sort("transact_time")  # ensure "first" in dedup = earliest by time
     if "agg_trade_id" in df.columns:
-        df = df.unique(subset=["agg_trade_id"], keep="first")
-    df = df.sort("transact_time")  # open/close depend on time order
+        df = df.unique(subset=["agg_trade_id"], keep="first", maintain_order=True)
 
     e1, e2, e3 = BUCKET_EDGES_USD
     df = df.with_columns(
