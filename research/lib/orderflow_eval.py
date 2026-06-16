@@ -1,0 +1,88 @@
+"""Economic-validation metrics for order-flow factors. Pure functions on
+aligned (factor, price) Series. No pipeline dependency.
+
+Key metrics
+-----------
+decay_profile : Spearman IC of the factor vs k-bar-forward return, for
+    k = 1..max_bars.  Tells us how fast predictive power falls off.
+half_life_bars : First k where |IC(k)| < |IC(1)| / 2.  If the half-life is
+    short (e.g. 1-2 bars at 15m) the signal must be traded as a *taker*;
+    if it is long enough that a limit order is likely to fill first, maker
+    orders may be viable and the fee math changes substantially.
+"""
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr
+
+
+def _fwd_return(price: pd.Series, k: int) -> pd.Series:
+    """k-bar forward return: price[t+k] / price[t] - 1."""
+    return price.shift(-k) / price - 1.0
+
+
+def _ic(factor: pd.Series, fwd: pd.Series, min_n: int = 30) -> float:
+    """Spearman rank correlation between factor and fwd return.
+
+    Returns NaN when fewer than `min_n` aligned (non-NaN) rows are available.
+    The default min_n=30 guards against spurious IC on tiny real samples;
+    pass a smaller value in tests so small fixtures can verify behavior.
+    """
+    df = pd.concat([factor, fwd], axis=1).dropna()
+    if len(df) < min_n:
+        return float("nan")
+    return float(spearmanr(df.iloc[:, 0], df.iloc[:, 1]).correlation)
+
+
+def decay_profile(
+    factor: pd.Series,
+    price: pd.Series,
+    max_bars: int,
+    min_obs: int = 30,
+) -> dict[int, float]:
+    """Spearman IC of `factor` vs k-bar-forward return, k = 1..max_bars.
+
+    Parameters
+    ----------
+    factor:
+        Signal Series aligned to `price`.
+    price:
+        Close-price Series (same index as `factor`).
+    max_bars:
+        Maximum forward-bar horizon to evaluate.
+    min_obs:
+        Minimum number of aligned non-NaN rows required to return a real IC
+        rather than NaN.  Default 30 (production guard).  Pass a smaller value
+        (e.g. min_obs=3) in unit tests with tiny synthetic fixtures.
+
+    Returns
+    -------
+    dict mapping bar-offset k -> Spearman IC float (NaN when n < min_obs).
+    """
+    return {
+        k: _ic(factor, _fwd_return(price, k), min_n=min_obs)
+        for k in range(1, max_bars + 1)
+    }
+
+
+def half_life_bars(profile: dict[int, float]) -> int | None:
+    """First k where |IC(k)| drops below half the 1-bar |IC|.
+
+    Returns None when:
+    - profile is empty
+    - IC(1) is NaN
+    - |IC| never falls below half the 1-bar value across all evaluated bars
+
+    A short half-life (e.g. 1-2 bars at 15m intervals) means the edge
+    evaporates within ~15-30 min — maker orders may not fill in time and
+    taker fees become the binding cost constraint.
+    """
+    if not profile or np.isnan(profile.get(1, float("nan"))):
+        return None
+    ic1 = abs(profile[1])
+    threshold = ic1 / 2.0
+    for k in sorted(profile):
+        if abs(profile[k]) < threshold:
+            return k
+    return None
