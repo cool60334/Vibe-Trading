@@ -38,6 +38,7 @@ def test_zero_volume_bar_yields_nan_not_inf():
     out = orderflow_factors(of, idx, "30m")
     assert np.isnan(out["trade_imbalance"].iloc[0])
     assert np.isnan(out["trade_count_imbalance"].iloc[0])
+    assert np.isnan(out["large_trade_ratio"].iloc[0])
     assert not np.isinf(out["price_impact"].iloc[0])
 
 

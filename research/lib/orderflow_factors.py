@@ -19,7 +19,7 @@ def _safe_div(num: pd.Series, den: pd.Series) -> pd.Series:
 
 
 def orderflow_factors(
-    of_df: pd.DataFrame, candle_idx: pd.DatetimeIndex, interval: str,
+    of_df: pd.DataFrame, candle_idx: pd.DatetimeIndex, interval: str,  # interval: reserved for future rolling-window scaling
     large_buckets: tuple[str, ...] = LARGE_BUCKETS,
 ) -> dict[str, pd.Series]:
     """of_df indexed by bar-start UTC with columns buy_vol/sell_vol/buy_count/
@@ -32,7 +32,7 @@ def orderflow_factors(
     buy_v, sell_v = df["buy_vol"], df["sell_vol"]
     buy_c, sell_c = df["buy_count"], df["sell_count"]
     total = df["total_vol"]
-    large_v = df[list(large_buckets)].sum(axis=1)
+    large_v = df[list(large_buckets)].sum(axis=1, min_count=1)
 
     feats = {
         "trade_imbalance": _safe_div(buy_v - sell_v, total),
