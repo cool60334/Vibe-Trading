@@ -7,6 +7,12 @@ buyer, fill at ask); True => aggressive SELL (taker is seller, fill at bid).
 """
 from __future__ import annotations
 
+import hashlib as _hashlib
+import json as _json
+import subprocess as _subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
 import polars as pl
 
 # USD-notional bucket edges (single-pass, look-ahead-safe). "Large trade" is
@@ -56,3 +62,55 @@ def aggregate(trades: pl.DataFrame, interval: str) -> pl.DataFrame:
         .sort("ts")
     )
     return out
+
+
+AGG_VERSION = 1
+
+
+def _git_sha() -> str:
+    try:
+        return _subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).parent, text=True
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def _logic_hash() -> str:
+    return _hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+
+
+def _cache_path(symbol: str, interval: str, dest_dir: Path) -> Path:
+    return Path(dest_dir) / f"of_{symbol}_{interval}_v{AGG_VERSION}.parquet"
+
+
+def write_cache(df: pl.DataFrame, symbol: str, interval: str, dest_dir: Path,
+                months: list | None = None, raw_checksums: dict | None = None) -> Path:
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    p = _cache_path(symbol, interval, dest_dir)
+    df.write_parquet(p)
+    meta = {
+        "version": AGG_VERSION,
+        "git_sha": _git_sha(),
+        "logic_hash": _logic_hash(),
+        "interval": interval,
+        "symbol": symbol,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "months": months or [],
+        "raw_checksums": raw_checksums or {},
+        "factor_columns": [c for c in df.columns if c != "ts"],
+    }
+    p.with_suffix(".meta.json").write_text(_json.dumps(meta, indent=2))
+    return p
+
+
+def read_cache(symbol: str, interval: str, dest_dir: Path) -> pl.DataFrame:
+    p = _cache_path(symbol, interval, dest_dir)
+    meta = _json.loads(p.with_suffix(".meta.json").read_text())
+    if meta.get("version") != AGG_VERSION:
+        raise ValueError(
+            f"cache version mismatch for {p.name}: meta={meta.get('version')} "
+            f"expected={AGG_VERSION} — re-run aggregation"
+        )
+    return pl.read_parquet(p)

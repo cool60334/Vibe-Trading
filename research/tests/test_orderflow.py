@@ -92,3 +92,30 @@ def test_usd_notional_buckets():
     assert out["vol_50_200k"] == pytest.approx(30.0)
     assert out["vol_gt200k"] == pytest.approx(200.0)
     assert out["vol_10_50k"] == pytest.approx(0.0)
+
+
+# append to research/tests/test_orderflow.py
+import json
+
+
+def test_cache_roundtrip_writes_meta(tmp_path):
+    df = orderflow.aggregate(_trades([(T0, 100.0, 1.0, False)]), "30m")
+    p = orderflow.write_cache(df, "eth", "30m", dest_dir=tmp_path)
+    meta = json.loads(p.with_suffix(".meta.json").read_text())
+    assert meta["version"] == orderflow.AGG_VERSION
+    assert meta["interval"] == "30m"
+    assert meta["symbol"] == "eth"
+    assert "logic_hash" in meta and "git_sha" in meta
+    loaded = orderflow.read_cache("eth", "30m", dest_dir=tmp_path)
+    assert loaded.height == df.height
+
+
+def test_read_cache_rejects_version_mismatch(tmp_path, monkeypatch):
+    df = orderflow.aggregate(_trades([(T0, 100.0, 1.0, False)]), "30m")
+    p = orderflow.write_cache(df, "eth", "30m", dest_dir=tmp_path)
+    meta_path = p.with_suffix(".meta.json")
+    meta = json.loads(meta_path.read_text())
+    meta["version"] = orderflow.AGG_VERSION + 99
+    meta_path.write_text(json.dumps(meta))
+    with pytest.raises(ValueError, match="version"):
+        orderflow.read_cache("eth", "30m", dest_dir=tmp_path)
