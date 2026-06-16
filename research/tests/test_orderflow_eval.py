@@ -65,3 +65,16 @@ def test_decay_profile_sufficient_sample():
     prof = decay_profile(factor, price, max_bars=5, min_obs=30)
     # IC at 1-bar should be meaningfully positive (80% hit-rate -> ~0.6+ spearman)
     assert prof[1] > 0.3
+
+
+from lib.orderflow_eval import quantile_returns
+
+
+def test_quantile_returns_monotone():
+    idx = pd.date_range("2025-01-01", periods=100, freq="15min", tz="UTC")
+    factor = pd.Series(np.linspace(-1, 1, 100), index=idx)
+    # next-bar return increases with the factor -> top bucket > bottom bucket
+    price = pd.Series(100 + np.cumsum(np.linspace(-1, 1, 100)), index=idx)
+    q = quantile_returns(factor, price, fwd_bars=1, n_q=5)
+    assert q.index.tolist() == [0, 1, 2, 3, 4]
+    assert q.iloc[-1] > q.iloc[0]  # monotone increasing

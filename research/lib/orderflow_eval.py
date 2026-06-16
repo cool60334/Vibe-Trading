@@ -86,3 +86,32 @@ def half_life_bars(profile: dict[int, float]) -> int | None:
         if abs(profile[k]) < threshold:
             return k
     return None
+
+
+def quantile_returns(
+    factor: pd.Series, price: pd.Series, fwd_bars: int, n_q: int
+) -> pd.Series:
+    """Mean k-bar-forward return per factor quantile bucket (0..n_q-1).
+
+    Parameters
+    ----------
+    factor:
+        Signal Series aligned to `price`.
+    price:
+        Close-price Series (same index as `factor`).
+    fwd_bars:
+        Number of bars ahead to measure the forward return.
+    n_q:
+        Number of quantile buckets.  Note: if `factor` has many duplicate
+        values, ``pd.qcut`` may yield fewer than ``n_q`` buckets.
+
+    Returns
+    -------
+    pd.Series indexed by quantile label (integer 0..n_q-1), values are mean
+    forward returns.  A monotonically increasing series indicates that higher
+    factor values predict higher subsequent returns.
+    """
+    fwd = _fwd_return(price, fwd_bars)
+    df = pd.concat([factor.rename("f"), fwd.rename("r")], axis=1).dropna()
+    df["q"] = pd.qcut(df["f"], n_q, labels=False, duplicates="drop")
+    return df.groupby("q")["r"].mean()
