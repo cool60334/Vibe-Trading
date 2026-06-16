@@ -236,7 +236,7 @@ Expected: prints the CSV filename and first line. **Confirm column order + wheth
 - Create: `research/lib/orderflow.py`
 - Test: `research/tests/test_orderflow.py`
 
-**Per-bar primitive columns produced:** `ts` (bar open, UTC, tz-aware), `buy_vol`, `sell_vol`, `buy_count`, `sell_count`, `total_vol`, `open`, `close`, `large_vol` (volume from trades with `quantity > LARGE_NOTIONAL`). Bucketing is `[T, T+interval)` left-closed, right-open. `LARGE_NOTIONAL` is a module constant (POC: fixed-notional threshold; see Plan note on rolling-quantile refinement).
+**Per-bar primitive columns produced:** `ts` (bar open, UTC, tz-aware), `buy_vol`, `sell_vol`, `buy_count`, `sell_count`, `total_vol`, `open`, `close`, and **four USD-notional bucket volumes** `vol_lt10k`, `vol_10_50k`, `vol_50_200k`, `vol_gt200k` (per-trade USD notional = `price * quantity`; the bucket value is the summed ETH `quantity`). Bucketing trades into bars is `[T, T+interval)` left-closed, right-open. The USD-notional binning is single-pass and look-ahead-safe; "large trade" is composed downstream (Task 5) by summing buckets above a chosen edge — so the threshold can be re-tuned without re-scanning raw. Bucket edges are module constants `BUCKET_EDGES_USD = (10_000, 50_000, 200_000)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -323,13 +323,18 @@ def test_empty_bar_has_no_zero_division_and_open_close_set():
     assert out["close"] == pytest.approx(110.0)
 
 
-def test_large_vol_uses_notional_threshold():
+def test_usd_notional_buckets():
+    # price 2000 USD/ETH: 30 ETH = $60k -> 50_200k bucket; 2 ETH = $4k -> lt10k
     df = _trades([
-        (T0, 100.0, orderflow.LARGE_NOTIONAL + 1.0, False),  # large
-        (T0 + MIN, 100.0, 1.0, False),                       # small
+        (T0, 2000.0, 30.0, False),   # $60k -> vol_50_200k
+        (T0 + MIN, 2000.0, 2.0, False),  # $4k -> vol_lt10k
+        (T0 + 2 * MIN, 2000.0, 200.0, True),  # $400k -> vol_gt200k
     ])
     out = orderflow.aggregate(df, "30m").row(0, named=True)
-    assert out["large_vol"] == pytest.approx(orderflow.LARGE_NOTIONAL + 1.0)
+    assert out["vol_lt10k"] == pytest.approx(2.0)
+    assert out["vol_50_200k"] == pytest.approx(30.0)
+    assert out["vol_gt200k"] == pytest.approx(200.0)
+    assert out["vol_10_50k"] == pytest.approx(0.0)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -351,9 +356,10 @@ from __future__ import annotations
 
 import polars as pl
 
-# POC: fixed-notional "large trade" threshold (single-pass, look-ahead-safe).
-# Rolling-quantile is a documented refinement (see plan / spec §4).
-LARGE_NOTIONAL = 50.0  # ETH per single aggTrade
+# USD-notional bucket edges (single-pass, look-ahead-safe). "Large trade" is
+# composed downstream by summing buckets above a chosen edge (Task 5), so the
+# threshold re-tunes without re-scanning raw.
+BUCKET_EDGES_USD = (10_000.0, 50_000.0, 200_000.0)
 
 _INTERVAL_MS = {"15m": 15 * 60_000, "30m": 30 * 60_000, "1H": 60 * 60_000}
 
@@ -365,11 +371,13 @@ def aggregate(trades: pl.DataFrame, interval: str) -> pl.DataFrame:
     df = trades
     if "agg_trade_id" in df.columns:
         df = df.unique(subset=["agg_trade_id"], keep="first")
+    df = df.sort("transact_time")  # open/close depend on time order
 
+    e1, e2, e3 = BUCKET_EDGES_USD
     df = df.with_columns(
-        # floor to bar start (ms), then to UTC datetime
         ((pl.col("transact_time") // step) * step).alias("_bar_ms"),
         (~pl.col("is_buyer_maker")).alias("_is_buy"),
+        (pl.col("price") * pl.col("quantity")).alias("_usd"),
     )
 
     out = (
@@ -382,13 +390,15 @@ def aggregate(trades: pl.DataFrame, interval: str) -> pl.DataFrame:
             pl.col("quantity").sum().alias("total_vol"),
             pl.col("price").first().alias("open"),
             pl.col("price").last().alias("close"),
-            pl.col("quantity").filter(pl.col("quantity") > LARGE_NOTIONAL).sum().alias("large_vol"),
+            pl.col("quantity").filter(pl.col("_usd") < e1).sum().alias("vol_lt10k"),
+            pl.col("quantity").filter((pl.col("_usd") >= e1) & (pl.col("_usd") < e2)).sum().alias("vol_10_50k"),
+            pl.col("quantity").filter((pl.col("_usd") >= e2) & (pl.col("_usd") < e3)).sum().alias("vol_50_200k"),
+            pl.col("quantity").filter(pl.col("_usd") >= e3).sum().alias("vol_gt200k"),
         )
         .with_columns(
             pl.col("_bar_ms").cast(pl.Datetime("ms")).dt.replace_time_zone("UTC").alias("ts"),
-            pl.col("buy_vol").fill_null(0.0),
-            pl.col("sell_vol").fill_null(0.0),
-            pl.col("large_vol").fill_null(0.0),
+            *[pl.col(c).fill_null(0.0) for c in
+              ("buy_vol", "sell_vol", "vol_lt10k", "vol_10_50k", "vol_50_200k", "vol_gt200k")],
         )
         .drop("_bar_ms")
         .sort("ts")
@@ -396,7 +406,7 @@ def aggregate(trades: pl.DataFrame, interval: str) -> pl.DataFrame:
     return out
 ```
 
-Note: `price.first()`/`last()` after group_by is order-dependent — ensure input is time-sorted. Add `df = df.sort("transact_time")` before the group_by if the dump is not guaranteed sorted.
+Note: `df.sort("transact_time")` (included above) makes `price.first()`/`last()` give true bar open/close.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -540,7 +550,7 @@ git commit -m "feat(orderflow): versioned parquet cache with meta + version guar
 **Output Series (aligned to candle_idx, pandas):**
 - `trade_imbalance` = (buy_vol − sell_vol) / total_vol, NaN when total_vol == 0
 - `trade_count_imbalance` = (buy_count − sell_count) / (buy_count + sell_count), NaN when 0
-- `large_trade_ratio` = large_vol / total_vol, NaN when total_vol == 0
+- `large_trade_ratio` = (sum of `LARGE_BUCKETS`) / total_vol, NaN when total_vol == 0. Default `LARGE_BUCKETS = ("vol_50_200k", "vol_gt200k")` → "large" = trades > $50k USD notional.
 - `price_impact` = (close − open) / total_vol, NaN when total_vol == 0
 
 (All four are already stationary/bounded-ish; no z-score needed for the imbalance/ratio. `price_impact` may be z-scored by the IC-eval transform layer if needed — keep raw here.)
@@ -564,19 +574,22 @@ def test_trade_imbalance_basic():
     idx = pd.to_datetime(["2025-01-01 00:00", "2025-01-01 00:30"], utc=True)
     of = _of_df(idx, buy_vol=[3.0, 1.0], sell_vol=[1.0, 1.0],
                buy_count=[2, 1], sell_count=[1, 1],
-               total_vol=[4.0, 2.0], large_vol=[2.0, 0.0],
+               total_vol=[4.0, 2.0],
+               vol_lt10k=[2.0, 2.0], vol_10_50k=[0.0, 0.0],
+               vol_50_200k=[2.0, 0.0], vol_gt200k=[0.0, 0.0],
                open=[100.0, 101.0], close=[101.0, 101.0])
     out = orderflow_factors(of, idx, "30m")
     assert out["trade_imbalance"].iloc[0] == pytest.approx(0.5)   # (3-1)/4
     assert out["trade_count_imbalance"].iloc[0] == pytest.approx(1/3)  # (2-1)/3
-    assert out["large_trade_ratio"].iloc[0] == pytest.approx(0.5)  # 2/4
+    assert out["large_trade_ratio"].iloc[0] == pytest.approx(0.5)  # (2+0)/4, edge >$50k
     assert out["price_impact"].iloc[0] == pytest.approx(0.25)      # (101-100)/4
 
 
 def test_zero_volume_bar_yields_nan_not_inf():
     idx = pd.to_datetime(["2025-01-01 00:00"], utc=True)
     of = _of_df(idx, buy_vol=[0.0], sell_vol=[0.0], buy_count=[0], sell_count=[0],
-               total_vol=[0.0], large_vol=[0.0], open=[100.0], close=[100.0])
+               total_vol=[0.0], vol_lt10k=[0.0], vol_10_50k=[0.0],
+               vol_50_200k=[0.0], vol_gt200k=[0.0], open=[100.0], close=[100.0])
     out = orderflow_factors(of, idx, "30m")
     assert np.isnan(out["trade_imbalance"].iloc[0])
     assert np.isnan(out["trade_count_imbalance"].iloc[0])
@@ -586,7 +599,8 @@ def test_zero_volume_bar_yields_nan_not_inf():
 def test_reindexes_to_candle_index():
     of_idx = pd.to_datetime(["2025-01-01 00:00"], utc=True)
     of = _of_df(of_idx, buy_vol=[2.0], sell_vol=[0.0], buy_count=[1], sell_count=[0],
-               total_vol=[2.0], large_vol=[0.0], open=[100.0], close=[100.0])
+               total_vol=[2.0], vol_lt10k=[2.0], vol_10_50k=[0.0],
+               vol_50_200k=[0.0], vol_gt200k=[0.0], open=[100.0], close=[100.0])
     candle_idx = pd.to_datetime(
         ["2025-01-01 00:00", "2025-01-01 00:30"], utc=True
     )  # second bar absent in `of`
@@ -616,26 +630,34 @@ import numpy as np
 import pandas as pd
 
 
+# Default "large trade" = > $50k USD notional == these two bucket columns.
+LARGE_BUCKETS = ("vol_50_200k", "vol_gt200k")
+
+
 def _safe_div(num: pd.Series, den: pd.Series) -> pd.Series:
     return num / den.where(den != 0, np.nan)
 
 
 def orderflow_factors(
-    of_df: pd.DataFrame, candle_idx: pd.DatetimeIndex, interval: str
+    of_df: pd.DataFrame, candle_idx: pd.DatetimeIndex, interval: str,
+    large_buckets: tuple[str, ...] = LARGE_BUCKETS,
 ) -> dict[str, pd.Series]:
     """of_df indexed by bar-start UTC with columns buy_vol/sell_vol/buy_count/
-    sell_count/total_vol/large_vol/open/close. Returns 4 factor Series reindexed
-    to candle_idx (missing bars -> NaN, never ffill)."""
+    sell_count/total_vol/open/close + USD-notional bucket volumes
+    (vol_lt10k/vol_10_50k/vol_50_200k/vol_gt200k). Returns 4 factor Series
+    reindexed to candle_idx (missing bars -> NaN, never ffill). `large_buckets`
+    selects which buckets count as "large" (default > $50k)."""
     df = of_df.reindex(candle_idx)
 
     buy_v, sell_v = df["buy_vol"], df["sell_vol"]
     buy_c, sell_c = df["buy_count"], df["sell_count"]
     total = df["total_vol"]
+    large_v = df[list(large_buckets)].sum(axis=1)
 
     feats = {
         "trade_imbalance": _safe_div(buy_v - sell_v, total),
         "trade_count_imbalance": _safe_div(buy_c - sell_c, buy_c + sell_c),
-        "large_trade_ratio": _safe_div(df["large_vol"], total),
+        "large_trade_ratio": _safe_div(large_v, total),
         "price_impact": _safe_div(df["close"] - df["open"], total),
     }
     for name, s in feats.items():
@@ -691,7 +713,9 @@ def _orderflow_df(idx):
         {
             "buy_vol": 5.0 + sign, "sell_vol": 5.0 - sign,
             "buy_count": 5, "sell_count": 5,
-            "total_vol": 10.0, "large_vol": 2.0,
+            "total_vol": 10.0,
+            "vol_lt10k": 8.0, "vol_10_50k": 0.0,
+            "vol_50_200k": 2.0, "vol_gt200k": 0.0,
             "open": 100.0, "close": 100.0 + sign,
         },
         index=idx,
@@ -870,5 +894,5 @@ Expected: pairwise |corr| < 0.85. If two factors are collinear, drop one before 
 ## Plan Self-Review Notes
 
 - **Spec coverage:** §2 architecture → Tasks 3–6; §3 components → Tasks 2–6; §4 factors → Task 5; §5 storage/versioning → Tasks 1,4; §6 tests → every task; §7 engineering pitfalls (memory/tz/dedup/empty-bar) → Tasks 3,4; §8 go/no-go → Task 7. Component 5 (sources.py registry entry) is **deliberately omitted** — spec §3 marks it POC-optional (features get IC'd via the dict, not via stage0 candidates); add it only when promoting to discovery.
-- **Deviation flagged:** `rolling_large_trade_ratio` (spec §4 primary) is implemented as a **fixed-notional threshold** (`LARGE_NOTIONAL = 50 ETH`) in Task 3 for single-pass simplicity. Still look-ahead-safe (constant threshold). Rolling-quantile remains a documented refinement; revisit if `large_trade_ratio` shows promise. **Confirm this is acceptable with the user.**
+- **Resolved decision (user + gemini, 2026-06-16):** `large_trade_ratio` uses **USD-notional bar-level binning**, not a rolling per-trade quantile (spec §4 original) nor a fixed ETH-count threshold. Aggregator emits four single-pass, look-ahead-safe USD buckets (`<$10k / $10-50k / $50-200k / >$200k`, edges `BUCKET_EDGES_USD`); the family composes "large" by summing buckets above a chosen edge, default **> $50k** (`LARGE_BUCKETS = ("vol_50_200k","vol_gt200k")`). This re-tunes the large threshold without re-scanning raw, and USD-denominates it so it doesn't drift with ETH price. Rolling-quantile remains a possible later refinement.
 - **Unverified externals (confirm during Task 2 Step 6):** exact aggTrades CSV column order + header-row presence; Polars `group_by` ordering for `open`/`close` (mitigated by the `sort` note in Task 3 Step 3).

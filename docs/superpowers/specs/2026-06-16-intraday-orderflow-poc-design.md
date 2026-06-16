@@ -90,7 +90,7 @@ aggTrades 欄位:`agg_trade_id`、`price`、`quantity`、`transact_time`(ms)、`
 |---|---|---|---|
 | `trade_imbalance` | (主動買量 − 主動賣量) / (買 + 賣),範圍 [−1,1] | 量的多空失衡,歸一化 | 對極端穩、利 cross-regime |
 | `trade_count_imbalance` | (主動買**筆數** − 賣筆數) / 總筆數,[−1,1] | 筆數失衡(≠量失衡)。量易被單鯨干擾,筆數反映散戶 vs 機構博弈 | IC 常更穩 |
-| `rolling_large_trade_ratio` | 大單(> 過去 48-bar **rolling 分位**,預設此法;固定 notional 門檻為備案)佔本 bar 量比 | 大戶/知情單佔比 | **必用 rolling 分位**防前視 |
+| `large_trade_ratio` | 大單量 / 本 bar 總量。大單 = **USD-notional 分桶**(`<$10k/$10-50k/$50-200k/>$200k`,單筆 USD=price×qty),預設 edge **>$50k**(取高二桶) | 大戶/知情單佔比 | **bar-level USD binning**:單遍掃 raw、look-ahead-safe、不用回頭掃 raw 即可改門檻、USD 計價不隨幣價漂移 |
 | `price_impact` | bar 報酬 / bar 總量(Kyle-λ proxy) | 單位量推價力;小量大幅推價 = 流動性枯竭/知情流 | 與前三不共線 |
 
 ### 設計重點
