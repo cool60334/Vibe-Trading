@@ -27,6 +27,8 @@ _INTERVAL_MS = {"15m": 15 * 60_000, "30m": 30 * 60_000, "1H": 60 * 60_000}
 def aggregate(trades: pl.DataFrame, interval: str) -> pl.DataFrame:
     """raw aggTrades -> per-bar primitives. `trades` needs columns
     transact_time (ms), price, quantity, is_buyer_maker (+ optional agg_trade_id)."""
+    if interval not in _INTERVAL_MS:
+        raise ValueError(f"unsupported interval {interval!r}; supported: {list(_INTERVAL_MS)}")
     step = _INTERVAL_MS[interval]
     df = trades.sort("transact_time")  # ensure "first" in dedup = earliest by time
     if "agg_trade_id" in df.columns:
