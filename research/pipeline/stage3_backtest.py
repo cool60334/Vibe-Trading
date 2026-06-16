@@ -518,6 +518,53 @@ def write_archetype_misfit_sentinel(
     print(f"  [misfit] wrote sentinel: {out_path}")
 
 
+#: Sentinel filename written when a strategy's base run is skipped because its
+#: factor/column is absent at the configured interval.
+MISSING_FACTOR_SENTINEL = "missing_factor.json"
+
+
+def write_missing_factor_sentinel(
+    manifests_dir: Path,
+    strategy_id: str,
+    interval: str | None = None,
+) -> None:
+    """Write manifests/<strategy_id>/missing_factor.json sentinel.
+
+    Called when a base run is skipped because its signal engine references a
+    factor/column that is absent at the configured interval. stage 3-diag (a
+    separate process that only sees the filesystem) reads this sentinel to know
+    the missing metrics.csv is a deliberate interval-skip — a SKIP, not a FAIL.
+
+    Args:
+        manifests_dir: research/manifests/ directory.
+        strategy_id:   Strategy identifier (directory name under manifests/).
+        interval:      The interval at which the factor was absent (for payload).
+    """
+    sentinel = {
+        "missing_factor": True,
+        "reason": "signal engine references a factor/column absent at this interval",
+        "interval": interval,
+    }
+    out_dir = manifests_dir / strategy_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / MISSING_FACTOR_SENTINEL
+    out_path.write_text(json.dumps(sentinel, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"  [missing_factor] wrote sentinel: {out_path}")
+
+
+def clear_missing_factor_sentinel(manifests_dir: Path, strategy_id: str) -> None:
+    """Remove a stale manifests/<strategy_id>/missing_factor.json sentinel.
+
+    Called when a base run executes (factor present) so a sentinel left over
+    from a previous interval cannot mask a genuine missing-metrics failure in
+    stage 3-diag. No-op when the sentinel is absent.
+    """
+    out_path = manifests_dir / strategy_id / MISSING_FACTOR_SENTINEL
+    if out_path.exists():
+        out_path.unlink()
+        print(f"  [missing_factor] cleared stale sentinel: {out_path}")
+
+
 def compute_exit_code(results: list[BacktestRunResult]) -> int:
     """Return 0 if at least one result was produced and all are ok; 1 otherwise.
 
@@ -927,19 +974,28 @@ def main() -> None:
                 )
                 print(f"  [ERROR] {run_name}: {exc}")
 
-            # After a successful base run, evaluate the misfit guard.
-            if role == "base" and result.ok:
-                base_run_dir = runs_root / run_name
-                if check_archetype_misfit(base_run_dir):
-                    strategy_misfit = True
-                    result = dataclasses.replace(result, archetype_misfit=True)
-                    print(
-                        f"\n[stage3] {strategy_id}: archetype_misfit — "
-                        f"skipping regime runs"
-                    )
-                    write_archetype_misfit_sentinel(manifests_dir, strategy_id, base_run_dir)
-                else:
-                    stress_eligible.append((strategy_id, symbol))
+            # After the base run, manage the missing-factor sentinel and, when
+            # the run actually executed, evaluate the misfit guard.
+            if role == "base":
+                if result.skipped_missing_factor:
+                    # Base run skipped (factor absent at interval). Leave a
+                    # sentinel so stage 3-diag treats the missing metrics.csv as
+                    # a SKIP rather than a FAIL. Don't run the misfit check or
+                    # mark the strategy stress-eligible — there are no metrics.
+                    write_missing_factor_sentinel(manifests_dir, strategy_id, cfg.interval)
+                elif result.ok:
+                    clear_missing_factor_sentinel(manifests_dir, strategy_id)
+                    base_run_dir = runs_root / run_name
+                    if check_archetype_misfit(base_run_dir):
+                        strategy_misfit = True
+                        result = dataclasses.replace(result, archetype_misfit=True)
+                        print(
+                            f"\n[stage3] {strategy_id}: archetype_misfit — "
+                            f"skipping regime runs"
+                        )
+                        write_archetype_misfit_sentinel(manifests_dir, strategy_id, base_run_dir)
+                    else:
+                        stress_eligible.append((strategy_id, symbol))
 
             all_results.append(result)
 

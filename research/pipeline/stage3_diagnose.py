@@ -94,9 +94,23 @@ class DiagnosisCheckResult:
     strategy_id: str
     ok: bool
     error: str | None = None  # description if ok=False
+    skipped: bool = False  # True when deliberately skipped (e.g. factor absent at interval)
 
 
 # ─── Pure-logic helpers (testable, no subprocess/filesystem) ─────────────────
+
+
+def is_missing_factor_skip(manifests_dir: Path, strategy_id: str) -> bool:
+    """Return True if stage 3 left a missing_factor.json sentinel for this strategy.
+
+    The sentinel means the base run was deliberately skipped because its factor
+    is absent at the configured interval, so the absent metrics.csv is expected.
+
+    Args:
+        manifests_dir: research/manifests/ directory.
+        strategy_id:   Strategy identifier (directory name under manifests/).
+    """
+    return (manifests_dir / strategy_id / "missing_factor.json").exists()
 
 
 def read_metrics_csv(metrics_csv: Path) -> dict | None:
@@ -600,10 +614,14 @@ def print_summary(results: list[DiagnosisCheckResult]) -> None:
         print("  (no strategies were diagnosed)")
 
     for r in results:
-        status = "OK" if r.ok else "FAIL"
-        if r.ok:
+        if r.skipped:
+            status = "SKIP"
+            msg = r.error or "skipped"
+        elif r.ok:
+            status = "OK"
             msg = "diagnosis.json present and valid"
         else:
+            status = "FAIL"
             msg = f"FAILED — {r.error}"
         print(f"  [{status}] {r.strategy_id}: {msg}")
 
@@ -694,6 +712,16 @@ def _diagnose_strategy(
     # ── Gate: base_run metrics.csv must exist ─────────────────────────────────
     base_metrics_path = runs_root / entry.base_run / "artifacts" / "metrics.csv"
     if not base_metrics_path.exists():
+        # stage 3 leaves a missing_factor.json sentinel when it deliberately
+        # skips a base run because its factor is absent at the configured
+        # interval. Mirror that graceful-skip here so one interval-incompatible
+        # strategy doesn't fail the whole diagnosis stage.
+        if is_missing_factor_skip(manifests_dir, strategy_id):
+            msg = f"{strategy_id}: factor absent at this interval (skipped)"
+            print(f"  [SKIP] {msg}")
+            return DiagnosisCheckResult(
+                strategy_id=strategy_id, ok=True, skipped=True, error=msg
+            )
         msg = f"metrics.csv missing for base_run '{entry.base_run}': {base_metrics_path}"
         print(f"  [SKIP] {msg}")
         return DiagnosisCheckResult(strategy_id=strategy_id, ok=False, error=msg)
@@ -831,7 +859,10 @@ def main() -> None:
     runs_map: StrategyRunsMap = load_strategy_runs()
 
     runs_root = _REPO_ROOT / "runs"
-    manifests_dir = _REPO_ROOT / "research" / "manifests"
+    # Honor the active interval so sub-hour runs read manifests/<interval>/
+    # (sentinels, optimization.json, regime windows). Base for 1H/unset.
+    from lib.timeframe import active_manifests_dir  # noqa: PLC0415
+    manifests_dir = active_manifests_dir()
 
     print("=" * 60)
     print("Stage 3 — Backtest Diagnosis")
