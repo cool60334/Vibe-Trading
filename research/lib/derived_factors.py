@@ -32,3 +32,27 @@ def oi_factors(oi_on_candle: pd.Series, close: pd.Series) -> dict[str, pd.Series
     oi_price_divergence = oi_on_candle.pct_change(24) * close.pct_change(24)
     oi_mom = oi_on_candle.pct_change(OI_MOM_HOURS)
     return {"oi_z": oi_z, "oi_price_divergence": oi_price_divergence, "oi_mom": oi_mom}
+
+
+def positioning_factors(oi: pd.DataFrame, candle_idx: pd.Index) -> dict[str, pd.Series]:
+    """Long/short positioning factors from the Binance OI/L-S archive columns.
+
+    Each ratio is 30-day rolling z-scored on its native 1H index, then reindexed
+    to the candle grid with NO ffill — gap hours stay NaN so screening IC isn't
+    inflated. ``ls_divergence`` = retail z − smart-money z (rank-2 with the two
+    z's; downstream ensembles must not combine all three — see spec).
+    """
+    out: dict[str, pd.Series] = {}
+    if "global_ls_accounts" in oi.columns:
+        out["global_ls_acct_z"] = _rolling_z(
+            oi["global_ls_accounts"], SCREEN_ZSCORE_DAYS * 24
+        ).reindex(candle_idx)
+    # toptrader_ls_accounts (by account count) is excluded — spec uses the
+    # position-weighted ratio (toptrader_ls_positions) which better reflects PnL.
+    if "toptrader_ls_positions" in oi.columns:
+        out["toptrader_ls_z"] = _rolling_z(
+            oi["toptrader_ls_positions"], SCREEN_ZSCORE_DAYS * 24
+        ).reindex(candle_idx)
+    if "global_ls_acct_z" in out and "toptrader_ls_z" in out:
+        out["ls_divergence"] = out["global_ls_acct_z"] - out["toptrader_ls_z"]
+    return out

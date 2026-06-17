@@ -173,3 +173,46 @@ def test_oi_no_lookahead():
         v_trunc = trunc[key].iloc[-1]
         assert abs(v_full - v_trunc) < 1e-12 or (np.isnan(v_full) and np.isnan(v_trunc)), \
             f"look-ahead detected in {key}"
+
+
+# ─── positioning_factors ──────────────────────────────────────────────────────
+
+from lib.derived_factors import positioning_factors
+
+
+def _oi_frame(n=800):
+    idx = pd.date_range("2022-01-01", periods=n, freq="h", tz="UTC")
+    return pd.DataFrame(
+        {
+            "global_ls_accounts": np.linspace(1.0, 2.0, n),
+            "toptrader_ls_positions": np.linspace(2.0, 1.0, n),
+        },
+        index=idx,
+    )
+
+
+def test_positioning_factors_emits_three_columns():
+    oi = _oi_frame()
+    out = positioning_factors(oi, oi.index)
+    assert set(out) == {"global_ls_acct_z", "toptrader_ls_z", "ls_divergence"}
+
+
+def test_positioning_factors_divergence_is_difference_of_zs():
+    oi = _oi_frame()
+    out = positioning_factors(oi, oi.index)
+    expected = out["global_ls_acct_z"] - out["toptrader_ls_z"]
+    pd.testing.assert_series_equal(out["ls_divergence"], expected, check_names=False)
+
+
+def test_positioning_factors_missing_column_guard():
+    oi = _oi_frame()[["global_ls_accounts"]]  # no toptrader column
+    out = positioning_factors(oi, oi.index)
+    assert set(out) == {"global_ls_acct_z"}  # no toptrader, hence no divergence
+
+
+def test_positioning_factors_reindex_no_ffill():
+    oi = _oi_frame()
+    # candle grid extends 24h past the OI data → those hours must stay NaN
+    candle_idx = pd.date_range("2022-01-01", periods=824, freq="h", tz="UTC")
+    out = positioning_factors(oi, candle_idx)
+    assert out["global_ls_acct_z"].iloc[800:].isna().all()
