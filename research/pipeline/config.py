@@ -46,6 +46,11 @@ class SymbolConfig:
         """Filename/directory prefix, guaranteed lowercase with trailing underscore (e.g. 'btc_')."""
         return self.name + "_"
 
+    @property
+    def binance_usdt(self) -> str:
+        """Binance USDT-perp ticker (e.g. 'BTCUSDT') for the daily-metrics archive."""
+        return f"{self.name.upper()}USDT"
+
 
 @dataclasses.dataclass(frozen=True)
 class FeesConfig:

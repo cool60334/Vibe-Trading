@@ -555,3 +555,13 @@ def test_1H_profile_leaves_pool_and_horizons_untouched(monkeypatch):
     # 1H keeps the YAML horizons and base pool — no intraday factors.
     assert "mom_8" not in cfg.indicator_pool
     assert all(f not in cfg.indicator_pool for f in _INTRADAY_FACTORS)
+
+
+# ─── Unit: binance_usdt property ──────────────────────────────────────────────
+
+def test_symbolconfig_binance_usdt():
+    from pipeline.config import SymbolConfig
+    s = SymbolConfig(name="btc", okx_swap="BTC-USDT-SWAP", ccxt_bybit="BTC/USDT:USDT")
+    assert s.binance_usdt == "BTCUSDT"
+    s2 = SymbolConfig(name="eth", okx_swap="ETH-USDT-SWAP", ccxt_bybit="ETH/USDT:USDT")
+    assert s2.binance_usdt == "ETHUSDT"
