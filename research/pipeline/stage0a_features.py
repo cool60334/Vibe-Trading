@@ -254,10 +254,20 @@ def build_feature_dict(
         features["funding_rate_raw"] = funding_on_candle
 
     # ── oi_change_24h ─────────────────────────────────────────────────────────
+    # Prefer the multi-year Binance archive OI (oi_ls_df['oi']) over the dead
+    # 7-day Bybit oi_df; Bybit is the fallback when the archive parquet is absent.
     oi_on_candle: pd.Series | None = None
-    _oi_col = next((c for c in ("open_interest", "oi") if oi_df is not None and c in oi_df.columns), None)
-    if oi_df is not None and not oi_df.empty and _oi_col is not None:
-        oi_on_candle = oi_df[_oi_col].reindex(candle_idx, method="ffill")
+    _oi_source = (
+        oi_ls_df
+        if (oi_ls_df is not None and not oi_ls_df.empty and "oi" in oi_ls_df.columns)
+        else oi_df
+    )
+    _oi_col = next(
+        (c for c in ("open_interest", "oi") if _oi_source is not None and c in _oi_source.columns),
+        None,
+    )
+    if _oi_source is not None and not _oi_source.empty and _oi_col is not None:
+        oi_on_candle = _oi_source[_oi_col].reindex(candle_idx, method="ffill")
         oi_change = oi_on_candle.pct_change(periods=24 * bph)
         oi_change.name = "oi_change_24h"
         features["oi_change_24h"] = oi_change

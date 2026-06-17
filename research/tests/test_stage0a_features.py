@@ -589,3 +589,47 @@ def test_build_feature_dict_omits_positioning_when_absent():
     feats = build_feature_dict(_candles(), cfg)  # no oi_ls_df → 1H regression guard
     assert "global_ls_acct_z" not in feats
     assert "ls_divergence" not in feats
+
+
+# ── OI-factor revival: source oi_factors/oi_change_24h from the multi-year ─────
+#    Binance archive parquet (oi_ls_df['oi']) instead of the dead 7-day Bybit oi_df.
+
+
+def _archive_oi_ls(n=800):
+    """OI/L-S parquet shape WITH an 'oi' column (varying → nonzero oi_change_24h)."""
+    idx = pd.date_range("2022-01-01", periods=n, freq="h", tz="UTC")
+    return pd.DataFrame(
+        {"global_ls_accounts": np.linspace(1.0, 2.0, n),
+         "toptrader_ls_positions": np.linspace(2.0, 1.0, n),
+         "oi": np.linspace(1000.0, 2000.0, n)},
+        index=idx,
+    )
+
+
+def test_oi_factors_sourced_from_archive_when_present():
+    cfg = load_config()
+    # No Bybit oi_df → oi factors can only come from the archive parquet's 'oi'.
+    feats = build_feature_dict(_candles(), cfg, oi_ls_df=_archive_oi_ls())
+    assert "oi_z" in feats
+    assert "oi_mom" in feats
+    assert "oi_change_24h" in feats
+
+
+def test_oi_factors_fallback_to_bybit_when_no_archive():
+    cfg = load_config()
+    idx = pd.date_range("2022-01-01", periods=800, freq="h", tz="UTC")
+    bybit_oi = pd.DataFrame({"oi": np.linspace(500.0, 1000.0, 800)}, index=idx)
+    feats = build_feature_dict(_candles(), cfg, oi_df=bybit_oi)  # no oi_ls_df
+    assert "oi_z" in feats
+    assert "oi_change_24h" in feats
+
+
+def test_oi_source_prefers_archive_over_bybit():
+    cfg = load_config()
+    idx = pd.date_range("2022-01-01", periods=800, freq="h", tz="UTC")
+    bybit_oi = pd.DataFrame({"oi": np.full(800, 500.0)}, index=idx)  # constant → change == 0
+    feats = build_feature_dict(
+        _candles(), cfg, oi_df=bybit_oi, oi_ls_df=_archive_oi_ls()    # archive varies → change != 0
+    )
+    changes = feats["oi_change_24h"].dropna()
+    assert (changes.abs() > 0).any()  # nonzero ⇒ archive (varying) used, not Bybit (constant)
