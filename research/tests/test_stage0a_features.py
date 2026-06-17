@@ -542,3 +542,50 @@ class TestDerivedFactors:
             assert actual_cat == expected_cat, (
                 f"'{key}': expected category '{expected_cat}', got '{actual_cat}'"
             )
+
+
+# ─── Positioning factor tests ──────────────────────────────────────────────────
+
+import numpy as np
+import pandas as pd
+from pipeline.config import load_config
+from pipeline.stage0a_features import build_feature_dict, _FACTOR_SOURCE
+
+
+def _candles(n=800):
+    idx = pd.date_range("2022-01-01", periods=n, freq="h", tz="UTC")
+    base = np.linspace(100.0, 200.0, n)
+    return pd.DataFrame(
+        {"open": base, "high": base * 1.01, "low": base * 0.99,
+         "close": base, "volume": np.full(n, 10.0)},
+        index=idx,
+    )
+
+
+def _oi_ls(n=800):
+    idx = pd.date_range("2022-01-01", periods=n, freq="h", tz="UTC")
+    return pd.DataFrame(
+        {"global_ls_accounts": np.linspace(1.0, 2.0, n),
+         "toptrader_ls_positions": np.linspace(2.0, 1.0, n)},
+        index=idx,
+    )
+
+
+def test_factor_source_has_positioning():
+    for f in ("global_ls_acct_z", "toptrader_ls_z", "ls_divergence"):
+        assert _FACTOR_SOURCE[f] == "positioning"
+
+
+def test_build_feature_dict_includes_positioning_when_present():
+    cfg = load_config()
+    feats = build_feature_dict(_candles(), cfg, oi_ls_df=_oi_ls())
+    assert "global_ls_acct_z" in feats
+    assert "toptrader_ls_z" in feats
+    assert "ls_divergence" in feats
+
+
+def test_build_feature_dict_omits_positioning_when_absent():
+    cfg = load_config()
+    feats = build_feature_dict(_candles(), cfg)  # no oi_ls_df → 1H regression guard
+    assert "global_ls_acct_z" not in feats
+    assert "ls_divergence" not in feats
