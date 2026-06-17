@@ -65,7 +65,7 @@ from pipeline.config import ResearchConfig, SymbolConfig, load_config
 from lib.indicators import compute_indicator_pool
 from lib.factor_io import dump_features, dump_evidence
 from lib.factor_metrics import add_forward_returns, evaluate_factor, FactorResult
-from lib.derived_factors import basis_factors, funding_factors, oi_factors
+from lib.derived_factors import basis_factors, funding_factors, oi_factors, positioning_factors
 from lib.orderflow_factors import orderflow_factors
 from lib.timeframe import bars_per_hour
 
@@ -124,9 +124,19 @@ _INDICATOR_CATEGORY: dict[str, str] = {
     "trade_count_imbalance": "orderflow",
     "large_trade_ratio": "orderflow",
     "price_impact": "orderflow",
+    # positioning (Binance OI/L-S archive)
+    "global_ls_acct_z": "positioning",
+    "toptrader_ls_z": "positioning",
+    "ls_divergence": "positioning",
 }
 
+# Test-visible alias for _INDICATOR_CATEGORY
+_FACTOR_SOURCE = _INDICATOR_CATEGORY
+
 _NON_PRICE_FEATURES = {"funding_rate_raw", "oi_change_24h", "stablecoin_supply_z"}
+# Positioning z's (global_ls_acct_z etc.) are intentionally absent: they are
+# already stationary (rolling z-score) and 1H-native, so no IC-eval transform
+# is needed. Adding them here would wrongly re-zscore or downsample them.
 
 # ─── IC measurement-layer corrections ─────────────────────────────────────────
 # These transforms are applied ONLY when computing screening IC. The stored
@@ -198,6 +208,7 @@ def build_feature_dict(
     stablecoin_df: pd.DataFrame | None = None,
     spot_close: pd.Series | None = None,
     orderflow_df: pd.DataFrame | None = None,
+    oi_ls_df: pd.DataFrame | None = None,
 ) -> dict[str, pd.Series]:
     """Compute all features and return as a dict of name → Series.
 
@@ -216,6 +227,11 @@ def build_feature_dict(
         DataFrame indexed by UTC time with 'open_interest' column.  Optional.
     stablecoin_df:
         DataFrame indexed by UTC time with 'stablecoin_supply' column.  Optional.
+    oi_ls_df:
+        DataFrame indexed by UTC time with 'global_ls_accounts' and
+        'toptrader_ls_positions' columns (Binance OI archive). Optional;
+        enables global_ls_acct_z, toptrader_ls_z, ls_divergence factors.
+        Reindexed without ffill.
 
     Returns
     -------
@@ -271,6 +287,10 @@ def build_feature_dict(
     # ── Order-flow factor family (intraday-native, no ffill) ─────────────────
     if orderflow_df is not None and not orderflow_df.empty:
         features.update(orderflow_factors(orderflow_df, candle_idx, config.interval))
+
+    # ── Positioning factor family (Binance OI/L-S archive, 1H-native, no ffill) ─
+    if oi_ls_df is not None and not oi_ls_df.empty:
+        features.update(positioning_factors(oi_ls_df, candle_idx))
 
     return features
 
@@ -519,6 +539,18 @@ def _process_symbol(
         except (FileNotFoundError, ValueError):
             orderflow_df = None  # absent cache -> feature simply not present (1H runs unaffected)
 
+        # ── 3c. Binance OI/L-S positioning cache (multi-year archive) ────────
+        # research/data/oi/oi_<SYM>USDT_1H.parquet (dump_oi.py). Absent ⇒
+        # positioning factors simply not present ⇒ 1H runs unaffected.
+        oi_ls_df = None
+        try:
+            from lib import oi_metrics
+            oi_dir = _REPO_ROOT / "research" / "data" / "oi"
+            oi_ls_df = oi_metrics.load_oi_parquet(sym_cfg.binance_usdt, oi_dir)
+            log.info("%s: loaded OI/L-S parquet (%d rows)", sym, len(oi_ls_df))
+        except (FileNotFoundError, OSError):
+            oi_ls_df = None  # absent/corrupt cache -> 1H runs unaffected
+
         # ── 4. Compute feature dict ──────────────────────────────────────────
         log.info("%s: computing feature pool...", sym)
         feature_dict = build_feature_dict(
@@ -529,6 +561,7 @@ def _process_symbol(
             stablecoin_df=stablecoin_df,
             spot_close=spot_close,
             orderflow_df=orderflow_df,
+            oi_ls_df=oi_ls_df,
         )
         if not feature_dict:
             log.error("%s: feature dict is empty — skipping symbol", sym)
