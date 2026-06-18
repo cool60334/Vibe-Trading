@@ -615,6 +615,12 @@ def refresh_is_stalled(
     return (_to_utc(now) - generated_at) > max_age
 ```
 
+**Note (integration):** `generated_at` is already written into `factor_values_<sym>.meta.json`
+by the existing `lib/factor_io.py::dump_factor_values` on every `stage1_factors` run — so
+this helper reads a real refresh timestamp in production, not only the unit-test mock. The
+real-meta path is exercised end-to-end by Task 7 Step 3 (asserts `generated_at` updates
+after a live refresh). No pipeline change is needed to produce the field.
+
 - [ ] **Step 4: Run to verify pass**
 
 Run: `cd dashboard && python -m pytest trader/test_freshness.py -k refresh -v`
@@ -709,6 +715,11 @@ cd research && python -c "from pipeline.config import load_config; c=load_config
 Expected: list includes `SOL-USDT-SWAP`. If not, add SOL to the symbol config (research_config.yaml) — out of scope to invent here; surface to the user.
 
 - [ ] **Step 3: Dry-run the refresh locally (bash) and confirm the SOL store updates**
+
+`refresh_factors.sh` is the **Linux-server** daily cron (the deploy host); it is not run on
+Windows in production. Local dry-run uses a bash shell — on this Windows box, the Bash tool
+(git-bash) provides it. (No PowerShell port: the production cron host is Linux.) This step
+also serves as the end-to-end check that `generated_at` updates (Task 5 integration note).
 
 Run:
 ```bash
