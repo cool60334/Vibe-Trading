@@ -2,7 +2,7 @@
   "schema_version": 1,
   "strategy_id": "eth_s5_half_size",
   "symbol": "ETH",
-  "generated_at": "2026-06-13T02:46:07.443626Z",
+  "generated_at": "2026-06-22T15:57:42.568745Z",
   "pipeline_stage": 5,
   "spec": {
     "source_run": null,
@@ -16,12 +16,12 @@
   "backtest": {
     "in_sample": {
       "source_run": "eth_s5_half_size_train",
-      "sharpe": 1.2386463971329293,
-      "max_drawdown": 0.14889666790038583,
-      "trades": 86,
-      "profit_factor": 1.9773,
-      "total_return": 0.37625222990011187,
-      "win_rate": 0.5813953488372093
+      "sharpe": 1.163302928642236,
+      "max_drawdown": 0.1311973550103349,
+      "trades": 82,
+      "profit_factor": 1.8906,
+      "total_return": 0.3323785522617748,
+      "win_rate": 0.5609756097560976
     },
     "oos": {
       "source_run": "eth_s5_half_size_oos",
@@ -36,9 +36,9 @@
     "monte_carlo": null,
     "benchmark": {
       "source_run": "eth_s5_half_size_train",
-      "strategy_return": 0.37625222990011187,
-      "hodl_return": 1.0014,
-      "excess_return": -0.625147,
+      "strategy_return": 0.3323785522617748,
+      "hodl_return": 2.116031,
+      "excess_return": -1.783652,
       "beats_hodl": false
     },
     "by_regime": [],
@@ -103,7 +103,7 @@
       "OOS Sharpe ratio is 1.0158, which is above the minimum acceptable threshold of 1.0.",
       "OOS Max drawdown is -9.13%, which is below the critical threshold of 15%.",
       "OOS Trade count is 49, which is above the minimum requirement of 30.",
-      "The train to OOS Sharpe ratio gap is not excessively large, indicating no significant overfitting."
+      "The train to OOS Sharpe gap is not excessively large, indicating no significant overfitting."
     ],
     "walk_forward_source": "eth_s5_half_size_oos",
     "walk_forward_metrics": {

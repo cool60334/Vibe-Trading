@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "symbol": "eth",
-  "generated_at": "2026-06-02T12:20:32.574290Z",
+  "generated_at": "2026-06-22T14:05:51.746719Z",
   "source_swarm_run": null,
   "candidates": [
     {
@@ -11,7 +11,7 @@
       "data_source": null,
       "transform": null,
       "expected_ic_sign": "-",
-      "economic_logic": "(deterministic selection) atr_14 top |IC|=-0.0973@168h, IR=-0.228. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "economic_logic": "(deterministic selection) atr_14 top |IC|=-0.0913@168h, IR=-0.232. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
       "horizons_h": [
         72,
         168
@@ -25,7 +25,7 @@
       "data_source": null,
       "transform": null,
       "expected_ic_sign": "+",
-      "economic_logic": "(deterministic selection) stablecoin_supply_z top |IC|=+0.0912@168h, IR=+4.429. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "economic_logic": "(deterministic selection) stablecoin_supply_z top |IC|=+0.0899@8h, IR=+4.357. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
       "horizons_h": [
         8,
         24,
@@ -35,18 +35,35 @@
       "category": "stablecoin"
     },
     {
-      "name": "rolling_std_20",
-      "formula": "feature_store column 'rolling_std_20' (no transform)",
-      "feature_key": "rolling_std_20",
+      "name": "toptrader_ls_z",
+      "formula": "feature_store column 'toptrader_ls_z' (no transform)",
+      "feature_key": "toptrader_ls_z",
       "data_source": null,
       "transform": null,
       "expected_ic_sign": "-",
-      "economic_logic": "(deterministic selection) rolling_std_20 top |IC|=-0.0607@168h, IR=-0.177. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "economic_logic": "(deterministic selection) toptrader_ls_z top |IC|=-0.0882@168h, IR=-0.585. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
       "horizons_h": [
+        24,
         72,
         168
       ],
-      "category": "volatility"
+      "category": "momentum"
+    },
+    {
+      "name": "ls_divergence",
+      "formula": "feature_store column 'ls_divergence' (no transform)",
+      "feature_key": "ls_divergence",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "+",
+      "economic_logic": "(deterministic selection) ls_divergence top |IC|=+0.0773@168h, IR=+0.946. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        8,
+        24,
+        72,
+        168
+      ],
+      "category": "momentum"
     },
     {
       "name": "funding_z",
@@ -55,12 +72,29 @@
       "data_source": null,
       "transform": null,
       "expected_ic_sign": "-",
-      "economic_logic": "(deterministic selection) funding_z top |IC|=-0.0565@72h, IR=-0.767. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "economic_logic": "(deterministic selection) funding_z top |IC|=-0.0634@72h, IR=-0.802. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
       "horizons_h": [
+        8,
         24,
-        72
+        72,
+        168
       ],
       "category": "funding"
+    },
+    {
+      "name": "oi_mom",
+      "formula": "feature_store column 'oi_mom' (no transform)",
+      "feature_key": "oi_mom",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "-",
+      "economic_logic": "(deterministic selection) oi_mom top |IC|=-0.0573@72h, IR=-0.255. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        24,
+        72,
+        168
+      ],
+      "category": "oi"
     }
   ]
 }

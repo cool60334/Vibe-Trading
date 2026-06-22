@@ -188,5 +188,49 @@
     "sweep_run": null,
     "walk_forward_runs": [],
     "oos_runs": []
+  },
+  "eth_s1_single_factor": {
+    "symbol": "ETH-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_eth_s1_single_factor.yaml",
+    "base_run": "eth_s1_single_factor_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": null,
+    "walk_forward_runs": [],
+    "oos_runs": []
+  },
+  "eth_s1_single_factor_regime": {
+    "symbol": "ETH-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_eth_s1_single_factor_regime.yaml",
+    "base_run": "eth_s1_single_factor_regime_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": null,
+    "walk_forward_runs": [],
+    "oos_runs": []
+  },
+  "eth_s2_trend_with_gate": {
+    "symbol": "ETH-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_eth_s2_trend_with_gate.yaml",
+    "base_run": "eth_s2_trend_with_gate_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": "eth_s2_trend_with_gate_sweep_021",
+    "walk_forward_runs": [
+      "eth_s2_trend_with_gate_oos_holdout"
+    ],
+    "oos_runs": []
+  },
+  "eth_s2_trend_with_gate_regime": {
+    "symbol": "ETH-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_eth_s2_trend_with_gate_regime.yaml",
+    "base_run": "eth_s2_trend_with_gate_regime_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": "eth_s2_trend_with_gate_regime_sweep_006",
+    "walk_forward_runs": [
+      "eth_s2_trend_with_gate_regime_oos_holdout"
+    ],
+    "oos_runs": []
   }
 }
