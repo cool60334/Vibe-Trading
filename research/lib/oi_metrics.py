@@ -224,7 +224,7 @@ def reconcile_live_archive(
             raise ValueError(f"reconcile {col}: insufficient non-NaN overlap ({int(mask.sum())})")
         corr = float(a[mask].corr(b[mask]))
         med_rel = float(((b[mask] - a[mask]).abs() / a[mask].abs().replace(0, np.nan)).median())
-        if corr < min_corr or med_rel > max_med_rel_err:
+        if not np.isfinite(corr) or corr < min_corr or not np.isfinite(med_rel) or med_rel > max_med_rel_err:
             raise ValueError(
                 f"reconcile {col} fail: corr={corr:.3f} (min {min_corr}), "
                 f"med_rel_err={med_rel:.3f} (max {max_med_rel_err})"
