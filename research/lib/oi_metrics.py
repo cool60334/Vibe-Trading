@@ -16,6 +16,7 @@ import zipfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from lib import binance_dump
@@ -197,3 +198,34 @@ def merge_live_tail(archive_hourly: pd.DataFrame, live_5min: pd.DataFrame) -> pd
         if col in live_hourly.columns:
             out.loc[live_hourly.index, col] = live_hourly[col]
     return out
+
+
+def reconcile_live_archive(
+    archive: pd.DataFrame,
+    live: pd.DataFrame,
+    min_corr: float = 0.95,
+    max_med_rel_err: float = 0.05,
+    min_overlap: int = 12,
+) -> None:
+    """Raise ValueError unless each live L/S column matches archive in the overlap.
+
+    Guards against a position-vs-account endpoint mix-up (the variants diverge far
+    more than the tolerance) and unit/scale errors. Tolerance, not exact equality —
+    the two series are computed independently. `live` is the 1H-aggregated tail.
+    """
+    overlap = archive.index.intersection(live.index)
+    if len(overlap) < min_overlap:
+        raise ValueError(f"reconcile: insufficient overlap ({len(overlap)} < {min_overlap} hrs)")
+    for col in _LIVE_LS_COLS:
+        a = archive.loc[overlap, col]
+        b = live.loc[overlap, col]
+        mask = a.notna() & b.notna()
+        if int(mask.sum()) < min_overlap:
+            raise ValueError(f"reconcile {col}: insufficient non-NaN overlap ({int(mask.sum())})")
+        corr = float(a[mask].corr(b[mask]))
+        med_rel = float(((b[mask] - a[mask]).abs() / a[mask].abs().replace(0, np.nan)).median())
+        if corr < min_corr or med_rel > max_med_rel_err:
+            raise ValueError(
+                f"reconcile {col} fail: corr={corr:.3f} (min {min_corr}), "
+                f"med_rel_err={med_rel:.3f} (max {max_med_rel_err})"
+            )

@@ -3,6 +3,7 @@ import json
 import zipfile
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -209,3 +210,32 @@ def test_merge_live_tail_live_precedence_and_append():
     # …oi (not an L/S col) untouched on overlap, NaN on appended row.
     assert out.loc[idx[3], "oi"] == 13.0
     assert pd.isna(out.loc[pd.Timestamp("2026-06-20 04:00", tz="UTC"), "oi"])
+
+
+# ── reconcile_live_archive ─────────────────────────────────────────────────
+
+
+def _hourly_ls(values_g, values_t, start="2026-06-20"):
+    idx = pd.date_range(start, periods=len(values_g), freq="1h", tz="UTC")
+    return pd.DataFrame({"global_ls_accounts": values_g,
+                         "toptrader_ls_positions": values_t}, index=idx)
+
+
+def test_reconcile_passes_when_live_matches_archive():
+    n = 48
+    g = np.linspace(1.0, 2.0, n)
+    t = np.linspace(2.0, 3.0, n)
+    archive = _hourly_ls(g, t)
+    live = _hourly_ls(g * 1.01, t * 0.99)   # within 5% / high corr
+    oi_metrics.reconcile_live_archive(archive, live)  # must not raise
+
+
+def test_reconcile_fails_on_account_vs_position_swap():
+    n = 48
+    g = np.linspace(1.0, 2.0, n)
+    t = np.linspace(2.0, 3.0, n)
+    archive = _hourly_ls(g, t)
+    # toptrader_ls_positions accidentally fed the account-ratio series (different scale/shape).
+    live = _hourly_ls(g, np.linspace(0.5, 0.6, n))
+    with pytest.raises(ValueError, match="reconcile"):
+        oi_metrics.reconcile_live_archive(archive, live)
