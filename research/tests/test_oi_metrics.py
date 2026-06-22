@@ -163,3 +163,49 @@ def test_dump_and_load_oi_parquet_roundtrip(tmp_path):
 def test_load_oi_parquet_missing_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="dump_oi"):
         oi_metrics.load_oi_parquet("ETHUSDT", cache_dir=tmp_path)
+
+
+# ── live L/S fetch + merge ──────────────────────────────────────────────────
+
+
+def test_fetch_live_ls_ratios_builds_two_col_frame(monkeypatch):
+    from lib import binance_dump
+
+    def fake_raw(symbol, endpoint_path, period="5m", limit=500):
+        base = 1718900000000
+        if endpoint_path == binance_dump.GLOBAL_LS_ACCOUNT_PATH:
+            return [{"longShortRatio": "1.5", "timestamp": base},
+                    {"longShortRatio": "1.6", "timestamp": base + 300000}]
+        return [{"longShortRatio": "2.5", "timestamp": base},
+                {"longShortRatio": "2.6", "timestamp": base + 300000}]
+    monkeypatch.setattr(binance_dump, "fetch_live_ls_raw", fake_raw)
+
+    df = oi_metrics.fetch_live_ls_ratios("SOLUSDT")
+    assert list(df.columns) == ["global_ls_accounts", "toptrader_ls_positions"]
+    assert df["global_ls_accounts"].iloc[0] == 1.5
+    assert df["toptrader_ls_positions"].iloc[0] == 2.5
+    assert df.index.tz is not None  # UTC
+
+
+def test_merge_live_tail_live_precedence_and_append():
+    idx = pd.date_range("2026-06-20", periods=4, freq="1h", tz="UTC")
+    archive = pd.DataFrame({
+        "oi": [10.0, 11, 12, 13],
+        "global_ls_accounts": [1.0, 1.0, 1.0, 1.0],
+        "toptrader_ls_positions": [2.0, 2.0, 2.0, 2.0],
+    }, index=idx)
+    # Live 5-min frame spanning the last archive hour + one new hour.
+    live_idx = pd.date_range("2026-06-20 03:00", periods=24, freq="5min", tz="UTC")
+    live = pd.DataFrame({
+        "global_ls_accounts": [9.0] * 24,
+        "toptrader_ls_positions": [8.0] * 24,
+    }, index=live_idx)
+
+    out = oi_metrics.merge_live_tail(archive, live)
+    # Overlap hour 03:00 overwritten by live (precedence)…
+    assert out.loc[idx[3], "global_ls_accounts"] == 9.0
+    # …new hour 04:00 appended…
+    assert out.loc[pd.Timestamp("2026-06-20 04:00", tz="UTC"), "toptrader_ls_positions"] == 8.0
+    # …oi (not an L/S col) untouched on overlap, NaN on appended row.
+    assert out.loc[idx[3], "oi"] == 13.0
+    assert pd.isna(out.loc[pd.Timestamp("2026-06-20 04:00", tz="UTC"), "oi"])

@@ -157,3 +157,43 @@ def load_oi_parquet(symbol: str, cache_dir: Path) -> pd.DataFrame:
             f"OI parquet not found at '{path}'. Run dump_oi to build the cache."
         )
     return pd.read_parquet(path, engine="pyarrow")
+
+
+# ── live L/S tail (freshness fix) ─────────────────────────────────────────
+
+_LIVE_LS_COLS = ("global_ls_accounts", "toptrader_ls_positions")
+
+
+def fetch_live_ls_ratios(symbol: str, period: str = "5m", limit: int = 500) -> pd.DataFrame:
+    """Fetch the two live L/S ratios into a 5-min DataFrame [global_ls_accounts,
+    toptrader_ls_positions], indexed by UTC timestamp."""
+    paths = {
+        "global_ls_accounts": binance_dump.GLOBAL_LS_ACCOUNT_PATH,
+        "toptrader_ls_positions": binance_dump.TOPTRADER_LS_POSITION_PATH,
+    }
+    cols: dict[str, pd.Series] = {}
+    for col, path in paths.items():
+        rows = binance_dump.fetch_live_ls_raw(symbol, path, period, limit)
+        s = pd.Series(
+            {pd.to_datetime(int(r["timestamp"]), unit="ms", utc=True): float(r["longShortRatio"])
+             for r in rows}
+        ).sort_index()
+        cols[col] = s
+    df = pd.DataFrame(cols)
+    df.index.name = "time"
+    return df
+
+
+def merge_live_tail(archive_hourly: pd.DataFrame, live_5min: pd.DataFrame) -> pd.DataFrame:
+    """Overlay the live L/S tail onto the archive hourly frame.
+
+    Live 5-min is aggregated to 1H with the SAME convention as `aggregate_to_hourly`
+    (snapshot=last). Only the two L/S columns are patched (live precedence on overlap,
+    new hours appended); oi/oi_usd/taker keep their archive values (NaN on appended rows).
+    """
+    live_hourly = aggregate_to_hourly(live_5min)  # snapshot=last on the present cols
+    out = archive_hourly.reindex(archive_hourly.index.union(live_hourly.index))
+    for col in _LIVE_LS_COLS:
+        if col in live_hourly.columns:
+            out.loc[live_hourly.index, col] = live_hourly[col]
+    return out
