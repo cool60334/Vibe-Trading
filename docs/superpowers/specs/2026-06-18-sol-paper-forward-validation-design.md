@@ -57,6 +57,12 @@ of calendar time, measure that gap cheaply.
 Phase 0 is a few hours of backtest work and can kill the whole effort before any infra
 is built. It gates Phase 1.
 
+**Phase 0 result (2026-06-18):** `baseline_lag0_sharpe=1.659`, `lagged_24h_sharpe=0.785`,
+`threshold=1.0` → **NO-GO**. The 24h lag cuts sharpe from 1.659 → 0.785, below the 1.0
+deploy threshold. Phase 1 does not proceed until the data-latency problem is resolved
+(faster OI/L-S source) or a lower-lag variant of ls_divergence is found.
+Result archived at `runs/sol_s1_single_factor_regime_paper_laggate_result.json`.
+
 ---
 
 ## Phase 1 — Paper-forward harness (only if Phase 0 passes)
@@ -79,7 +85,7 @@ is built. It gates Phase 1.
   size-invariant; `size_mult` is *not* a tested parameter, it is a post-hoc risk lever
   (see protocol). Keep it a single named constant so the harness stays generic and a
   second strategy is a cheap copy (⑤ decision: build generic, run sol_s1 only).
-- 8h logic on 1H bars (Bybit constraint below).
+- Hourly bars (compiled-pipeline convention — see technical notes below).
 
 ### ② Factor refresh cron — extend to SOL + OI + a health guard
 `scripts/refresh_factors.sh` currently refreshes **btc + eth**. For SOL:
@@ -107,12 +113,16 @@ Same as the eth_s5 runbook ([[deploy_dashboard_testnet_runbook]]):
 - Monitored via the existing dashboard Testnet tab (equity / trades / vs-backtest).
 - Server, not local: forward needs 24/7 for months.
 
-## Two forced technical decisions
+## Two technical notes
 
-**Bybit has no native 8h timeframe** (1/3/5/15/30/60/120/240/360/720m, D/W/M). The engine
-fetches **1H OHLCV** and resamples to 8h bars internally for its entry/exit grid, matching
-the backtest. Loop re-evaluates hourly; signal changes only per 8h bar; entering ≤1h late
-on a 72–168h-horizon factor is negligible. (Exact resample mechanism pinned in the plan.)
+**The strategy runs on HOURLY bars, not 8h** (verified against the compiled pipeline).
+The signal compiler hardcodes `rolling(lookback_days*24, …)` (1 bar/hour) and the compiled
+`sol_s2` engine iterates the hourly OHLCV index — so the yaml's `timeframe_signal: 8h` is
+**nominal metadata**, and `sol_s1` was in fact backtested at 1H. The live curated engine
+therefore mirrors the eth_s5 / compiled-`sol_s2` hourly pattern exactly (factor reindexed
+`ffill` to the hourly bar index, percentile over `lookback_days*24`). **No 8h resample;
+no Bybit-timeframe problem** — `--interval 1H` is natively supported. (Funding is applied
+per-8h by the engine/PaperBroker regardless of bar grid, consistent with the backtest.)
 
 **Spec source = local reconstruction.** The server winner carries the manual size patch;
 the local copy is the `atr_volatility` false-negative. Local materials are complete
@@ -146,7 +156,8 @@ TP / lookback. **OOS is never consulted** for any param. Self-contained, determi
 - Curated engine unit test: synthetic OHLCV + synthetic `factor_values_sol` parquet →
   `generate()` returns a signal series of `{-1.0, 0, +1.0}` (size 1.0); contrarian
   direction (low-percentile `ls_divergence` → long); regime mask zeroes disallowed bars.
-- 8h resample correctness: 1H input → engine bar grid matches an 8h-native reference.
+- Hourly convention: engine percentile windows use `lookback_days*24` and iterate the
+  hourly OHLCV index (matches compiled `sol_s2`); factor reindexed `ffill` to hourly.
 - Refresh-cron dry-run: SOL path produces `factor_values_sol.parquet` containing
   `ls_divergence` with `index_end` inside the freshness window; cron-health guard fires
   when the parquet mtime is artificially aged > 30h.

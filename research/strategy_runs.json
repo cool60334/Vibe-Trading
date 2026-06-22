@@ -120,5 +120,73 @@
     "walk_forward_runs": [
       "sol_s2_stablecoin_trend_gated_oos_holdout"
     ]
+  },
+  "sol_s1_single_factor": {
+    "symbol": "SOL-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_sol_s1_single_factor.yaml",
+    "base_run": "sol_s1_single_factor_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": "sol_s1_single_factor_sweep_027",
+    "walk_forward_runs": [
+      "sol_s1_single_factor_oos_holdout"
+    ],
+    "oos_runs": []
+  },
+  "sol_s1_single_factor_regime": {
+    "symbol": "SOL-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_sol_s1_single_factor_regime.yaml",
+    "base_run": "sol_s1_single_factor_regime_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": "sol_s1_single_factor_regime_sweep_027",
+    "walk_forward_runs": [
+      "sol_s1_single_factor_regime_oos_holdout"
+    ],
+    "oos_runs": []
+  },
+  "sol_s2_trend_with_gate": {
+    "symbol": "SOL-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_sol_s2_trend_with_gate.yaml",
+    "base_run": "sol_s2_trend_with_gate_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": "sol_s2_trend_with_gate_sweep_021",
+    "walk_forward_runs": [
+      "sol_s2_trend_with_gate_oos_holdout"
+    ],
+    "oos_runs": []
+  },
+  "sol_s2_trend_with_gate_regime": {
+    "symbol": "SOL-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_sol_s2_trend_with_gate_regime.yaml",
+    "base_run": "sol_s2_trend_with_gate_regime_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": "sol_s2_trend_with_gate_regime_sweep_056",
+    "walk_forward_runs": [
+      "sol_s2_trend_with_gate_regime_oos_holdout"
+    ],
+    "oos_runs": []
+  },
+  "sol_s3_consensus_all": {
+    "symbol": "SOL-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_sol_s3_consensus_all.yaml",
+    "base_run": "sol_s3_consensus_all_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": null,
+    "walk_forward_runs": [],
+    "oos_runs": []
+  },
+  "sol_s3_consensus_all_regime": {
+    "symbol": "SOL-USDT-SWAP",
+    "spec_yaml": "research/strategies/strategy_sol_s3_consensus_all_regime.yaml",
+    "base_run": "sol_s3_consensus_all_regime_base",
+    "regime_runs": {},
+    "stress_runs": {},
+    "sweep_run": null,
+    "walk_forward_runs": [],
+    "oos_runs": []
   }
 }

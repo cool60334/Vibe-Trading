@@ -1,79 +1,95 @@
 {
- "schema_version": 1,
- "symbol": "sol",
- "generated_at": "2026-06-02T00:19:32.325067Z",
- "source_swarm_run": null,
- "candidates": [
-  {
-   "name": "stablecoin_supply_zscore",
-   "formula": "z-score(stablecoin_supply, 30d)",
-   "feature_key": "stablecoin_supply_z",
-   "data_source": null,
-   "transform": null,
-   "expected_ic_sign": "+",
-   "economic_logic": "穩定幣供給擴張代表場外資金待進場，為加密資產提供買盤動能；SOL 各 horizon IC 全正、IR 3.44，為最強因子。",
-   "horizons_h": [
-    8,
-    24,
-    72,
-    168
-   ],
-   "category": "stablecoin"
-  },
-  {
-   "name": "bollinger_band_width",
-   "formula": "bb_width(close,20)",
-   "feature_key": "bb_width_20",
-   "data_source": null,
-   "transform": null,
-   "expected_ic_sign": "+",
-   "economic_logic": "布林帶寬擴張反映波動率擴張，常伴隨趨勢延續；SOL IC72 +0.036。",
-   "horizons_h": [
-    24,
-    72
-   ],
-   "category": "volatility"
-  },
-  {
-   "name": "funding_rate_raw",
-   "formula": "native_8h_funding_rate",
-   "feature_key": "funding_rate_raw",
-   "data_source": null,
-   "transform": null,
-   "expected_ic_sign": "+",
-   "economic_logic": "SOL 資金費率與未來報酬正相關（IC168 +0.032），多頭付費期市場仍偏強，與 BTC 反向特性不同。",
-   "horizons_h": [
-    72,
-    168
-   ],
-   "category": "funding"
-  },
-  {
-   "name": "basis_relative",
-   "formula": "(perp-spot)/spot",
-   "feature_key": "basis_rel",
-   "data_source": null,
-   "transform": null,
-   "expected_ic_sign": "+",
-   "economic_logic": "永續相對現貨溢價反映槓桿多頭需求，正基差預示動能延續；SOL IC168 +0.026。",
-   "horizons_h": [
-    72,
-    168
-   ],
-   "category": "basis"
-  },
-  {
-   "name": "atr_volatility",
-   "formula": "atr(14)",
-   "feature_key": "atr_14",
-   "data_source": null,
-   "transform": null,
-   "expected_ic_sign": "-",
-   "economic_logic": "絕對波動率高檔後常見均值回歸，長 horizon 負相關（IC168 -0.058）。",
-   "horizons_h": [
-    168
-   ],
-   "category": "volatility"
-  }
- ]
+  "schema_version": 1,
+  "symbol": "sol",
+  "generated_at": "2026-06-18T13:40:06.074366Z",
+  "source_swarm_run": null,
+  "candidates": [
+    {
+      "name": "ls_divergence",
+      "formula": "feature_store column 'ls_divergence' (no transform)",
+      "feature_key": "ls_divergence",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "-",
+      "economic_logic": "(deterministic selection) ls_divergence top |IC|=-0.1020@168h, IR=+0.287. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        24,
+        72,
+        168
+      ],
+      "category": "momentum"
+    },
+    {
+      "name": "stablecoin_supply_z",
+      "formula": "feature_store column 'stablecoin_supply_z' (no transform)",
+      "feature_key": "stablecoin_supply_z",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "+",
+      "economic_logic": "(deterministic selection) stablecoin_supply_z top |IC|=+0.0785@8h, IR=+3.230. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        8,
+        24,
+        72,
+        168
+      ],
+      "category": "stablecoin"
+    },
+    {
+      "name": "oi_z",
+      "formula": "feature_store column 'oi_z' (no transform)",
+      "feature_key": "oi_z",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "+",
+      "economic_logic": "(deterministic selection) oi_z top |IC|=+0.0736@168h, IR=-0.150. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        72,
+        168
+      ],
+      "category": "oi"
+    },
+    {
+      "name": "toptrader_ls_z",
+      "formula": "feature_store column 'toptrader_ls_z' (no transform)",
+      "feature_key": "toptrader_ls_z",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "+",
+      "economic_logic": "(deterministic selection) toptrader_ls_z top |IC|=+0.0660@168h, IR=-0.189. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        72,
+        168
+      ],
+      "category": "momentum"
+    },
+    {
+      "name": "atr_14",
+      "formula": "feature_store column 'atr_14' (no transform)",
+      "feature_key": "atr_14",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "-",
+      "economic_logic": "(deterministic selection) atr_14 top |IC|=-0.0575@168h, IR=-0.304. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        168
+      ],
+      "category": "volatility"
+    },
+    {
+      "name": "global_ls_acct_z",
+      "formula": "feature_store column 'global_ls_acct_z' (no transform)",
+      "feature_key": "global_ls_acct_z",
+      "data_source": null,
+      "transform": null,
+      "expected_ic_sign": "-",
+      "economic_logic": "(deterministic selection) global_ls_acct_z top |IC|=-0.0530@168h, IR=+0.218. Selected by IC/IR threshold pass; awaiting swarm enrichment for economic rationale.",
+      "horizons_h": [
+        24,
+        72,
+        168
+      ],
+      "category": "momentum"
+    }
+  ]
 }

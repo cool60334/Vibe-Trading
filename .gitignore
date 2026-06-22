@@ -148,6 +148,7 @@ research/strategies/code/*/test_signal_engine.py
 !research/strategies/code/eth_s3_dynamic_exit/signal_engine.py
 !research/strategies/code/sol_s1_multi_factor_consensus/signal_engine.py
 !research/strategies/code/sol_s2_stablecoin_trend_gated/signal_engine.py
+!research/strategies/code/sol_s1_single_factor_regime/signal_engine.py
 research/strategy_runs.json.bak
 research/manifests/factor_values_*.parquet
 research/manifests/factor_values_*.meta.json
