@@ -198,3 +198,62 @@ def test_fetch_live_ls_raw_parses_json(monkeypatch):
     monkeypatch.setattr(binance_dump, "_fetch_json", lambda url, **kw: payload)
     rows = binance_dump.fetch_live_ls_raw("SOLUSDT", binance_dump.GLOBAL_LS_ACCOUNT_PATH)
     assert rows == payload
+
+
+def test_fetch_json_passes_socket_timeout(monkeypatch):
+    """Stalled connection must not hang — urlopen needs a timeout."""
+    import json as _json
+
+    captured = {}
+
+    class FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return _json.dumps([]).encode()
+
+    def fake_urlopen(url, timeout=None):
+        captured["timeout"] = timeout
+        return FakeResp()
+
+    monkeypatch.setattr(binance_dump.urllib.request, "urlopen", fake_urlopen)
+    binance_dump._fetch_json("http://example/x")
+    assert captured["timeout"] is not None and captured["timeout"] > 0
+
+
+def test_fetch_json_retries_transient_errors(monkeypatch):
+    """Transient network errors retry with backoff instead of aborting."""
+    import json as _json
+    from urllib.error import URLError
+
+    calls = {"n": 0}
+
+    class FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return _json.dumps({"ok": True}).encode()
+
+    def flaky_urlopen(url, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise URLError("temporary failure")
+        return FakeResp()
+
+    monkeypatch.setattr(binance_dump.urllib.request, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(binance_dump.time, "sleep", lambda *_: None)
+    result = binance_dump._fetch_json("http://example/x", retries=3)
+    assert calls["n"] == 3
+    assert result == {"ok": True}
+
+
+def test_fetch_json_does_not_retry_http_errors(monkeypatch):
+    """A 404 must reraise immediately — no retry on HTTPError."""
+    calls = {"n": 0}
+
+    def fake_urlopen(url, timeout=None):
+        calls["n"] += 1
+        raise HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(binance_dump.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(HTTPError):
+        binance_dump._fetch_json("http://example/x", retries=3)
+    assert calls["n"] == 1
