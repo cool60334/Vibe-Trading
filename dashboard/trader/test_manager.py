@@ -11,7 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from trader.manager import Manager, build_trader_command, require_credentials
+from trader.manager import (
+    Manager,
+    build_subprocess_env,
+    build_trader_command,
+    require_credentials,
+)
 
 
 # ── Pure helpers (moved here from the server supervisor) ──────────────────────
@@ -34,6 +39,31 @@ def test_build_command_includes_mode_and_entrypoint():
     assert cmd[:3] == ["python", "-m", "trader.loop"]
     assert cmd[cmd.index("--mode") + 1] == "paper"
     assert cmd[cmd.index("--testnet-id") + 1] == "t"
+
+
+# ── Per-strategy env override (control.json "env" merged over container env) ──
+
+
+def test_build_subprocess_env_no_override_returns_base_copy():
+    base = {"FACTOR_MAX_AGE_DAYS": "2", "KILL_PAUSE_DD": "0.13"}
+    out = build_subprocess_env(base, {"strategy_id": "eth_s5"})
+    assert out == base
+    assert out is not base  # copy, not the same dict
+
+
+def test_build_subprocess_env_merges_control_env_over_base():
+    base = {"FACTOR_MAX_AGE_DAYS": "2", "KILL_PAUSE_DD": "0.13", "TRADING_MODE": "paper"}
+    ctrl = {"env": {"FACTOR_MAX_AGE_DAYS": "0.5", "KILL_PAUSE_DD": "0.18"}}
+    out = build_subprocess_env(base, ctrl)
+    assert out["FACTOR_MAX_AGE_DAYS"] == "0.5"   # sol_s1 tightened
+    assert out["KILL_PAUSE_DD"] == "0.18"        # sol_s1 raised
+    assert out["TRADING_MODE"] == "paper"        # untouched base var preserved
+
+
+def test_build_subprocess_env_coerces_values_to_str():
+    out = build_subprocess_env({}, {"env": {"FACTOR_MAX_AGE_DAYS": 0.5, "REFRESH_STALL_HOURS": 6}})
+    assert out["FACTOR_MAX_AGE_DAYS"] == "0.5"
+    assert out["REFRESH_STALL_HOURS"] == "6"
 
 
 # ── Manager scan logic (injected spawner) ─────────────────────────────────────

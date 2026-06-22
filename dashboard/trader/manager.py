@@ -78,6 +78,23 @@ def read_control(path: Path) -> Optional[dict]:
         return None
 
 
+def build_subprocess_env(base_env: dict, ctrl: dict) -> dict:
+    """Merge a control file's optional per-strategy ``env`` over the container env.
+
+    The manager passes one shared container environment to every loop it spawns,
+    but risk/freshness knobs are per-strategy: a freshness-sensitive strategy on
+    an hourly cron needs a tight ``FACTOR_MAX_AGE_DAYS`` while a daily-factor
+    strategy in the same container needs the loose default. ``control.json`` may
+    carry an ``env`` dict whose entries override the base for that strategy only;
+    values are coerced to str (env vars are strings). Strategies without an
+    ``env`` block keep the container defaults unchanged.
+    """
+    out = dict(base_env)
+    for k, v in (ctrl.get("env") or {}).items():
+        out[str(k)] = str(v)
+    return out
+
+
 # ── Manager ───────────────────────────────────────────────────────────────────
 
 class Manager:
@@ -157,7 +174,7 @@ class Manager:
     # ── Default real spawning ─────────────────────────────────────────────────
 
     def _default_spawn(self, testnet_id: str, ctrl: dict):
-        env = {**os.environ}
+        env = build_subprocess_env(os.environ, ctrl)
         mode = (ctrl.get("mode") or env.get("TRADING_MODE", "paper")).lower()
         require_credentials(env, mode)
         cmd = build_trader_command(
