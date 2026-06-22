@@ -185,14 +185,13 @@ def fetch_live_ls_ratios(symbol: str, period: str = "5m", limit: int = 500) -> p
     return df
 
 
-def merge_live_tail(archive_hourly: pd.DataFrame, live_5min: pd.DataFrame) -> pd.DataFrame:
-    """Overlay the live L/S tail onto the archive hourly frame.
+def merge_live_tail(archive_hourly: pd.DataFrame, live_hourly: pd.DataFrame) -> pd.DataFrame:
+    """Overlay an already-aggregated live L/S hourly frame onto the archive hourly frame.
 
-    Live 5-min is aggregated to 1H with the SAME convention as `aggregate_to_hourly`
-    (snapshot=last). Only the two L/S columns are patched (live precedence on overlap,
-    new hours appended); oi/oi_usd/taker keep their archive values (NaN on appended rows).
+    Only the two L/S columns are patched (live precedence on overlap, new hours appended);
+    oi/oi_usd/taker keep their archive values (NaN on appended rows). Caller is responsible
+    for aggregating the raw 5-min live frame before passing it here.
     """
-    live_hourly = aggregate_to_hourly(live_5min)  # snapshot=last on the present cols
     out = archive_hourly.reindex(archive_hourly.index.union(live_hourly.index))
     for col in _LIVE_LS_COLS:
         if col in live_hourly.columns:

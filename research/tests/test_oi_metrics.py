@@ -195,11 +195,11 @@ def test_merge_live_tail_live_precedence_and_append():
         "global_ls_accounts": [1.0, 1.0, 1.0, 1.0],
         "toptrader_ls_positions": [2.0, 2.0, 2.0, 2.0],
     }, index=idx)
-    # Live 5-min frame spanning the last archive hour + one new hour.
-    live_idx = pd.date_range("2026-06-20 03:00", periods=24, freq="5min", tz="UTC")
+    # Already-hourly live frame: overlap at 03:00 + new hour 04:00.
+    live_idx = pd.date_range("2026-06-20 03:00", periods=2, freq="1h", tz="UTC")
     live = pd.DataFrame({
-        "global_ls_accounts": [9.0] * 24,
-        "toptrader_ls_positions": [8.0] * 24,
+        "global_ls_accounts": [9.0, 9.0],
+        "toptrader_ls_positions": [8.0, 8.0],
     }, index=live_idx)
 
     out = oi_metrics.merge_live_tail(archive, live)

@@ -59,10 +59,9 @@ def dump_symbol(
 
     if live:
         try:
-            live_5min = oi_metrics.fetch_live_ls_ratios(symbol)
-            live_hourly = oi_metrics.aggregate_to_hourly(live_5min)
+            live_hourly = oi_metrics.aggregate_to_hourly(oi_metrics.fetch_live_ls_ratios(symbol))
             oi_metrics.reconcile_live_archive(df, live_hourly)
-            df = oi_metrics.merge_live_tail(df, live_5min)
+            df = oi_metrics.merge_live_tail(df, live_hourly)
             print(f"[dump_oi] {symbol}: live tail merged → index_end {df.index[-1]}")
         except Exception as exc:  # noqa: BLE001
             print(f"[dump_oi] {symbol}: live fetch failed ({exc}) — archive-only")
