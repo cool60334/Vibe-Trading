@@ -69,3 +69,29 @@ def is_stale(
     if index_end is None:
         return True
     return (_to_utc(now) - index_end) > max_age
+
+
+def refresh_generated_at(manifests_dir: Path, symbol: str) -> Optional[datetime]:
+    """Return the factor meta's ``generated_at`` (when the refresh cron last wrote
+    the store), or None. Distinct from ``factor_index_end`` (the data's own age):
+    the archive is ~1 day lagged *by nature*, so cron health is judged by how
+    recently the parquet was REWRITTEN, not by how old the newest bar is.
+    """
+    short = _symbol_short(symbol)
+    meta_path = manifests_dir / f"factor_values_{short}.meta.json"
+    if not meta_path.exists():
+        return None
+    try:
+        raw = json.loads(meta_path.read_text(encoding="utf-8")).get("generated_at")
+    except (OSError, json.JSONDecodeError):
+        return None
+    return _to_utc(datetime.fromisoformat(raw)) if raw else None
+
+
+def refresh_is_stalled(
+    generated_at: Optional[datetime], now: datetime, max_age: timedelta,
+) -> bool:
+    """True if the refresh is missing or older than *max_age* (cron likely broke)."""
+    if generated_at is None:
+        return True
+    return (_to_utc(now) - generated_at) > max_age

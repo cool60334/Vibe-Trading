@@ -5,7 +5,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from trader.freshness import factor_index_end, is_stale, _symbol_short
+from trader.freshness import (
+    factor_index_end,
+    is_stale,
+    _symbol_short,
+    refresh_generated_at,
+    refresh_is_stalled,
+)
 
 
 def _utc(y, m, d, h=0):
@@ -68,3 +74,33 @@ def test_is_stale_naive_now_treated_as_utc():
     index_end = _utc(2026, 6, 3)
     naive_now = datetime(2026, 6, 4)  # no tzinfo
     assert is_stale(index_end, naive_now, timedelta(days=2)) is False
+
+
+# ── Cron-health: refresh recency (distinct from data-age staleness) ──────────
+
+
+def test_refresh_generated_at_reads_meta(tmp_path):
+    (tmp_path / "factor_values_sol.meta.json").write_text(
+        json.dumps({"generated_at": "2026-06-18T00:00:00+00:00"}), encoding="utf-8")
+    got = refresh_generated_at(tmp_path, "SOL-USDT-SWAP")
+    assert got == datetime(2026, 6, 18, tzinfo=timezone.utc)
+
+
+def test_refresh_generated_at_missing_returns_none(tmp_path):
+    assert refresh_generated_at(tmp_path, "sol") is None
+
+
+def test_refresh_is_stalled_true_when_old():
+    gen = datetime(2026, 6, 18, 0, 0, tzinfo=timezone.utc)
+    now = gen + timedelta(hours=31)
+    assert refresh_is_stalled(gen, now, timedelta(hours=30)) is True
+
+
+def test_refresh_is_stalled_false_when_recent():
+    gen = datetime(2026, 6, 18, 0, 0, tzinfo=timezone.utc)
+    now = gen + timedelta(hours=20)
+    assert refresh_is_stalled(gen, now, timedelta(hours=30)) is False
+
+
+def test_refresh_is_stalled_true_when_missing():
+    assert refresh_is_stalled(None, datetime.now(timezone.utc), timedelta(hours=30)) is True
