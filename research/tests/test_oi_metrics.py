@@ -239,3 +239,34 @@ def test_reconcile_fails_on_account_vs_position_swap():
     live = _hourly_ls(g, np.linspace(0.5, 0.6, n))
     with pytest.raises(ValueError, match="reconcile"):
         oi_metrics.reconcile_live_archive(archive, live)
+
+
+# ── dump_symbol --live integration ────────────────────────────────────────────
+
+
+def test_dump_symbol_live_advances_index_end(monkeypatch, tmp_path):
+    import dump_oi
+    from datetime import date
+
+    # Archive returns 3 hourly rows ending 02:00.
+    arch_idx = pd.date_range("2026-06-20", periods=3, freq="1h", tz="UTC")
+    archive = pd.DataFrame({
+        "oi": [1.0, 2, 3], "oi_usd": [1.0, 2, 3],
+        "toptrader_ls_accounts": [1.0, 1, 1],
+        "toptrader_ls_positions": [2.0, 2, 2],
+        "global_ls_accounts": [1.0, 1, 1],
+        "taker_buysell_ratio": [1.0, 1, 1],
+    }, index=arch_idx)
+    monkeypatch.setattr(oi_metrics, "load_oi_range", lambda *a, **k: archive)
+
+    # Live 5-min frame extends two hours past the archive end.
+    live_idx = pd.date_range("2026-06-20 02:00", periods=36, freq="5min", tz="UTC")
+    live = pd.DataFrame({"global_ls_accounts": [1.0] * 36,
+                         "toptrader_ls_positions": [2.0] * 36}, index=live_idx)
+    monkeypatch.setattr(oi_metrics, "fetch_live_ls_ratios", lambda *a, **k: live)
+    monkeypatch.setattr(oi_metrics, "reconcile_live_archive", lambda *a, **k: None)
+
+    path = dump_oi.dump_symbol("SOLUSDT", date(2026, 6, 18), date(2026, 6, 20),
+                               cache_dir=tmp_path, verify=False, live=True)
+    out = pd.read_parquet(path)
+    assert out.index.max() >= pd.Timestamp("2026-06-20 04:00", tz="UTC")  # advanced past archive

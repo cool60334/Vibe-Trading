@@ -42,8 +42,13 @@ def dump_symbol(
     end: date,
     cache_dir: Path,
     verify: bool = True,
+    live: bool = False,
 ) -> Path | None:
-    """Download + aggregate + cache one symbol's hourly OI for ``[start, end]``."""
+    """Download + aggregate + cache one symbol's hourly OI for ``[start, end]``.
+
+    When ``live=True``, overlay a fresh L/S tail from the Binance live endpoints
+    (reconciled against the archive overlap) so the parquet's index_end is current.
+    """
     cache_dir = Path(cache_dir)
     raw_dir = cache_dir / "_raw"
     print(f"[dump_oi] {symbol}: {start.isoformat()}..{end.isoformat()} ...")
@@ -51,6 +56,17 @@ def dump_symbol(
     if df.empty:
         print(f"[dump_oi] {symbol}: no data in range — skipped")
         return None
+
+    if live:
+        try:
+            live_5min = oi_metrics.fetch_live_ls_ratios(symbol)
+            live_hourly = oi_metrics.aggregate_to_hourly(live_5min)
+            oi_metrics.reconcile_live_archive(df, live_hourly)
+            df = oi_metrics.merge_live_tail(df, live_5min)
+            print(f"[dump_oi] {symbol}: live tail merged → index_end {df.index[-1]}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[dump_oi] {symbol}: live fetch failed ({exc}) — archive-only")
+
     path = oi_metrics.dump_oi_parquet(symbol, df, cache_dir=cache_dir)
     nan_oi = int(df["oi"].isna().sum())
     print(
@@ -71,12 +87,14 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE)
     ap.add_argument("--no-verify", action="store_true",
                     help="skip sha256 checksum verification")
+    ap.add_argument("--live", action="store_true",
+                    help="overlay a fresh L/S tail from Binance live endpoints")
     args = ap.parse_args(argv)
 
     end = args.end or datetime.now(timezone.utc).date()
     for sym in args.symbols:
         start = args.start or EARLIEST.get(sym, _FALLBACK_START)
-        dump_symbol(sym, start, end, args.cache_dir, verify=not args.no_verify)
+        dump_symbol(sym, start, end, args.cache_dir, verify=not args.no_verify, live=args.live)
 
 
 if __name__ == "__main__":
