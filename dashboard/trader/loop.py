@@ -26,7 +26,7 @@ import os
 import signal as _signal
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -65,6 +65,11 @@ def _now_iso() -> str:
 # within one process, so transient cross-process spikes still leak through.
 RETRY_MAX = int(os.environ.get("BYBIT_RETRY_MAX", "4"))
 RETRY_BASE_SLEEP = float(os.environ.get("BYBIT_RETRY_BASE_SLEEP", "5"))
+
+# Cron-health: warn if the factor store hasn't been REWRITTEN within this many
+# hours (the refresh cron likely broke). Distinct from data-age staleness — the
+# archive is ~1 day lagged by nature, so health is judged by rewrite recency.
+REFRESH_STALL_HOURS = float(os.environ.get("REFRESH_STALL_HOURS", "30"))
 
 
 def call_with_retry(
@@ -212,6 +217,7 @@ def _signal_to_side(sig: int) -> Optional[str]:
 
 def run(args: argparse.Namespace) -> None:
     from trader.broker import make_broker
+    from trader.freshness import refresh_generated_at, refresh_is_stalled
     from trader.killswitch import KillSwitch
     from trader.signal import compute_signal
 
@@ -251,6 +257,7 @@ def run(args: argparse.Namespace) -> None:
     current_signal = 0
     stale_alerted = False
     stale_pause = False
+    refresh_alerted = False
 
     # Graceful shutdown on SIGTERM / SIGINT
     _shutdown = {"flag": False}
@@ -341,6 +348,32 @@ def run(args: argparse.Namespace) -> None:
                         })
                         logger.info("Factor data fresh — resuming")
                     new_signal = result.signal
+
+                # ── Cron-health: warn if the factor store stopped being rewritten ─
+                # (distinct from data-age staleness; the archive is ~1 day lagged by
+                # nature, so health = rewrite recency, not newest-bar age). Alert
+                # only — no trading behavior change.
+                gen_at = refresh_generated_at(manifests_dir, symbol)
+                if refresh_is_stalled(
+                    gen_at, datetime.now(tz=timezone.utc),
+                    timedelta(hours=REFRESH_STALL_HOURS),
+                ):
+                    if not refresh_alerted:
+                        refresh_alerted = True
+                        alerts.append({
+                            "timestamp": _now_iso(),
+                            "severity": "warning",
+                            "message": f"factor refresh stalled (generated_at={gen_at}) — check refresh cron",
+                        })
+                        logger.warning("Factor refresh stalled (generated_at=%s)", gen_at)
+                elif refresh_alerted:
+                    refresh_alerted = False
+                    alerts.append({
+                        "timestamp": _now_iso(),
+                        "severity": "info",
+                        "message": "factor refresh resumed",
+                    })
+                    logger.info("Factor refresh resumed")
 
                 # ── Execute signal ────────────────────────────────────────────
                 if not result.stale and new_signal != current_signal:
