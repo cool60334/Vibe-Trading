@@ -35,6 +35,14 @@ services:
       # terminate above a strategy's expected DD (eth_s5 ≈ 9% OOS) or it auto-stops.
       KILL_PAUSE_DD: ${KILL_PAUSE_DD:-0.05}
       KILL_TERMINATE_DD: ${KILL_TERMINATE_DD:-0.07}
+      # Factor-freshness guard (signal.py): pause trading when the factor store is
+      # older than this many days. Default 2d suits daily-archive factors; a
+      # freshness-sensitive strategy on an hourly live cron (e.g. sol_s1, edge
+      # crosses below 1.0 at ~16-18h staleness) must tighten this to ~0.5 (12h).
+      FACTOR_MAX_AGE_DAYS: ${FACTOR_MAX_AGE_DAYS:-2}
+      # Cron-health alert (loop.py): warn when the factor store has not been
+      # REWRITTEN within this many hours (refresh cron likely broke). Alert only.
+      REFRESH_STALL_HOURS: ${REFRESH_STALL_HOURS:-30}
       # Credentials only needed for testnet/live modes.
       BYBIT_API_KEY: ${BYBIT_API_KEY:-}
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
