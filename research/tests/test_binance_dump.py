@@ -176,3 +176,25 @@ def test_metrics_download_returns_none_on_missing_day(tmp_path, monkeypatch):
         "ETHUSDT", date(2024, 6, 1), dest_dir=tmp_path, verify=True
     )
     assert out is None
+
+
+# ── live L/S ratio endpoints ───────────────────────────────────────────────
+
+
+def test_live_ls_url_maps_position_vs_account():
+    acct = binance_dump.live_ls_url("SOLUSDT", binance_dump.GLOBAL_LS_ACCOUNT_PATH, "5m", 500)
+    pos = binance_dump.live_ls_url("SOLUSDT", binance_dump.TOPTRADER_LS_POSITION_PATH, "5m", 500)
+    assert "globalLongShortAccountRatio" in acct and "symbol=SOLUSDT" in acct and "period=5m" in acct
+    # MUST be the POSITION variant for toptrader (not the account variant).
+    assert "topLongShortPositionRatio" in pos
+    assert "topLongShortAccountRatio" not in pos
+
+
+def test_fetch_live_ls_raw_parses_json(monkeypatch):
+    payload = [
+        {"symbol": "SOLUSDT", "longShortRatio": "1.50", "timestamp": 1718900000000},
+        {"symbol": "SOLUSDT", "longShortRatio": "1.40", "timestamp": 1718900300000},
+    ]
+    monkeypatch.setattr(binance_dump, "_fetch_json", lambda url, **kw: payload)
+    rows = binance_dump.fetch_live_ls_raw("SOLUSDT", binance_dump.GLOBAL_LS_ACCOUNT_PATH)
+    assert rows == payload

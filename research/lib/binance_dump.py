@@ -6,6 +6,7 @@ downstream (aggregation, factors) is offline and deterministic.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 import urllib.request
 from datetime import date
@@ -128,3 +129,40 @@ def download_metrics_day(
     if verify:
         _verify_checksum(url, target, dest_dir, fname)
     return target
+
+
+# ── live L/S ratio endpoints (fapi.binance.com, public, no key) ───────────
+
+_FAPI_BASE = "https://fapi.binance.com"
+GLOBAL_LS_ACCOUNT_PATH = "/futures/data/globalLongShortAccountRatio"   # → global_ls_accounts
+TOPTRADER_LS_POSITION_PATH = "/futures/data/topLongShortPositionRatio"  # → toptrader_ls_positions
+
+
+def live_ls_url(symbol: str, endpoint_path: str, period: str = "5m", limit: int = 500) -> str:
+    """Build a Binance futures-data L/S ratio URL (public, no key)."""
+    return f"{_FAPI_BASE}{endpoint_path}?symbol={symbol}&period={period}&limit={limit}"
+
+
+def _fetch_json(url: str, timeout: float = _FETCH_TIMEOUT, retries: int = 3):
+    """GET `url` and parse JSON, retrying transient errors (mirrors `_fetch`).
+
+    Isolated for test monkeypatching. HTTPError reraises immediately; timeouts /
+    connection drops retry with backoff.
+    """
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+                return json.loads(resp.read().decode())
+        except HTTPError:
+            raise
+        except (URLError, OSError):
+            if attempt == retries - 1:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+
+
+def fetch_live_ls_raw(
+    symbol: str, endpoint_path: str, period: str = "5m", limit: int = 500
+) -> list[dict]:
+    """Return the raw JSON rows for one live L/S endpoint (list of dicts)."""
+    return _fetch_json(live_ls_url(symbol, endpoint_path, period, limit))
