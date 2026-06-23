@@ -1,5 +1,5 @@
 # research/tests/test_coin_scout.py
-from datetime import date
+from datetime import date, timedelta
 
 from lib import coin_scout
 from lib.coin_scout import SourceCoverage
@@ -68,3 +68,37 @@ def test_score_partial_at_ohlcv_floor_but_below_target():
     # 365 is not < 365 → not NO_GO; but < 730 target → PARTIAL
     v, _ = coin_scout.score_coin(_cov(depth=365), _cov(depth=1500), _cov(depth=1500))
     assert v == "PARTIAL"
+
+
+def test_earliest_archive_day_finds_boundary():
+    start = date(2021, 3, 1)
+    today = date(2026, 6, 23)
+    got = coin_scout._earliest_archive_day(
+        "BNBUSDT", today=today, exists=lambda s, d: d >= start
+    )
+    assert got == start
+
+
+def test_earliest_archive_day_all_absent_returns_none():
+    got = coin_scout._earliest_archive_day(
+        "ZZZUSDT", today=date(2026, 6, 23), exists=lambda s, d: False
+    )
+    assert got is None
+
+
+def test_earliest_archive_day_skips_tail_soft_gap():
+    start = date(2022, 1, 1)
+    today = date(2026, 6, 23)
+    gap = today - timedelta(days=2)  # the first anchor probe day is a soft gap
+    got = coin_scout._earliest_archive_day(
+        "BNBUSDT", today=today, exists=lambda s, d: d >= start and d != gap
+    )
+    assert got == start
+
+
+def test_earliest_archive_day_floor_clamped():
+    # exists from before the floor → boundary is the floor itself
+    got = coin_scout._earliest_archive_day(
+        "BTCUSDT", today=date(2026, 6, 23), exists=lambda s, d: True
+    )
+    assert got == coin_scout._ARCHIVE_FLOOR

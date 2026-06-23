@@ -89,3 +89,50 @@ def score_coin(
     if not o_ok:
         reasons.append(f"okx_ohlcv depth {o_depth}d < target {target_days}d")
     return "PARTIAL", reasons
+
+
+def _earliest_archive_day(
+    symbol: str,
+    *,
+    floor: date = _ARCHIVE_FLOOR,
+    today: date | None = None,
+    exists=None,
+) -> date | None:
+    """Earliest day with an available daily-metrics zip, via binary search.
+
+    `exists(symbol, day) -> bool` is injected for testing (defaults to
+    binance_dump.metrics_day_exists). Upper bound is `today - 2d` to dodge the
+    T+1 unpublished tail; a short tail soft-gap is skipped by stepping back up to
+    7 days to find an anchor that exists. Returns None if no day in range exists.
+
+    A rare mid-range soft gap can over-estimate `earliest` by a few days — fine
+    for a feasibility scout (depth is a coverage signal, not an exact count).
+    """
+    exists = exists or binance_dump.metrics_day_exists
+    hi = (today or _utc_today()) - timedelta(days=2)
+    lo = floor
+    if hi < lo:
+        return None
+
+    # Anchor: first existing day at/just-before hi (skip a short tail gap).
+    anchor = None
+    probe = hi
+    for _ in range(7):
+        if probe < lo:
+            break
+        if exists(symbol, probe):
+            anchor = probe
+            break
+        probe -= timedelta(days=1)
+    if anchor is None:
+        return None
+
+    # Bisect [lo, anchor] for the smallest day where exists() is True.
+    hi = anchor
+    while lo < hi:
+        mid = lo + (hi - lo) // 2
+        if exists(symbol, mid):
+            hi = mid
+        else:
+            lo = mid + timedelta(days=1)
+    return lo
