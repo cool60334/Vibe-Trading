@@ -1,18 +1,21 @@
 """Coin feasibility scout: probe free data-source coverage before onboarding a
 coin into the research pipeline.
 
-Probes three sources the pipeline depends on — OKX OHLCV, OKX funding, and the
-Binance daily-metrics archive (OI + positioning factors) — for earliest date and
-depth, then scores each coin GO / PARTIAL / NO_GO. Read-only and cheap (existence
-+ earliest-date only). Network lives in the ``probe_*`` functions (which call
-``lib.okx_data`` / ``lib.binance_dump``); scoring and serialization are pure.
+Probes three sources the pipeline depends on — OKX OHLCV, ccxt Binance funding,
+and the Binance daily-metrics archive (OI + positioning factors) — for earliest
+date and depth, then scores each coin GO / PARTIAL / NO_GO. Read-only and cheap
+(existence + earliest-date only). Funding is probed via the SAME source stage0a
+ingests (ccxt Binance, multi-year) — NOT okx_data.fetch_funding_history, which
+caps at ~99 days. Network lives in the ``probe_*`` functions (which call
+``lib.okx_data`` / ``lib.ccxt_data`` / ``lib.binance_dump``); scoring and
+serialization are pure.
 """
 from __future__ import annotations
 
 import dataclasses
 from datetime import date, datetime, timedelta, timezone
 
-from lib import binance_dump, okx_data
+from lib import binance_dump, ccxt_data, okx_data
 
 # ── thresholds (module constants; tune after the first live run) ─────────────
 MIN_OHLCV_DAYS = 365       # OKX OHLCV depth below this → NO_GO (can't even backtest)
@@ -83,9 +86,9 @@ def score_coin(
     elif (archive.depth_days or 0) < target_days:
         reasons.append(f"binance_archive depth {archive.depth_days}d < target {target_days}d")
     if not funding.available:
-        reasons.append("okx_funding missing")
+        reasons.append("funding missing")
     elif (funding.depth_days or 0) < target_days:
-        reasons.append(f"okx_funding depth {funding.depth_days}d < target {target_days}d")
+        reasons.append(f"funding depth {funding.depth_days}d < target {target_days}d")
     if not o_ok:
         reasons.append(f"okx_ohlcv depth {o_depth}d < target {target_days}d")
     return "PARTIAL", reasons
@@ -160,10 +163,20 @@ def probe_okx_ohlcv(okx_swap: str, lookback_days: int = 2000) -> SourceCoverage:
     return _coverage_from_index(df.index)
 
 
-def probe_okx_funding(okx_swap: str, lookback_days: int = 2000) -> SourceCoverage:
-    """Earliest available funding rate for `okx_swap`."""
+def probe_funding(ccxt_symbol: str, lookback_days: int = 2000) -> SourceCoverage:
+    """Earliest available funding rate via the SAME source stage0a ingests.
+
+    Uses ccxt Binance (multi-year) — mirrors
+    research/pipeline/stage0a_features.py, which calls
+    fetch_funding_rate_history_ccxt(exchange_name="binance", symbol=ccxt_bybit).
+    NOT okx_data.fetch_funding_history: that public endpoint caps at ~99 days and
+    would make every coin look PARTIAL on funding even though the pipeline pulls
+    years of history.
+    """
     try:
-        df = okx_data.fetch_funding_history(okx_swap, lookback_days)
+        df = ccxt_data.fetch_funding_rate_history_ccxt(
+            exchange_name="binance", symbol=ccxt_symbol, days=lookback_days,
+        )
     except Exception as exc:
         return SourceCoverage(False, None, None, str(exc)[:200])
     if df is None or df.empty:
@@ -196,7 +209,7 @@ class CoinVerdict:
     ccxt_bybit: str
     binance_usdt: str
     okx_ohlcv: SourceCoverage
-    okx_funding: SourceCoverage
+    funding: SourceCoverage
     binance_archive: SourceCoverage
     verdict: str
     reasons: list[str]
@@ -223,7 +236,7 @@ def scout_coins(
             continue
         okx_swap, ccxt_bybit, binance_usdt = tickers_for(name)
         ohlcv = probe_okx_ohlcv(okx_swap)
-        funding = probe_okx_funding(okx_swap)
+        funding = probe_funding(ccxt_bybit)
         archive = probe_binance_archive(binance_usdt)
         verdict, reasons = score_coin(ohlcv, funding, archive, min_ohlcv_days, target_days)
         coins.append(CoinVerdict(
@@ -261,7 +274,7 @@ def report_to_dict(report: ScoutReport) -> dict:
                 "ccxt_bybit": v.ccxt_bybit,
                 "binance_usdt": v.binance_usdt,
                 "okx_ohlcv": _cov_to_dict(v.okx_ohlcv),
-                "okx_funding": _cov_to_dict(v.okx_funding),
+                "funding": _cov_to_dict(v.funding),
                 "binance_archive": _cov_to_dict(v.binance_archive),
                 "verdict": v.verdict,
                 "reasons": v.reasons,
@@ -276,10 +289,10 @@ def _depth_cell(c: SourceCoverage) -> str:
 
 
 def format_table(report: ScoutReport) -> str:
-    lines = [f"{'coin':<7} {'okx_ohlcv':<10} {'okx_funding':<12} {'binance_archive':<16} verdict"]
+    lines = [f"{'coin':<7} {'okx_ohlcv':<10} {'funding':<12} {'binance_archive':<16} verdict"]
     for v in report.coins:
         lines.append(
-            f"{v.name:<7} {_depth_cell(v.okx_ohlcv):<10} {_depth_cell(v.okx_funding):<12} "
+            f"{v.name:<7} {_depth_cell(v.okx_ohlcv):<10} {_depth_cell(v.funding):<12} "
             f"{_depth_cell(v.binance_archive):<16} {v.verdict}"
         )
     return "\n".join(lines)

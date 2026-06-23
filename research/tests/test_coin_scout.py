@@ -133,13 +133,29 @@ def test_probe_okx_ohlcv_empty_frame_is_unavailable(monkeypatch):
     assert cov.error is None
 
 
-def test_probe_okx_funding_available(monkeypatch):
+def test_probe_funding_uses_ccxt_binance_not_capped_okx(monkeypatch):
+    # Funding must be probed via the SAME source stage0a ingests (ccxt Binance,
+    # multi-year), NOT okx_data.fetch_funding_history (caps ~99d -> false PARTIAL).
     idx = pd.to_datetime(["2021-06-01", "2026-06-20"], utc=True)
     df = pd.DataFrame({"funding_rate": [0.0001, 0.0001]}, index=idx)
-    monkeypatch.setattr(coin_scout.okx_data, "fetch_funding_history", lambda *a, **k: df)
-    cov = coin_scout.probe_okx_funding("BNB-USDT-SWAP")
+    captured = {}
+
+    def fake_ccxt(*a, **k):
+        captured.update(k)
+        return df
+
+    monkeypatch.setattr(coin_scout.ccxt_data, "fetch_funding_rate_history_ccxt", fake_ccxt)
+
+    def fail_okx(*a, **k):
+        raise AssertionError("probe_funding must not call the capped OKX funding endpoint")
+
+    monkeypatch.setattr(coin_scout.okx_data, "fetch_funding_history", fail_okx)
+
+    cov = coin_scout.probe_funding("BNB/USDT:USDT")
     assert cov.available is True
     assert cov.earliest == date(2021, 6, 1)
+    assert captured.get("exchange_name") == "binance"
+    assert captured.get("symbol") == "BNB/USDT:USDT"
 
 
 def test_probe_binance_archive_available(monkeypatch):
@@ -169,7 +185,7 @@ def _go_verdict():
 def test_scout_coins_runs_each_coin(monkeypatch):
     c = SourceCoverage(True, date(2021, 1, 1), 1500, None)
     monkeypatch.setattr(coin_scout, "probe_okx_ohlcv", lambda s: c)
-    monkeypatch.setattr(coin_scout, "probe_okx_funding", lambda s: c)
+    monkeypatch.setattr(coin_scout, "probe_funding", lambda s: c)
     monkeypatch.setattr(coin_scout, "probe_binance_archive", lambda s: c)
     rep = coin_scout.scout_coins(["bnb", "XRP", ""])  # blank skipped
     assert [v.name for v in rep.coins] == ["bnb", "xrp"]
