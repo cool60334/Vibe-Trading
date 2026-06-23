@@ -51,3 +51,28 @@ def test_causal_1h_control_has_no_lookahead():
     assert ctrl.loc["2024-01-01 01:30"] == 10.0
     # at 02:00 -> hour-1 value
     assert ctrl.loc["2024-01-01 02:00"] == 20.0
+
+
+from lib import intraday_oi_recon as recon
+
+
+def test_classify_nogo_when_ic_below_floor():
+    v, reasons = recon.classify_factor(decay={4: 0.01, 8: 0.02}, incr_vs_1h=0.05, peak_h=2.0)
+    assert v == "NO_GO" and any("IC" in r for r in reasons)
+
+
+def test_classify_nogo_when_no_incremental_over_1h():
+    # strong raw IC but ~0 incremental vs its own 1H => intraday adds nothing
+    v, reasons = recon.classify_factor(decay={2: 0.08}, incr_vs_1h=0.004, peak_h=2.0)
+    assert v == "NO_GO" and any("1H" in r for r in reasons)
+
+
+def test_classify_nogo_when_peak_is_slow():
+    # edge only at 72h => it's the slow signal in disguise, not intraday
+    v, reasons = recon.classify_factor(decay={144: 0.06}, incr_vs_1h=0.05, peak_h=72.0)
+    assert v == "NO_GO" and any("slow" in r or "peak" in r for r in reasons)
+
+
+def test_classify_go_when_intraday_incremental_and_fast():
+    v, reasons = recon.classify_factor(decay={2: 0.06}, incr_vs_1h=0.045, peak_h=2.0)
+    assert v == "GO"
