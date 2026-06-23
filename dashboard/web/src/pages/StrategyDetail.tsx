@@ -557,6 +557,7 @@ export default function StrategyDetail() {
   const [error, setError] = useState<string | null>(null);
   const [showPromote, setShowPromote] = useState(false);
   const [isPromoted, setIsPromoted] = useState(false);
+  const [running, setRunning] = useState<{ testnet_id: string | null; mode: string | null } | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -565,7 +566,9 @@ export default function StrategyDetail() {
       api.equity(id).catch(() => [] as EquityPoint[]),
       api.trades(id).catch(() => [] as Record<string, unknown>[]),
       api.factorAnalysis(interval).catch(() => [] as FactorManifest[]),
-      api.promoteStatus(id).catch(() => ({ promoted: false })),
+      api
+        .promoteStatus(id)
+        .catch(() => ({ promoted: false, running: false, running_testnet_id: null, running_mode: null })),
     ])
       .then(([m, eq, tr, factors, promote]) => {
         setManifest(m);
@@ -573,7 +576,18 @@ export default function StrategyDetail() {
         setTrades(tr);
         const fm = (factors as FactorManifest[]).find((f) => f.symbol === m.symbol) ?? null;
         setFactorManifest(fm);
-        setIsPromoted((promote as { promoted: boolean }).promoted);
+        const ps = promote as {
+          promoted: boolean;
+          running?: boolean;
+          running_testnet_id?: string | null;
+          running_mode?: string | null;
+        };
+        setIsPromoted(ps.promoted);
+        setRunning(
+          ps.running
+            ? { testnet_id: ps.running_testnet_id ?? null, mode: ps.running_mode ?? null }
+            : null,
+        );
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -621,8 +635,16 @@ export default function StrategyDetail() {
           </div>
         </div>
 
-        {/* Promote / Demote button */}
-        {isPromoted ? (
+        {/* Promote / Demote button — a live trader takes precedence over both */}
+        {running ? (
+          <span
+            className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 cursor-not-allowed dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300"
+            title={`已在 ${running.mode ?? "paper"} 模式運行${running.testnet_id ? `（${running.testnet_id}）` : ""}，請先停止再 Promote`}
+          >
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            已運行{running.mode ? `（${running.mode}）` : ""}
+          </span>
+        ) : isPromoted ? (
           <button
             onClick={async () => {
               await api.demote(manifest.strategy_id);

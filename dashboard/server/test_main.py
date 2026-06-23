@@ -97,7 +97,10 @@ def test_promote_status_roundtrip(repo_root, tmp_path):
             # initially not promoted
             r = c.get("/api/strategies/strat_btc_001/promote")
             assert r.status_code == 200
-            assert r.json() == {"strategy_id": "strat_btc_001", "promoted": False}
+            body = r.json()
+            assert body["strategy_id"] == "strat_btc_001"
+            assert body["promoted"] is False
+            assert body["running"] is False
 
             # promote → status flips true
             assert c.post("/api/strategies/strat_btc_001/promote", json={}).status_code == 201
@@ -106,6 +109,79 @@ def test_promote_status_roundtrip(repo_root, tmp_path):
             # demote → status flips back false
             c.request("DELETE", "/api/strategies/strat_btc_001/promote")
             assert c.get("/api/strategies/strat_btc_001/promote").json()["promoted"] is False
+    finally:
+        os.environ.pop("DASHBOARD_DIR", None)
+
+
+def _write_running_testnet(repo_root: Path, strategy_id: str = "strat_btc_001",
+                           testnet_id: str = "strat_btc_001_paper",
+                           status: str = "running", mode: str = "paper") -> None:
+    """Emit a trader-style testnet_status.json so the strategy looks deployed."""
+    d = repo_root / "runs" / "testnet" / testnet_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "testnet_status.json").write_text(json.dumps({
+        "schema_version": 1,
+        "testnet_id": testnet_id,
+        "strategy_id": strategy_id,
+        "symbol": "BTC",
+        "mode": mode,
+        "live": {
+            "started_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "status": status,
+        },
+        "killswitch": {},
+    }), encoding="utf-8")
+
+
+def test_promote_status_reports_running(repo_root, tmp_path):
+    """GET promote status surfaces an out-of-band live trader as running=True."""
+    _write_running_testnet(repo_root)
+    os.environ["REPO_ROOT"] = str(repo_root)
+    os.environ["DASHBOARD_DIR"] = str(tmp_path / "dash")
+    import importlib, main as main_module
+    importlib.reload(main_module)
+    from main import app
+    try:
+        with TestClient(app) as c:
+            body = c.get("/api/strategies/strat_btc_001/promote").json()
+            assert body["running"] is True
+            assert body["running_testnet_id"] == "strat_btc_001_paper"
+            assert body["running_mode"] == "paper"
+            assert body["promoted"] is False  # deployed out-of-band, never promoted
+    finally:
+        os.environ.pop("DASHBOARD_DIR", None)
+
+
+def test_promote_blocked_when_running(repo_root, tmp_path):
+    """POST promote is rejected with 409 while a trader is live on the strategy."""
+    _write_running_testnet(repo_root)
+    os.environ["REPO_ROOT"] = str(repo_root)
+    os.environ["DASHBOARD_DIR"] = str(tmp_path / "dash")
+    import importlib, main as main_module
+    importlib.reload(main_module)
+    from main import app
+    try:
+        with TestClient(app) as c:
+            r = c.post("/api/strategies/strat_btc_001/promote", json={})
+            assert r.status_code == 409
+            assert "already running" in r.json()["detail"]
+    finally:
+        os.environ.pop("DASHBOARD_DIR", None)
+
+
+def test_promote_allowed_when_testnet_stopped(repo_root, tmp_path):
+    """A stopped testnet status must not block promote (only running/paused do)."""
+    _write_running_testnet(repo_root, status="stopped")
+    os.environ["REPO_ROOT"] = str(repo_root)
+    os.environ["DASHBOARD_DIR"] = str(tmp_path / "dash")
+    import importlib, main as main_module
+    importlib.reload(main_module)
+    from main import app
+    try:
+        with TestClient(app) as c:
+            assert c.get("/api/strategies/strat_btc_001/promote").json()["running"] is False
+            assert c.post("/api/strategies/strat_btc_001/promote", json={}).status_code == 201
     finally:
         os.environ.pop("DASHBOARD_DIR", None)
 

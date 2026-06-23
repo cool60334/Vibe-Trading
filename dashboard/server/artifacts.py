@@ -162,3 +162,23 @@ def get_testnet_status(repo_root: Path, testnet_id: str) -> Optional[TestnetStat
         return TestnetStatus.model_validate(raw)
     except Exception:
         return None
+
+
+#: live.status values that mean a trader is actively deployed for the strategy.
+_LIVE_TESTNET_STATUSES = {"running", "paused"}
+
+
+def find_running_testnet(repo_root: Path, strategy_id: str) -> Optional[TestnetStatus]:
+    """Return the live (running/paused) testnet status for *strategy_id*, if any.
+
+    A strategy can be deployed out-of-band — the trader container reconciles
+    ``runs/testnet/<id>/control.json`` directly, bypassing the dashboard promote
+    flow (``state.json``). So the authoritative "is this strategy live" signal is
+    the trader-emitted ``testnet_status.json``, not the dashboard promote record.
+    Matching is by the inner ``strategy_id`` (the ``testnet_id`` may carry a
+    ``_paper`` / mode suffix). Returns the first live match, or ``None``.
+    """
+    for status in list_testnet_statuses(repo_root):
+        if status.strategy_id == strategy_id and status.live.status in _LIVE_TESTNET_STATUSES:
+            return status
+    return None

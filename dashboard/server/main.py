@@ -314,6 +314,19 @@ def promote_strategy(strategy_id: str, body: PromoteRequest = PromoteRequest()) 
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
 
+    # Already-running guard — block re-promote of a strategy a trader is live on
+    # (deployed via control.json out-of-band, so state.json may not know).
+    running = artifacts.find_running_testnet(REPO_ROOT, strategy_id)
+    if running is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Strategy '{strategy_id}' is already running as testnet "
+                f"'{running.testnet_id}' (mode={running.mode}, "
+                f"status={running.live.status}). Stop it before re-promoting."
+            ),
+        )
+
     # Fatal gate check — hard block, no override allowed
     if manifest.gate and manifest.gate.fatal_fail:
         fatal_names = [
@@ -344,10 +357,19 @@ def promote_strategy(strategy_id: str, body: PromoteRequest = PromoteRequest()) 
 
 @app.get("/api/strategies/{strategy_id}/promote")
 def get_promote_status(strategy_id: str) -> dict:
-    """Whether *strategy_id* is currently promoted (drives the UI button)."""
+    """Promote + live-deploy state for *strategy_id* (drives the UI button).
+
+    ``running`` reflects whether a trader is actively live on this strategy
+    (testnet_status.json running/paused) — true even for out-of-band control.json
+    deployments the dashboard promote flow never recorded.
+    """
+    running = artifacts.find_running_testnet(REPO_ROOT, strategy_id)
     return {
         "strategy_id": strategy_id,
         "promoted": state_module.is_promoted(DASHBOARD_DIR, strategy_id),
+        "running": running is not None,
+        "running_testnet_id": running.testnet_id if running else None,
+        "running_mode": running.mode if running else None,
     }
 
 
