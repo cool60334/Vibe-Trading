@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type StrategyRow, type RedFlagCode } from "../lib/api";
+import { compareBy, type SortKey, type SortDir } from "../lib/ranking";
 import { useInterval } from "@/hooks/useInterval";
 import { cn } from "../lib/utils";
 
@@ -118,6 +119,31 @@ const fmtSharpe = (v: number) => (v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2));
 const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
 // ---------------------------------------------------------------------------
+// Sortable header cell
+// ---------------------------------------------------------------------------
+
+function SortableTh({
+  label, sortKey: key, active, dir, onSort, align = "right",
+}: {
+  label: string;
+  sortKey: SortKey;
+  active: boolean;
+  dir: SortDir;
+  onSort: (k: SortKey) => void;
+  align?: "right" | "center";
+}) {
+  return (
+    <th
+      className={cn("px-4 py-3 cursor-pointer select-none hover:text-foreground", align === "right" ? "text-right" : "text-center")}
+      onClick={() => onSort(key)}
+    >
+      {label}
+      <span className="ml-1 text-[10px]">{active ? (dir === "asc" ? "▲" : "▼") : "↕"}</span>
+    </th>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Compare page
 // ---------------------------------------------------------------------------
 
@@ -128,6 +154,17 @@ export default function Compare() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeCoin, setActiveCoin] = useState<string>("ALL");
+  const [sortKey, setSortKey] = useState<SortKey>("rank");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(key === "pipeline_stage" ? "asc" : "desc");
+    }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -144,7 +181,10 @@ export default function Compare() {
   }, [interval]);
 
   const symbols = ["ALL", ...Array.from(new Set(rows.map((r) => r.symbol))).sort()];
-  const filtered = activeCoin === "ALL" ? rows : rows.filter((r) => r.symbol === activeCoin);
+  const filtered = useMemo(() => {
+    const base = activeCoin === "ALL" ? rows : rows.filter((r) => r.symbol === activeCoin);
+    return [...base].sort(compareBy(sortKey, sortDir));
+  }, [rows, activeCoin, sortKey, sortDir]);
 
   if (loading) {
     return (
@@ -165,7 +205,7 @@ export default function Compare() {
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">策略比較</h1>
+        <h1 className="text-2xl font-semibold">策略排名</h1>
         <span className="text-sm text-muted-foreground">{filtered.length} 個策略</span>
       </div>
 
@@ -203,9 +243,11 @@ export default function Compare() {
                 <th className="px-4 py-3 text-left">策略</th>
                 <th className="px-4 py-3 text-left">幣種</th>
                 <th className="px-4 py-3 text-left">級別</th>
-                <th className="px-4 py-3 text-right">Sharpe</th>
-                <th className="px-4 py-3 text-right">Max DD</th>
-                <th className="px-4 py-3 text-center">Stage</th>
+                <SortableTh label="OOS Sharpe" sortKey="sharpe_oos" active={sortKey === "sharpe_oos"} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="OOS DD" sortKey="dd_oos" active={sortKey === "dd_oos"} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="OOS Trades" sortKey="trades_oos" active={sortKey === "trades_oos"} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="IS Sharpe" sortKey="sharpe" active={sortKey === "sharpe"} dir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Stage" sortKey="pipeline_stage" active={sortKey === "pipeline_stage"} dir={sortDir} onSort={toggleSort} align="center" />
                 <th className="px-4 py-3 text-center">GO/NO-GO</th>
                 <th className="px-4 py-3 text-left">紅旗</th>
               </tr>
@@ -221,24 +263,26 @@ export default function Compare() {
                     !row.gate_fatal && row.gate_pass === false && "bg-orange-50/40 dark:bg-orange-950/10",
                   )}
                 >
-                  <td className="px-4 py-3 font-mono font-medium text-foreground">
-                    {row.strategy_id}
-                  </td>
+                  <td className="px-4 py-3 font-mono font-medium text-foreground">{row.strategy_id}</td>
                   <td className="px-4 py-3 text-muted-foreground">{row.symbol}</td>
                   <td className="px-4 py-3">
                     <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
                       {row.interval}
                     </span>
                   </td>
+                  <td className="px-4 py-3 text-right tabular-nums font-medium">
+                    <MetricCell value={row.sharpe_oos} formatter={fmtSharpe} />
+                  </td>
                   <td className="px-4 py-3 text-right tabular-nums">
+                    <MetricCell value={row.dd_oos} formatter={fmtPct} />
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    <MetricCell value={row.trades_oos} formatter={(v) => String(Math.round(v))} />
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
                     <MetricCell value={row.sharpe} formatter={fmtSharpe} />
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums">
-                    <MetricCell value={row.max_drawdown} formatter={fmtPct} />
-                  </td>
-                  <td className="px-4 py-3 text-center text-muted-foreground">
-                    {row.pipeline_stage}
-                  </td>
+                  <td className="px-4 py-3 text-center text-muted-foreground">{row.pipeline_stage}</td>
                   <td className="px-4 py-3 text-center">
                     <GateBadge pass={row.gate_pass} fatal={row.gate_fatal} />
                   </td>
