@@ -1,4 +1,5 @@
 # research/tests/test_coin_scout.py
+import json
 from datetime import date, timedelta
 
 import pandas as pd
@@ -198,3 +199,33 @@ def test_go_coins_yaml_only_includes_go():
     y = coin_scout.go_coins_yaml(rep)
     assert "name: bnb" in y and "BNB-USDT-SWAP" in y
     assert "xrp" not in y
+
+
+def test_cli_writes_report_and_returns_zero(tmp_path, monkeypatch):
+    from pipeline import coin_scout as cli
+
+    c = SourceCoverage(True, date(2021, 1, 1), 1500, None)
+    rep = cli.ScoutReport(
+        "t", {"min_ohlcv_days": 365},
+        [cli.CoinVerdict("bnb", "BNB-USDT-SWAP", "BNB/USDT:USDT", "BNBUSDT",
+                         c, c, c, "GO", ["ok"])],
+    )
+    monkeypatch.setattr(cli, "scout_coins", lambda names: rep)
+    out = tmp_path / "scout.json"
+    rc = cli.main(["--coins", "bnb", "--out", str(out)])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["coins"][0]["name"] == "bnb"
+
+
+def test_cli_uses_default_candidates_when_no_coins(tmp_path, monkeypatch):
+    from pipeline import coin_scout as cli
+
+    captured = {}
+    def fake_scout(names):
+        captured["names"] = names
+        return cli.ScoutReport("t", {}, [])
+    monkeypatch.setattr(cli, "scout_coins", fake_scout)
+    cli.main(["--out", str(tmp_path / "s.json")])
+    assert captured["names"] == cli.DEFAULT_CANDIDATES
+    assert "bnb" in cli.DEFAULT_CANDIDATES and "bch" in cli.DEFAULT_CANDIDATES
