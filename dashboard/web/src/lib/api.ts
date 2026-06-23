@@ -287,8 +287,12 @@ export interface StrategyRow {
   generated_at: string;
   gate_pass: boolean | null;
   gate_fatal: boolean | null;
-  sharpe: number | null;
-  max_drawdown: number | null;
+  sharpe: number | null;        // in-sample (secondary)
+  max_drawdown: number | null;  // in-sample (secondary)
+  sharpe_oos: number | null;    // OOS / walk-forward (primary ranking metric)
+  dd_oos: number | null;
+  trades_oos: number | null;
+  pf_oos: number | null;
   red_flags: RedFlagCode[];
   interval: string;
 }
