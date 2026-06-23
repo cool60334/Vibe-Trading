@@ -23,7 +23,7 @@
 | 源 | 用途 | lib |
 |---|---|---|
 | OKX OHLCV | stage0a 主資料（價量技術指標） | `research/lib/okx_data.py::fetch_candles` |
-| OKX funding | `funding_z` 因子 | `research/lib/okx_data.py::fetch_funding_history` |
+| ccxt Binance funding | `funding_z` 因子 | `research/lib/ccxt_data.py::fetch_funding_rate_history_ccxt`（stage0a 實際用的源；OKX public 端點卡 ~99d 不用） |
 | Binance daily-metrics archive | OI + 持倉因子（`global_ls_acct_z` / `toptrader_ls_z` / `ls_divergence` / `taker_buysell_ratio`） | `research/lib/binance_dump.py::metrics_url` + `oi_metrics.py` |
 
 > Bybit OI 只是 archive 缺席時的 fallback，且不提供持倉因子 → **偵察器不探測 Bybit**（只在輸出的 config 片段填推導值）。
@@ -57,7 +57,7 @@
 SourceCoverage(available: bool, earliest: date | None, depth_days: int | None,
                ok: bool, error: str | None)
 CoinVerdict(name: str, okx_swap: str, ccxt_bybit: str, binance_usdt: str,
-            okx_ohlcv: SourceCoverage, okx_funding: SourceCoverage,
+            okx_ohlcv: SourceCoverage, funding: SourceCoverage,
             binance_archive: SourceCoverage,
             verdict: str,            # "GO" | "PARTIAL" | "NO_GO"
             reasons: list[str])
@@ -66,7 +66,7 @@ ScoutReport(generated_at: str, thresholds: dict, coins: list[CoinVerdict])
 
 函式：
 - `probe_okx_ohlcv(okx_swap) -> SourceCoverage`
-- `probe_okx_funding(okx_swap) -> SourceCoverage`
+- `probe_funding(ccxt_symbol) -> SourceCoverage`（ccxt Binance 多年；非 OKX 99d）
 - `probe_binance_archive(binance_usdt) -> SourceCoverage`
 - `score_coin(ohlcv, funding, archive, thresholds) -> (verdict, reasons)` —— **純函式，重點單元測試對象**
 - `scout_coins(names, thresholds) -> ScoutReport` —— 協調：對每個幣推 ticker、跑三探測、score、組報告
@@ -83,7 +83,7 @@ ScoutReport(generated_at: str, thresholds: dict, coins: list[CoinVerdict])
 ### 3.2 探測機制（唯讀，不全量下載）
 
 - **OKX OHLCV 最早**：呼叫 `fetch_candles(okx_swap, days=≈2000, interval="1H")`，它本來就會分頁回拉到 cutoff；取回傳 frame 的最舊 index → `earliest`，`depth_days = (today - earliest).days`。空 frame / 例外 → `available=False`。
-- **OKX funding 最早**：`fetch_funding_history(okx_swap, days≈2000)` 同理取最舊。
+- **funding 最早**：`ccxt_data.fetch_funding_rate_history_ccxt(exchange_name="binance", symbol=ccxt_symbol)` 取最舊（鏡像 stage0a；OKX public funding-rate-history 卡 ~99d 故不用）。
 - **Binance archive 最早**：對 `metrics_url(binance_usdt, day)` 做 HTTP **HEAD**（200=存在、404=無）。在 `[date(2020,1,1), today - 2d]` 二分搜最早存在日（上界減 2 天避開 T+1 尚未發布）。`earliest` = 最早 200 的日子。全程無 200 → `available=False`。
   - 新增輕量 helper `metrics_day_exists(symbol, day) -> bool`（HEAD 探測）放 **`binance_dump.py`**（網路 I/O 集中於此 lib，與 `metrics_url` / `_fetch` 同檔）。
 
@@ -116,7 +116,7 @@ CONFIG_PERIOD_DAYS = 1460  # 只作報告提示：現有幣 4yr，淺幣 OOS 較
     {"name": "bnb", "okx_swap": "BNB-USDT-SWAP", "ccxt_bybit": "BNB/USDT:USDT",
      "binance_usdt": "BNBUSDT",
      "okx_ohlcv": {"available": true, "earliest": "2020-02-10", "depth_days": 2295, "ok": true, "error": null},
-     "okx_funding": {...}, "binance_archive": {...},
+     "funding": {...}, "binance_archive": {...},
      "verdict": "GO", "reasons": ["all sources >= 730d (...)"]}
   ]
 }
@@ -124,7 +124,7 @@ CONFIG_PERIOD_DAYS = 1460  # 只作報告提示：現有幣 4yr，淺幣 OOS 較
 
 **主控台表格**：
 ```
-coin  okx_ohlcv  okx_funding  binance_archive  verdict
+coin  okx_ohlcv  funding  binance_archive  verdict
 bnb   2295d      2295d        1400d            GO
 xrp   ...        ...          ...              PARTIAL
 ```

@@ -18,6 +18,10 @@
 
 Spec's `SourceCoverage.ok` field is **dropped**. `available` already means "probe succeeded and data present"; a failed probe sets `available=False` + `error`. Keeping a separate `ok` would duplicate `available`. Fields: `available`, `earliest`, `depth_days`, `error`.
 
+## Post-implementation correction (2026-06-23)
+
+Live smoke found all coins PARTIAL because the funding probe used `okx_data.fetch_funding_history`, which the OKX public endpoint caps at ~99 days. The pipeline (stage0a) ingests funding from **ccxt Binance** (multi-year). Fix: `probe_okx_funding(okx_swap)` → `probe_funding(ccxt_symbol)` calling `ccxt_data.fetch_funding_rate_history_ccxt(exchange_name="binance", symbol=ccxt_symbol)`; `CoinVerdict.okx_funding` field + JSON key + table column renamed to `funding`. Task 5 code below shows the original OKX version — see `research/lib/coin_scout.py` for the shipped ccxt version.
+
 ## Conventions (read before starting)
 
 - Research lib modules import siblings as `from lib import okx_data` (see `research/lib/oi_metrics.py`).
