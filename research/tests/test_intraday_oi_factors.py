@@ -76,3 +76,27 @@ def test_classify_nogo_when_peak_is_slow():
 def test_classify_go_when_intraday_incremental_and_fast():
     v, reasons = recon.classify_factor(decay={2: 0.06}, incr_vs_1h=0.045, peak_h=2.0)
     assert v == "GO"
+
+
+def test_driver_run_recon_report_shape(monkeypatch, tmp_path):
+    import sys
+    sys.path.insert(0, "scripts")
+    import intraday_oi_recon as driver
+
+    # synthetic 30m OI frame + close with a built-in 2-bar-forward edge in ls_divergence
+    n = 400
+    idx = pd.date_range("2024-01-01", periods=n, freq="30min", tz="UTC")
+    rng = np.random.default_rng(0)
+    g = pd.Series(np.cumsum(rng.normal(0, 1, n)) + 50, index=idx)
+    t = pd.Series(np.cumsum(rng.normal(0, 1, n)) + 50, index=idx)
+    oi_df = pd.DataFrame({"oi": g * 100, "global_ls_accounts": g, "toptrader_ls_positions": t}, index=idx)
+    close = pd.Series(np.cumsum(rng.normal(0, 0.5, n)) + 1000, index=idx)
+
+    report = driver.run_recon(oi_df, close, interval="30m", symbol="sol")
+    assert report["symbol"] == "sol" and report["interval"] == "30m"
+    f = report["factors"]
+    assert "ls_divergence_s" in f
+    row = f["ls_divergence_s"]
+    assert {"max_abs_ic", "peak_h", "incr_vs_1h", "verdict", "deployable"} <= set(row)
+    assert row["deployable"] is True
+    assert row["verdict"] in {"GO", "NO_GO"}
