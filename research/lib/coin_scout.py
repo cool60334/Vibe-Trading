@@ -136,3 +136,52 @@ def _earliest_archive_day(
         else:
             lo = mid + timedelta(days=1)
     return lo
+
+
+def _coverage_from_index(idx) -> SourceCoverage:
+    """Build a SourceCoverage from a non-empty UTC DatetimeIndex."""
+    earliest = idx.min().date()
+    return SourceCoverage(
+        available=True,
+        earliest=earliest,
+        depth_days=(_utc_today() - earliest).days,
+        error=None,
+    )
+
+
+def probe_okx_ohlcv(okx_swap: str, lookback_days: int = 2000) -> SourceCoverage:
+    """Earliest available 1H candle for `okx_swap` (deep history request)."""
+    try:
+        df = okx_data.fetch_candles(okx_swap, days=lookback_days, bar="1H")
+    except Exception as exc:  # network / okx code!=0 / unknown instId — never crash the run
+        return SourceCoverage(False, None, None, str(exc)[:200])
+    if df is None or df.empty:
+        return SourceCoverage(False, None, None, None)
+    return _coverage_from_index(df.index)
+
+
+def probe_okx_funding(okx_swap: str, lookback_days: int = 2000) -> SourceCoverage:
+    """Earliest available funding rate for `okx_swap`."""
+    try:
+        df = okx_data.fetch_funding_history(okx_swap, lookback_days)
+    except Exception as exc:
+        return SourceCoverage(False, None, None, str(exc)[:200])
+    if df is None or df.empty:
+        return SourceCoverage(False, None, None, None)
+    return _coverage_from_index(df.index)
+
+
+def probe_binance_archive(binance_usdt: str) -> SourceCoverage:
+    """Earliest available daily-metrics archive day for `binance_usdt`."""
+    try:
+        earliest = _earliest_archive_day(binance_usdt)
+    except Exception as exc:
+        return SourceCoverage(False, None, None, str(exc)[:200])
+    if earliest is None:
+        return SourceCoverage(False, None, None, None)
+    return SourceCoverage(
+        available=True,
+        earliest=earliest,
+        depth_days=(_utc_today() - earliest).days,
+        error=None,
+    )

@@ -1,6 +1,8 @@
 # research/tests/test_coin_scout.py
 from datetime import date, timedelta
 
+import pandas as pd
+
 from lib import coin_scout
 from lib.coin_scout import SourceCoverage
 
@@ -102,3 +104,54 @@ def test_earliest_archive_day_floor_clamped():
         "BTCUSDT", today=date(2026, 6, 23), exists=lambda s, d: True
     )
     assert got == coin_scout._ARCHIVE_FLOOR
+
+
+def test_probe_okx_ohlcv_available(monkeypatch):
+    idx = pd.to_datetime(["2021-01-01", "2026-06-20"], utc=True)
+    df = pd.DataFrame({"close": [1.0, 2.0]}, index=idx)
+    monkeypatch.setattr(coin_scout.okx_data, "fetch_candles", lambda *a, **k: df)
+    cov = coin_scout.probe_okx_ohlcv("BNB-USDT-SWAP")
+    assert cov.available is True
+    assert cov.earliest == date(2021, 1, 1)
+    assert cov.depth_days >= 1800
+
+
+def test_probe_okx_ohlcv_unknown_symbol_is_unavailable(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("history-candles error: 51001 unknown instId")
+    monkeypatch.setattr(coin_scout.okx_data, "fetch_candles", boom)
+    cov = coin_scout.probe_okx_ohlcv("ZZZ-USDT-SWAP")
+    assert cov.available is False
+    assert cov.error is not None
+
+
+def test_probe_okx_ohlcv_empty_frame_is_unavailable(monkeypatch):
+    monkeypatch.setattr(coin_scout.okx_data, "fetch_candles", lambda *a, **k: pd.DataFrame())
+    cov = coin_scout.probe_okx_ohlcv("NEW-USDT-SWAP")
+    assert cov.available is False
+    assert cov.error is None
+
+
+def test_probe_okx_funding_available(monkeypatch):
+    idx = pd.to_datetime(["2021-06-01", "2026-06-20"], utc=True)
+    df = pd.DataFrame({"funding_rate": [0.0001, 0.0001]}, index=idx)
+    monkeypatch.setattr(coin_scout.okx_data, "fetch_funding_history", lambda *a, **k: df)
+    cov = coin_scout.probe_okx_funding("BNB-USDT-SWAP")
+    assert cov.available is True
+    assert cov.earliest == date(2021, 6, 1)
+
+
+def test_probe_binance_archive_available(monkeypatch):
+    monkeypatch.setattr(
+        coin_scout, "_earliest_archive_day", lambda *a, **k: date(2021, 2, 10)
+    )
+    cov = coin_scout.probe_binance_archive("BNBUSDT")
+    assert cov.available is True
+    assert cov.earliest == date(2021, 2, 10)
+    assert cov.depth_days >= 1800
+
+
+def test_probe_binance_archive_absent(monkeypatch):
+    monkeypatch.setattr(coin_scout, "_earliest_archive_day", lambda *a, **k: None)
+    cov = coin_scout.probe_binance_archive("ZZZUSDT")
+    assert cov.available is False
