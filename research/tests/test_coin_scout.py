@@ -155,3 +155,46 @@ def test_probe_binance_archive_absent(monkeypatch):
     monkeypatch.setattr(coin_scout, "_earliest_archive_day", lambda *a, **k: None)
     cov = coin_scout.probe_binance_archive("ZZZUSDT")
     assert cov.available is False
+
+
+def _go_verdict():
+    c = SourceCoverage(True, date(2021, 1, 1), 1500, None)
+    return coin_scout.CoinVerdict(
+        "bnb", "BNB-USDT-SWAP", "BNB/USDT:USDT", "BNBUSDT",
+        c, c, c, "GO", ["all sources >= 730d"],
+    )
+
+
+def test_scout_coins_runs_each_coin(monkeypatch):
+    c = SourceCoverage(True, date(2021, 1, 1), 1500, None)
+    monkeypatch.setattr(coin_scout, "probe_okx_ohlcv", lambda s: c)
+    monkeypatch.setattr(coin_scout, "probe_okx_funding", lambda s: c)
+    monkeypatch.setattr(coin_scout, "probe_binance_archive", lambda s: c)
+    rep = coin_scout.scout_coins(["bnb", "XRP", ""])  # blank skipped
+    assert [v.name for v in rep.coins] == ["bnb", "xrp"]
+    assert rep.coins[0].verdict == "GO"
+    assert rep.thresholds["min_ohlcv_days"] == coin_scout.MIN_OHLCV_DAYS
+
+
+def test_report_to_dict_serializes_dates():
+    rep = coin_scout.ScoutReport("2026-06-23T00:00:00+00:00", {"min_ohlcv_days": 365}, [_go_verdict()])
+    d = coin_scout.report_to_dict(rep)
+    assert d["coins"][0]["okx_ohlcv"]["earliest"] == "2021-01-01"
+    assert d["coins"][0]["verdict"] == "GO"
+
+
+def test_format_table_lists_coin_and_verdict():
+    rep = coin_scout.ScoutReport("t", {}, [_go_verdict()])
+    table = coin_scout.format_table(rep)
+    assert "bnb" in table and "GO" in table
+
+
+def test_go_coins_yaml_only_includes_go():
+    c = SourceCoverage(True, date(2021, 1, 1), 1500, None)
+    partial = coin_scout.CoinVerdict(
+        "xrp", "XRP-USDT-SWAP", "XRP/USDT:USDT", "XRPUSDT", c, c, c, "PARTIAL", [],
+    )
+    rep = coin_scout.ScoutReport("t", {}, [_go_verdict(), partial])
+    y = coin_scout.go_coins_yaml(rep)
+    assert "name: bnb" in y and "BNB-USDT-SWAP" in y
+    assert "xrp" not in y

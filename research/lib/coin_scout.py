@@ -185,3 +185,111 @@ def probe_binance_archive(binance_usdt: str) -> SourceCoverage:
         depth_days=(_utc_today() - earliest).days,
         error=None,
     )
+
+
+# ── orchestrator + serializers ────────────────────────────────────────────────
+
+@dataclasses.dataclass(frozen=True)
+class CoinVerdict:
+    name: str
+    okx_swap: str
+    ccxt_bybit: str
+    binance_usdt: str
+    okx_ohlcv: SourceCoverage
+    okx_funding: SourceCoverage
+    binance_archive: SourceCoverage
+    verdict: str
+    reasons: list[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class ScoutReport:
+    generated_at: str
+    thresholds: dict
+    coins: list[CoinVerdict]
+
+
+def scout_coins(
+    names,
+    *,
+    min_ohlcv_days: int = MIN_OHLCV_DAYS,
+    target_days: int = TARGET_DEPTH_DAYS,
+) -> ScoutReport:
+    """Probe every coin name and assemble a ScoutReport (blank names skipped)."""
+    coins: list[CoinVerdict] = []
+    for raw in names:
+        name = raw.strip().lower()
+        if not name:
+            continue
+        okx_swap, ccxt_bybit, binance_usdt = tickers_for(name)
+        ohlcv = probe_okx_ohlcv(okx_swap)
+        funding = probe_okx_funding(okx_swap)
+        archive = probe_binance_archive(binance_usdt)
+        verdict, reasons = score_coin(ohlcv, funding, archive, min_ohlcv_days, target_days)
+        coins.append(CoinVerdict(
+            name, okx_swap, ccxt_bybit, binance_usdt,
+            ohlcv, funding, archive, verdict, reasons,
+        ))
+    return ScoutReport(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        thresholds={
+            "min_ohlcv_days": min_ohlcv_days,
+            "target_depth_days": target_days,
+            "config_period_days": CONFIG_PERIOD_DAYS,
+        },
+        coins=coins,
+    )
+
+
+def _cov_to_dict(c: SourceCoverage) -> dict:
+    return {
+        "available": c.available,
+        "earliest": c.earliest.isoformat() if c.earliest else None,
+        "depth_days": c.depth_days,
+        "error": c.error,
+    }
+
+
+def report_to_dict(report: ScoutReport) -> dict:
+    return {
+        "generated_at": report.generated_at,
+        "thresholds": report.thresholds,
+        "coins": [
+            {
+                "name": v.name,
+                "okx_swap": v.okx_swap,
+                "ccxt_bybit": v.ccxt_bybit,
+                "binance_usdt": v.binance_usdt,
+                "okx_ohlcv": _cov_to_dict(v.okx_ohlcv),
+                "okx_funding": _cov_to_dict(v.okx_funding),
+                "binance_archive": _cov_to_dict(v.binance_archive),
+                "verdict": v.verdict,
+                "reasons": v.reasons,
+            }
+            for v in report.coins
+        ],
+    }
+
+
+def _depth_cell(c: SourceCoverage) -> str:
+    return f"{c.depth_days}d" if c.available else "—"
+
+
+def format_table(report: ScoutReport) -> str:
+    lines = [f"{'coin':<7} {'okx_ohlcv':<10} {'okx_funding':<12} {'binance_archive':<16} verdict"]
+    for v in report.coins:
+        lines.append(
+            f"{v.name:<7} {_depth_cell(v.okx_ohlcv):<10} {_depth_cell(v.okx_funding):<12} "
+            f"{_depth_cell(v.binance_archive):<16} {v.verdict}"
+        )
+    return "\n".join(lines)
+
+
+def go_coins_yaml(report: ScoutReport) -> str:
+    """Paste-ready research_config.yaml `symbols:` blocks for GO coins."""
+    blocks = [
+        f'- name: {v.name}\n  okx_swap: "{v.okx_swap}"\n  ccxt_bybit: "{v.ccxt_bybit}"'
+        for v in report.coins
+        if v.verdict == "GO"
+    ]
+    return "\n".join(blocks)
