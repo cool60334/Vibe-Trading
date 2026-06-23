@@ -49,6 +49,7 @@ def health() -> dict:
 # ---------------------------------------------------------------------------
 
 def _strategy_row(m, interval: str) -> dict:
+    oos = m.backtest.oos if (m.backtest and m.backtest.oos) else None
     return {
         "strategy_id": m.strategy_id,
         "symbol": m.symbol,
@@ -60,6 +61,11 @@ def _strategy_row(m, interval: str) -> dict:
         "max_drawdown": m.backtest.in_sample.max_drawdown if m.backtest else None,
         "red_flags": [f.value for f in m.gate.red_flags] if m.gate else [],
         "interval": interval,
+        # OOS (walk-forward held-out) — authoritative ranking metrics; null until an OOS run exists.
+        "sharpe_oos": oos.sharpe if oos else None,
+        "dd_oos": oos.max_drawdown if oos else None,
+        "trades_oos": oos.trades if oos else None,
+        "pf_oos": oos.profit_factor if oos else None,
     }
 
 

@@ -600,3 +600,61 @@ def test_run_unknown_symbol_rejected_with_detail(client, monkeypatch):
     )
     assert r.status_code == 400
     assert "sol" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/strategies — OOS columns (cross-coin ranking)
+# ---------------------------------------------------------------------------
+
+_PAYLOAD_WITH_OOS = {
+    "schema_version": 1,
+    "strategy_id": "strat_eth_oos",
+    "symbol": "ETH",
+    "generated_at": "2024-01-01T00:00:00Z",
+    "pipeline_stage": 5,
+    "spec": {
+        "strategy_id": "strat_eth_oos",
+        "symbol": "ETH",
+        "spec_yaml": "runs/strat_eth_oos/config.yaml",
+    },
+    "backtest": {
+        "in_sample": {"source_run": "strat_eth_oos_train", "sharpe": 1.4, "max_drawdown": 0.2},
+        "oos": {
+            "source_run": "strat_eth_oos_oos",
+            "sharpe": 1.02, "max_drawdown": 0.09, "trades": 49, "profit_factor": 1.54,
+        },
+    },
+}
+
+
+def _client_for_payload(tmp_path, payload):
+    d = tmp_path / "research" / "manifests" / payload["strategy_id"]
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    os.environ["REPO_ROOT"] = str(tmp_path)
+    import importlib, main as main_module
+    importlib.reload(main_module)
+    from main import app
+    return TestClient(app)
+
+
+def test_strategy_row_exposes_oos_metrics(tmp_path):
+    with _client_for_payload(tmp_path, _PAYLOAD_WITH_OOS) as c:
+        row = c.get("/api/strategies").json()[0]
+    assert row["sharpe_oos"] == 1.02
+    assert row["dd_oos"] == 0.09
+    assert row["trades_oos"] == 49
+    assert row["pf_oos"] == 1.54
+    # in-sample sharpe stays as the secondary column
+    assert row["sharpe"] == 1.4
+
+
+def test_strategy_row_oos_null_when_no_walk_forward(tmp_path):
+    payload = json.loads(json.dumps(_PAYLOAD_WITH_OOS))
+    del payload["backtest"]["oos"]  # in_sample only, no held-out OOS yet
+    with _client_for_payload(tmp_path, payload) as c:
+        row = c.get("/api/strategies").json()[0]
+    assert row["sharpe_oos"] is None
+    assert row["dd_oos"] is None
+    assert row["trades_oos"] is None
+    assert row["pf_oos"] is None
