@@ -62,19 +62,44 @@ def read_metrics_zip(path: Path) -> pd.DataFrame:
     return parse_metrics_csv(text)
 
 
-def aggregate_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
-    """Resample 5-minute snapshots to a continuous 1H grid.
+def aggregate_to_interval(df: pd.DataFrame, freq: str) -> pd.DataFrame:
+    """Resample 5-/2.5-minute snapshots to a continuous `freq` grid (pandas
+    offset alias, e.g. '1h', '30min', '15min').
 
-    OI / long-short ratios are point-in-time stocks -> last snapshot in the bar.
-    Taker buy/sell ratio is a per-window flow -> mean over the bar. Empty hours
-    stay NaN (never forward-filled — ffill would inflate IC).
+    Snapshots (OI, L/S ratios) -> last in the bar; taker flow -> mean. Empty
+    bars stay NaN (never forward-filled — ffill inflates IC).
     """
     if df.empty:
         return df
     agg = {c: "last" for c in _SNAPSHOT_COLS if c in df.columns}
     agg.update({c: "mean" for c in _FLOW_COLS if c in df.columns})
-    out = df.resample("1h", label="left", closed="left").agg(agg)
+    out = df.resample(freq, label="left", closed="left").agg(agg)
     return out[[c for c in _COLS if c in out.columns]]
+
+
+def aggregate_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
+    """1H aggregation (thin wrapper over aggregate_to_interval; zero regression)."""
+    return aggregate_to_interval(df, "1h")
+
+
+def normalize_create_time(df: pd.DataFrame) -> pd.DataFrame:
+    """Stamp every snapshot at its window CLOSE, fixing the archive's mixed
+    conventions. Pre-2025 daily files are OPEN-labeled (first row at 00:00);
+    2025+ are CLOSE-labeled (first row one cadence in). Cadence is 2.5min
+    (2020-21) or 5min (2022+). Apply ONCE per raw day-file before aggregation.
+
+    Detects per-file: if the first stamp is within half a cadence of the day
+    boundary it is OPEN-labeled and is shifted forward one cadence; otherwise
+    it is already close-labeled and returned unchanged.
+    """
+    if df.empty or len(df) < 2:
+        return df
+    cadence = df.index.to_series().diff().median()
+    first = df.index[0]
+    offset = first - first.normalize()
+    if offset < cadence / 2:  # OPEN-labeled
+        return df.set_axis(df.index + cadence)
+    return df
 
 
 def _daterange(start: date, end: date):

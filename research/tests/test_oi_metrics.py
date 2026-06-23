@@ -244,6 +244,69 @@ def test_reconcile_fails_on_account_vs_position_swap():
 # ── dump_symbol --live integration ────────────────────────────────────────────
 
 
+# ── timestamp normalization (mixed archive conventions) ─────────────────────
+
+def test_normalize_create_time_shifts_open_labeled_to_close():
+    # OPEN-labeled: first row at midnight, 5-min cadence
+    idx = pd.date_range("2024-01-01 00:00", periods=12, freq="5min", tz="UTC")
+    df = pd.DataFrame({"oi": range(12)}, index=idx)
+    out = oi_metrics.normalize_create_time(df)
+    # every stamp moved forward one cadence -> window-close labeling
+    assert out.index[0] == pd.Timestamp("2024-01-01 00:05", tz="UTC")
+    assert list(out["oi"]) == list(range(12))  # values unchanged
+
+
+def test_normalize_create_time_leaves_close_labeled_unchanged():
+    # CLOSE-labeled: first row one cadence past midnight (2025+ convention)
+    idx = pd.date_range("2025-01-01 00:05", periods=12, freq="5min", tz="UTC")
+    df = pd.DataFrame({"oi": range(12)}, index=idx)
+    out = oi_metrics.normalize_create_time(df)
+    assert out.index[0] == pd.Timestamp("2025-01-01 00:05", tz="UTC")  # unchanged
+
+
+def test_normalize_create_time_handles_2p5min_cadence():
+    # 2020-21 cadence is 2.5min; OPEN-labeled -> shift by 2.5min
+    idx = pd.date_range("2021-01-01 00:00", periods=8, freq="150s", tz="UTC")
+    df = pd.DataFrame({"oi": range(8)}, index=idx)
+    out = oi_metrics.normalize_create_time(df)
+    assert out.index[0] == pd.Timestamp("2021-01-01 00:02:30", tz="UTC")
+
+
+# ── aggregate_to_interval (generalizes aggregate_to_hourly) ─────────────────
+
+def test_aggregate_to_interval_1h_matches_hourly():
+    idx = pd.date_range("2024-06-01 00:00", periods=24, freq="5min", tz="UTC")
+    df = pd.DataFrame(
+        {"oi": range(24), "oi_usd": [v * 4000.0 for v in range(24)],
+         "toptrader_ls_accounts": 2.0, "toptrader_ls_positions": 2.0,
+         "global_ls_accounts": 2.0, "taker_buysell_ratio": [1.0] * 12 + [2.0] * 12},
+        index=idx,
+    )
+    pd.testing.assert_frame_equal(
+        oi_metrics.aggregate_to_interval(df, "1h"), oi_metrics.aggregate_to_hourly(df)
+    )
+
+
+def test_aggregate_to_interval_30min_snapshot_last_flow_mean():
+    idx = pd.date_range("2024-06-01 00:00", periods=12, freq="5min", tz="UTC")  # 1h of data
+    df = pd.DataFrame(
+        {"oi": range(12), "oi_usd": [0.0] * 12,
+         "toptrader_ls_accounts": 1.0, "toptrader_ls_positions": 1.0,
+         "global_ls_accounts": 1.0, "taker_buysell_ratio": [1.0] * 6 + [3.0] * 6},
+        index=idx,
+    )
+    out = oi_metrics.aggregate_to_interval(df, "30min")
+    assert list(out.index) == [
+        pd.Timestamp("2024-06-01 00:00", tz="UTC"),
+        pd.Timestamp("2024-06-01 00:30", tz="UTC"),
+    ]
+    assert out["oi"].iloc[0] == 5 and out["oi"].iloc[1] == 11      # snapshot = last in bar
+    assert out["taker_buysell_ratio"].iloc[0] == 1.0 and out["taker_buysell_ratio"].iloc[1] == 3.0  # flow = mean
+
+
+# ── dump_symbol --live integration ────────────────────────────────────────────
+
+
 def test_dump_symbol_live_advances_index_end(monkeypatch, tmp_path):
     import dump_oi
     from datetime import date
