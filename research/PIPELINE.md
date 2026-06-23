@@ -19,7 +19,7 @@
 - **因子（factor）**：一個你覺得能預測漲跌的數字訊號，例如「資金費率」「RSI」。
 - **IC（Information Coefficient）**：這個因子今天的值，和「未來 N 小時報酬」的相關係數。|IC| 越大代表預測力越強；正號=同向、負號=反向（contrarian）。一般加密貨幣 |IC|>0.05 就算有料。
 - **horizon（時窗）**：往未來看多久（量報酬）。本專案看 8/24/72/168 小時（即 8h ~ 1 週）。
-- **interval（K 棒週期）≠ horizon**：`interval` 是 K 棒大小（`research_config.yaml` 預設 `"1H"` = 1 小時 K），horizon 是「往未來看多久量報酬」。兩者獨立。⚠️ 目前 IC / forward-return 計算**寫死「1 根 K = 1 小時」**（`add_forward_returns` 用 `shift(-h)` 把 h 當列數），所以**只有 `interval="1H"` 正確**；要做 15m/30m 級別需改 horizon→bar 換算（見檔尾「多時間級別」）。
+- **interval（K 棒週期）≠ horizon**：`interval` 是 K 棒大小（`research_config.yaml` 預設 `"1H"` = 1 小時 K），horizon 是「往未來看多久量報酬」。兩者獨立。✅ **15m / 30m / 1H 均支援**：所有 hour-anchored 量（forward-return horizon、rolling 窗、IC 步距）透過 `lib/timeframe.py::bars_per_hour()` 換算成 bar 數。設環境變數 `RESEARCH_INTERVAL=30m`（仿 `RESEARCH_ONLY_SYMBOL`）即切到該級別，1H 為預設不需設；產物自動 namespace 進 `research/manifests/<interval>/`（1H 留 root）。見檔尾「多時間級別」。
 - **feature store**：算好的因子數值倉庫，存成 `features_<sym>.parquet`。下游階段直接讀它，不用每次重抓資料（省時、可重現）。
 - **evidence 表**：`evidence_<sym>.json`，一張「整池因子的 IC 排名表」，是 AI 挑因子時看的證據。
 - **verdict（裁決）**：Stage 1 給每個因子的評級——`single_use`（夠強可單用）、`ensemble_only`（弱，只能多因子組合）、淘汰。
@@ -30,7 +30,7 @@
 
 | 階段 | 檔案 | 功能 |
 |------|------|------|
-| **Stage 0a** | `stage0a_features.py` | **特徵與證據建置**：抓 OHLCV（OKX）+ 非價格資料（funding/OI + **穩定幣供給走 DefiLlama**，多年全史）→ 算一池技術指標 + 非價格因子 → 存進 feature store；再算每個因子在各 horizon 的 IC，輸出排名表 `evidence_<sym>.json`。**無 LLM，純計算**。 |
+| **Stage 0a** | `stage0a_features.py` | **特徵與證據建置**：抓 OHLCV（OKX）+ 非價格資料（funding 走 OKX、**OI + L/S 持倉比走 Binance daily-metrics archive**、**穩定幣供給走 DefiLlama**，皆多年全史）→ 算一池技術指標 + 非價格因子（含持倉因子）→ 存進 feature store；再算每個因子在各 horizon 的 IC，輸出排名表 `evidence_<sym>.json`。**無 LLM，純計算**。 |
 | **Stage 0** | `stage0_discovery.py` | **因子探索**：2-agent LLM swarm（研究員提案 + 審查員把關過擬合）讀 evidence 表挑/組因子，寫出 `candidates_<sym>.json`（每個候選帶 `feature_key` 指向 feature store 欄位）。**執行前會 preflight 檢查 Stage 0a 產物存在**。 |
 | **Stage 1** | `stage1_factors.py` | **因子評估**：依 candidates 的 `feature_key` 從 feature store 取序列，算 IC/IR/穩定性/verdict（呼叫 `factor_extended` + `factor_regime`）；dump `factor_values_<sym>.parquet` + `factor_<sym>.json`/`.md`。 |
 | Stage 2 | `stage2_strategies.py` | 策略合成：deterministic scaffold 依 stage1 verdict 產 `strategy_<id>.yaml`（LLM swarm 只給理由）；**進場方向依因子實測 IC 符號**（正 IC→trend 做高、負 IC→contrarian 做低）；≥3 因子用 `logic: any` |
@@ -146,11 +146,13 @@ stage1:<factor_key>
 把「原始資料」變成「算好的因子數值 + 一張 IC 排名表」，給後面的 AI 當證據。整段**不用 LLM**，純 Python 計算，所以快、便宜、可重現。
 
 做三件事：
-1. 抓資料：OHLCV K 線（OKX）+ 非價格資料（資金費率 OKX、OI Bybit、**穩定幣供給 DefiLlama**）。
+1. 抓資料：OHLCV K 線（OKX）+ 非價格資料（資金費率 OKX、**OI + L/S 持倉比 Binance daily-metrics archive**、**穩定幣供給 DefiLlama**）。
 2. 算因子：一池技術指標（RSI、MACD、ATR、布林帶寬…）+ 非價格因子，全部存進 feature store（`features_<sym>.parquet`）。
 3. 量證據：算每個因子對未來 8/24/72/168h 報酬的 **IC**，依 |IC| 由大到小排序，寫出 `evidence_<sym>.json`。
 
 > **穩定幣資料源 = DefiLlama**（`research/lib/defillama_data.py`，endpoint `stablecoins.llama.fi/stablecoincharts/all`，免費無 key、2017 至今全史、聚合所有 USD 穩定幣）。早期用 CoinGecko 免費版卡 365 天 → 因子只 1 年覆蓋、IC 被牛市灌水；換 DefiLlama 後 BTC stablecoin_supply_z 覆蓋率 25%→99.9%，真 4yr IC 從假象 +0.104 降到誠實 +0.068。
+
+> **OI / 持倉資料源 = Binance daily-metrics archive**（`research/lib/oi_metrics.py` + `lib/binance_dump.py`，`data.binance.vision futures/um/daily/metrics`，免費無 key、**5 分鐘粒度**、BTC ~5.8yr / ETH·SOL ~4.5yr）。解掉舊 Bybit API 7 天保留上限。白送 4 個持倉因子：`global_ls_acct_z`（散戶多空比 z）、`toptrader_ls_z`（大戶多空比 z）、`ls_divergence`（兩者背離）、`taker_buysell_ratio`（taker 買賣失衡）。**Bybit OI 仍作為 fallback**（`fetch_oi_history_bybit`）。live 部署的新鮮度由 `dump_oi --live` 端點覆蓋（archive 為 T+1）。持倉因子隨幣異：`global_ls` 強 BTC/SOL 弱 ETH、`ls_divergence` 三幣皆強（SOL −0.10 single_use）。
 
 ### 用法
 
@@ -489,8 +491,25 @@ period_start ─────────────── oos_start ───�
 
 ---
 
-## 多時間級別（15m / 30m）
+## 多時間級別（15m / 30m）✅ 已實作
 
-目前 IC / forward-return / rolling 窗**寫死「1 根 K = 1 小時」**（`add_forward_returns` 的 `shift(-h)`、stage0a 的 `pct_change(periods=24)` / `rolling(720)` 都假設 1 列 = 1h）。所以：
-- **1H**：現成，直接用。
-- **15m / 30m**：要改 code——`interval` 改 `"15m"`/`"30m"`，並把所有 horizon/window 改成「先算每小時幾根，再乘 bar 數」；非價格因子（funding 8h、OI、穩定幣日頻）在日內幾乎沒資訊，日內 alpha 只能靠純價量技術指標。
+15m / 30m / 1H 全支援。所有 hour-anchored 量（forward-return horizon、funding/stablecoin 的 rolling 窗、IC 步距）透過 `lib/timeframe.py::bars_per_hour()`（`{15m:4, 30m:2, 1H:1}`）換算成 bar 數；stage0a `build_feature_dict`、stage1 `factor_extended` / `factor_regime`、stage3 backtest 全串 `cfg.interval`。
+
+### 怎麼切級別
+
+設環境變數 `RESEARCH_INTERVAL`（仿 `RESEARCH_ONLY_SYMBOL`）：
+
+```bash
+# 跑 ETH @ 30m 的 stage0a（1H 為預設，不設此變數即可）
+RESEARCH_INTERVAL=30m RESEARCH_ONLY_SYMBOL=eth python -m research.pipeline.stage0a_features
+```
+
+- 合法值：`15m` / `30m` / `1H`（`SUPPORTED_INTERVALS`）。
+- 產物自動 namespace 進 `research/manifests/<interval>/`（1H 留 root，零回歸）。
+- dashboard 亦可依 interval 檢視（nav 級別選擇器、`?interval=` query、pipeline RunBar 級別下拉）。
+
+### 結論（已驗）
+
+- **盤中純 OHLCV 因子類 = 死路**：mom_4/8/16 等短線動量 IC≈−0.05 是 bid-ask bounce 微結構假象，非真 alpha。
+- **慢的非價格因子塞日內無用**：funding（8h）、穩定幣（日頻）在 15m/30m 幾乎沒新資訊。
+- **未試的免費角度**：Binance daily-metrics archive 是 **5 分鐘**粒度 → 可衍生盤中 OI / L/S 持倉 / taker 失衡因子（+ 時段效應）。盤中因子**務必過 entry-lag / lookahead 稽核**（order-flow 教訓）。
