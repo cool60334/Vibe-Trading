@@ -97,6 +97,24 @@ def metrics_url(symbol: str, day: date) -> str:
     return f"{_METRICS_BASE}/{symbol}/{fname}"
 
 
+def metrics_day_exists(symbol: str, day: date, timeout: float = _FETCH_TIMEOUT) -> bool:
+    """True if the daily-metrics zip for `symbol` on `day` exists upstream.
+
+    Cheap HEAD probe (no body download) for the feasibility scout. A 404 means
+    Binance has not published that day/symbol and returns False; any other HTTP
+    or network error propagates so callers can distinguish 'absent' from
+    'probe failed'. Isolated for test monkeypatching (mirrors :func:`_fetch`).
+    """
+    req = urllib.request.Request(metrics_url(symbol, day), method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return resp.status == 200
+    except HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise
+
+
 def download_metrics_day(
     symbol: str, day: date, dest_dir: Path, verify: bool = True
 ) -> Path | None:

@@ -257,3 +257,35 @@ def test_fetch_json_does_not_retry_http_errors(monkeypatch):
     with pytest.raises(HTTPError):
         binance_dump._fetch_json("http://example/x", retries=3)
     assert calls["n"] == 1
+
+
+def test_metrics_day_exists_true(monkeypatch):
+    """HEAD 200 -> the day's metrics zip exists upstream."""
+    class FakeResp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    captured = {}
+    def fake_urlopen(req, timeout=None):
+        captured["method"] = req.get_method()
+        return FakeResp()
+    monkeypatch.setattr(binance_dump.urllib.request, "urlopen", fake_urlopen)
+    assert binance_dump.metrics_day_exists("BTCUSDT", date(2022, 1, 1)) is True
+    assert captured["method"] == "HEAD"  # cheap: no body download
+
+
+def test_metrics_day_exists_false_on_404(monkeypatch):
+    """A 404 means Binance has not published that day/symbol -> False (not an error)."""
+    def fake_urlopen(req, timeout=None):
+        raise HTTPError(req.full_url, 404, "Not Found", {}, None)
+    monkeypatch.setattr(binance_dump.urllib.request, "urlopen", fake_urlopen)
+    assert binance_dump.metrics_day_exists("ZZZUSDT", date(2022, 1, 1)) is False
+
+
+def test_metrics_day_exists_reraises_non_404(monkeypatch):
+    """A 500 is a probe failure, not 'absent' -> propagate so callers can tell them apart."""
+    def fake_urlopen(req, timeout=None):
+        raise HTTPError(req.full_url, 500, "Server Error", {}, None)
+    monkeypatch.setattr(binance_dump.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(HTTPError):
+        binance_dump.metrics_day_exists("BTCUSDT", date(2022, 1, 1))
