@@ -68,6 +68,7 @@ def test_list_strategies(client):
     assert data[0]["symbol"] == "BTC"
     assert data[0]["pipeline_stage"] == 2
     assert data[0]["gate_pass"] is None  # no gate block yet
+    assert data[0]["sharpe_oos"] is None  # no backtest block → OOS fields null
 
 
 def test_list_strategies_empty(tmp_path):
