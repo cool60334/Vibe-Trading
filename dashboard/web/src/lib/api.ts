@@ -1,10 +1,19 @@
 const BASE = "/api";
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+async function get<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, init);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json() as Promise<T>;
 }
+
+/**
+ * True when a fetch rejected because its AbortController was aborted (the poll
+ * tick was superseded by a newer one, or the component unmounted). Callers
+ * should swallow these — they are not real errors and must not overwrite the
+ * UI with a stale-request failure message.
+ */
+export const isAbortError = (e: unknown): boolean =>
+  e instanceof DOMException && e.name === "AbortError";
 
 // ---------------------------------------------------------------------------
 // Enums (mirrors schemas.py)
@@ -398,7 +407,7 @@ export const api = {
   selection: (interval = "1H"): Promise<SelectionManifest> => get(`/selection?interval=${interval}`),
   intervals: (): Promise<string[]> => get("/intervals"),
   pipeline: (): Promise<PipelineRow[]> => get("/pipeline"),
-  testnet: (): Promise<TestnetStatus[]> => get("/testnet"),
+  testnet: (init?: RequestInit): Promise<TestnetStatus[]> => get("/testnet", init),
   testnetDetail: (id: string): Promise<TestnetStatus> => get(`/testnet/${id}`),
   testnetEquity: (id: string): Promise<TestnetEquityRow[]> =>
     get(`/testnet/${encodeURIComponent(id)}/equity`),
@@ -458,8 +467,8 @@ export const api = {
       }
       return r.json();
     }),
-  listPipelineJobs: () => get<PipelineJob[]>("/pipeline/jobs"),
-  getPipelineJob: (id: string) => get<PipelineJobDetail>(`/pipeline/jobs/${id}`),
+  listPipelineJobs: (init?: RequestInit) => get<PipelineJob[]>("/pipeline/jobs", init),
+  getPipelineJob: (id: string, init?: RequestInit) => get<PipelineJobDetail>(`/pipeline/jobs/${id}`, init),
   cancelPipelineJob: (id: string): Promise<PipelineJob> =>
     fetch(`${BASE}/pipeline/jobs/${id}/cancel`, { method: "POST" }).then((r) => {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);

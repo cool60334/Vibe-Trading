@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { RefreshCw, ChevronRight, ChevronDown, Play } from "lucide-react";
 import {
   api,
+  isAbortError,
   type PipelineStatus,
   type StageStatus,
   type PipelineJob,
@@ -269,19 +270,36 @@ export default function PipelineStatus() {
   }, [refreshJobs]);
 
   // Poll while any job is active; on transition to idle, refresh the status grid.
+  // Abort each tick's request before the next so a slow response can't land
+  // out of order and flip the jobs grid back to stale status.
+  const pollCtrlRef = useRef<AbortController | null>(null);
   useEffect(() => {
     if (!busy) return;
     const t = setInterval(() => {
-      api.listPipelineJobs().then((js) => {
-        const wasActive = js.some((j) => j.status === "queued" || j.status === "running");
-        setJobs(js);
-        if (selectedJob) {
-          api.getPipelineJob(selectedJob.job_id).then(setSelectedJob).catch(() => {});
-        }
-        if (!wasActive) load();
-      });
+      pollCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      pollCtrlRef.current = ctrl;
+      api
+        .listPipelineJobs({ signal: ctrl.signal })
+        .then((js) => {
+          const wasActive = js.some((j) => j.status === "queued" || j.status === "running");
+          setJobs(js);
+          if (selectedJob) {
+            api
+              .getPipelineJob(selectedJob.job_id, { signal: ctrl.signal })
+              .then(setSelectedJob)
+              .catch(() => {});
+          }
+          if (!wasActive) load();
+        })
+        .catch((e) => {
+          if (!isAbortError(e)) setError(String(e));
+        });
     }, 3000);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      pollCtrlRef.current?.abort();
+    };
   }, [busy, selectedJob, load]);
 
   function selectJob(id: string) {

@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   api,
+  isAbortError,
   type TestnetStatus,
   type LiveBlock,
   type VsBacktestBlock,
@@ -777,9 +778,16 @@ export default function Testnet() {
   const [error, setError] = useState<string | null>(null);
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
 
+  // Abort the in-flight poll before starting the next one so a slow response
+  // can't resolve after a newer one and overwrite the kill-switch DD gauge with
+  // stale data (masking a live drawdown from the operator).
+  const ctrlRef = useRef<AbortController | null>(null);
   const fetchData = useCallback(() => {
+    ctrlRef.current?.abort();
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
     api
-      .testnet()
+      .testnet({ signal: ctrl.signal })
       .then((data) => {
         setStatuses(data);
         setLastFetch(new Date());
@@ -787,6 +795,7 @@ export default function Testnet() {
         setLoading(false);
       })
       .catch((e: Error) => {
+        if (isAbortError(e)) return;
         setError(e.message);
         setLoading(false);
       });
@@ -796,7 +805,10 @@ export default function Testnet() {
   useEffect(() => {
     fetchData();
     const timer = setInterval(fetchData, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      ctrlRef.current?.abort();
+    };
   }, [fetchData]);
 
   const refreshKey = lastFetch ? lastFetch.getTime() : 0;
