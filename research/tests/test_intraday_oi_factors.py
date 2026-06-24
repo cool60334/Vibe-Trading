@@ -28,6 +28,17 @@ def test_ls_factors_window_scales_with_interval():
     assert f15["global_ls_z_s"].isna().sum() > f30["global_ls_z_s"].isna().sum()
 
 
+def test_ls_factors_no_inf_on_constant_window():
+    # a constant stretch -> rolling std 0 -> z must be NaN, never inf (inf survives
+    # dropna and crashes downstream lstsq in incremental_ic). Regression for that.
+    idx = pd.date_range("2024-01-01", periods=100, freq="30min", tz="UTC")
+    df = pd.DataFrame({"global_ls_accounts": [1.0] * 100,
+                       "toptrader_ls_positions": [2.0] * 100}, index=idx)
+    f = iof.ls_factors(df, "30m", window_h=5)
+    assert not np.isinf(f["global_ls_z_s"].to_numpy()).any()
+    assert not np.isinf(f["ls_divergence_s"].to_numpy()).any()
+
+
 def test_oi_velocity_factors_present_and_interval_scaled():
     df = _oi_frame(100, "30min")
     close = pd.Series(np.linspace(10, 11, 100), index=df.index)

@@ -6,6 +6,7 @@ network, no production-pipeline dependency.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from lib.timeframe import bars_per_hour
@@ -14,7 +15,9 @@ from lib.timeframe import bars_per_hour
 def _rolling_z(s: pd.Series, window_bars: int) -> pd.Series:
     m = s.rolling(window_bars, min_periods=window_bars // 2).mean()
     sd = s.rolling(window_bars, min_periods=window_bars // 2).std()
-    return (s - m) / sd
+    # A zero-std (constant) window makes the z-score undefined, not infinite —
+    # inf would survive dropna() and crash downstream lstsq (incremental_ic).
+    return ((s - m) / sd).replace([np.inf, -np.inf], np.nan)
 
 
 def ls_factors(oi_df: pd.DataFrame, interval: str, window_h: int = 36) -> dict[str, pd.Series]:
