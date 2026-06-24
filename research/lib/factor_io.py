@@ -532,7 +532,7 @@ def append_feature_column(
     # Rewrite parquet.
     sym_short = _symbol_short(symbol)
     parquet_path = mdir / f"features_{sym_short}.parquet"
-    df.to_parquet(parquet_path, engine="pyarrow", compression="snappy")
+    _atomic_to_parquet(df, parquet_path)
 
     # Update meta: feature_names (deduplicated, preserve order), n_rows, generated_at.
     meta_path = mdir / f"features_{sym_short}.meta.json"
@@ -552,4 +552,4 @@ def append_feature_column(
     meta["n_rows"] = len(df)
     meta["generated_at"] = datetime.now(timezone.utc).isoformat()
 
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    _atomic_write_text(meta_path, json.dumps(meta, indent=2))
