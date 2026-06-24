@@ -17,7 +17,7 @@ def _runner(codes):
     calls = []
     intervals = []
 
-    def run(repo_root, stage_id, symbol, fp, stress=False, interval="1H"):
+    def run(repo_root, stage_id, symbol, fp, stress=False, interval="1H", live_refresh=False):
         calls.append((stage_id, symbol, stress))
         intervals.append((stage_id, interval))
         fp.write(f"ran {stage_id} symbol={symbol} stress={stress} interval={interval}\n")
@@ -208,3 +208,31 @@ def test_default_runner_1h_interval_omits_env(tmp_path, monkeypatch):
     captured = _capture_argv(monkeypatch)
     pm._default_runner(tmp_path, "1", "eth", io.StringIO(), interval="1H")
     assert "RESEARCH_INTERVAL" not in captured["env"]
+
+
+def test_oldest_queued_prioritizes_live_refresh(tmp_path):
+    import pipeline_jobs as pj
+    from pipeline_manager import Manager
+    # research job created FIRST (older), live_refresh SECOND (newer)
+    pj.create_job(tmp_path, kind="pipeline", symbol="sol")
+    live = pj.create_job(tmp_path, kind="live_refresh", symbol="sol")
+    mgr = Manager(tmp_path, runner=lambda *a, **k: 0)
+    picked = mgr._oldest_queued()
+    assert picked["job_id"] == live["job_id"]
+
+
+def test_live_refresh_sets_env_on_0a_step(tmp_path):
+    import pipeline_jobs as pj
+    from pipeline_manager import Manager
+    seen = {}
+
+    def fake_runner(repo_root, stage_id, symbol, log_fp, stress=False,
+                    interval="1H", live_refresh=False):
+        seen[stage_id] = live_refresh
+        return 0
+
+    job = pj.create_job(tmp_path, kind="live_refresh", symbol="sol")
+    mgr = Manager(tmp_path, runner=fake_runner)
+    mgr.execute_job(job)
+    assert seen.get("0a") is True
+    assert seen.get("1") is False

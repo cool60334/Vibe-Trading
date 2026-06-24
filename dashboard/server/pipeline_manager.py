@@ -29,7 +29,8 @@ logger = logging.getLogger("pipeline.manager")
 
 
 def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_fp,
-                    stress: bool = False, interval: str = "1H") -> int:
+                    stress: bool = False, interval: str = "1H",
+                    live_refresh: bool = False) -> int:
     """Run one stage as ``python -m research.pipeline.<module>``; stdout+stderr
     stream into the job's log file. If ``symbol`` is set, scope it via
     RESEARCH_ONLY_SYMBOL. If ``stress`` is set AND this is stage 3, append
@@ -50,6 +51,10 @@ def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_f
         env["RESEARCH_INTERVAL"] = interval
     else:
         env.pop("RESEARCH_INTERVAL", None)
+    if live_refresh and stage_id == "0a":
+        env["LIVE_OI_REFRESH"] = "1"
+    else:
+        env.pop("LIVE_OI_REFRESH", None)
     proc = subprocess.run(
         argv, cwd=str(repo_root), env=env,
         stdout=log_fp, stderr=subprocess.STDOUT, text=True,
@@ -77,7 +82,10 @@ class Manager:
     def _oldest_queued(self) -> Optional[dict]:
         queued = [j for j in pj.list_jobs(self.repo_root, limit=10000)
                   if j.get("status") == "queued"]
-        queued.sort(key=lambda j: j.get("created_at", ""))
+        # live_refresh jobs jump ahead of research jobs so the hourly factor
+        # refresh never starves behind a manually-queued full pipeline.
+        queued.sort(key=lambda j: (0 if j.get("kind") == "live_refresh" else 1,
+                                   j.get("created_at", "")))
         return queued[0] if queued else None
 
     def execute_job(self, job: dict) -> None:
@@ -112,6 +120,7 @@ class Manager:
                 rc = self._runner(
                     self.repo_root, step["stage"], step_symbol, fp,
                     job.get("stress", False), job.get("interval", "1H"),
+                    job.get("kind") == "live_refresh" and step["stage"] == "0a",
                 )
 
             step["exit_code"] = rc
