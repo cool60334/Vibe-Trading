@@ -16,6 +16,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 _SCRIPTS = Path(__file__).resolve().parent
@@ -50,8 +51,13 @@ def run_recon(oi_df: pd.DataFrame, close: pd.Series, interval: str, symbol: str)
         decay_h = {h: decay.get(int(h * bph)) for h in _HORIZONS_H if int(h * bph) >= 1}
         valid = {h: v for h, v in decay_h.items() if v is not None and v == v}
         peak_h = max(valid, key=lambda h: abs(valid[h])) if valid else None
+        fac = fac.replace([np.inf, -np.inf], np.nan)
         ctrl = iof.causal_1h_control(factors_1h.get(name, pd.Series(dtype=float)), oi_df.index)
-        incr = orderflow_eval.incremental_ic(fac, ctrl, close, fwd_bars=max(1, int(2 * bph)))
+        ctrl = ctrl.replace([np.inf, -np.inf], np.nan)
+        try:
+            incr = orderflow_eval.incremental_ic(fac, ctrl, close, fwd_bars=max(1, int(2 * bph)))
+        except np.linalg.LinAlgError:
+            incr = float("nan")
         exec0 = orderflow_eval.execution_ic(fac, close, entry_lag_bars=0, hold_bars=max(1, int(2 * bph)))
         exec1 = orderflow_eval.execution_ic(fac, close, entry_lag_bars=1, hold_bars=max(1, int(2 * bph)))
         v, reasons = verdict.classify_factor(decay_h, incr, peak_h)
