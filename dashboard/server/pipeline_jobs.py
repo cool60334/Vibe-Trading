@@ -7,6 +7,7 @@ Jobs are plain dicts (no Pydantic) — the frontend declares the matching TS typ
 from __future__ import annotations
 
 import json
+import os
 import random
 import string
 from datetime import datetime, timezone
@@ -91,7 +92,9 @@ def _new_job_id() -> str:
 def write_job(repo_root, job: dict) -> None:
     p = _job_path(repo_root, job["job_id"])
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(job, indent=2), encoding="utf-8")
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(job, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
 
 
 def read_job(repo_root, job_id: str) -> Optional[dict]:
@@ -128,6 +131,10 @@ def create_job(repo_root, kind: str, stage: Optional[str] = None,
         stage = None
         steps = [{"stage": s, "status": "pending", "exit_code": None}
                  for s in pipeline_sequence()]
+    elif kind == "live_refresh":
+        stage = None
+        steps = [{"stage": s, "status": "pending", "exit_code": None}
+                 for s in ("0a", "1")]
     else:
         raise ValueError(f"invalid kind {kind!r}")
 

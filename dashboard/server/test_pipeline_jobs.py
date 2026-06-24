@@ -250,3 +250,22 @@ def test_endpoint_run_rejects_bad_interval(tmp_path, monkeypatch):
     c, _ = _client(tmp_path, monkeypatch)
     bad = c.post("/api/pipeline/run", json={"kind": "stage", "stage": "1", "interval": "7x"})
     assert bad.status_code == 400
+
+
+def test_create_live_refresh_job(tmp_path):
+    import pipeline_jobs as pj
+    job = pj.create_job(tmp_path, kind="live_refresh", symbol="sol", interval="1H")
+    assert job["kind"] == "live_refresh"
+    assert job["symbol"] == "sol"
+    assert [s["stage"] for s in job["steps"]] == ["0a", "1"]
+    assert job["status"] == "queued"
+    assert job["stress"] is False
+
+
+def test_write_job_atomic_no_temp_left(tmp_path):
+    import pipeline_jobs as pj
+    job = pj.create_job(tmp_path, kind="live_refresh", symbol="sol")
+    job_dir = pj.jobs_dir(tmp_path) / job["job_id"]
+    leftovers = list(job_dir.glob("*.tmp")) + list(job_dir.glob("*.tmp.*"))
+    assert leftovers == []
+    assert pj.read_job(tmp_path, job["job_id"])["symbol"] == "sol"
