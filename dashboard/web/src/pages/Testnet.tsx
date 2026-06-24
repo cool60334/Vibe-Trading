@@ -15,6 +15,7 @@ import {
 } from "../lib/api";
 import { EquityChart } from "../components/charts/EquityChart";
 import { cn } from "../lib/utils";
+import { riskHeadroom } from "../lib/risk";
 
 // ---------------------------------------------------------------------------
 // Trading-mode badge
@@ -309,9 +310,73 @@ function VsBacktestPanel({ vs }: { vs: VsBacktestBlock }) {
 // Kill switch panel
 // ---------------------------------------------------------------------------
 
-function KillSwitchPanel({ ks }: { ks: KillswitchBlock }) {
+function RiskGauge({
+  currentDd, pauseDd, terminateDd, triggered,
+}: {
+  currentDd: number | null;
+  pauseDd: number;
+  terminateDd: number;
+  triggered: boolean;
+}) {
+  if (currentDd === null) {
+    return <p className="text-xs text-muted-foreground">風險餘裕：等待 equity 資料</p>;
+  }
+  const h = riskHeadroom(currentDd, pauseDd, terminateDd);
+  const pausePos = terminateDd > 0 ? Math.min(100, (pauseDd / terminateDd) * 100) : 0;
+  const markerPos = h.fillFraction * 100;
+  const over = h.toTerminate <= 0;
+  const zoneColor =
+    triggered || h.zone === "danger" ? "bg-red-500"
+    : h.zone === "caution" ? "bg-amber-500"
+    : "bg-emerald-500";
+  const fmt = (v: number) => `${(v * 100).toFixed(2)}%`;
+
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
+      <div className="relative h-3 rounded-full overflow-hidden bg-muted">
+        {/* safe zone (green) up to pause */}
+        <div
+          className="absolute inset-y-0 left-0 bg-emerald-200 dark:bg-emerald-900/40"
+          style={{ width: `${pausePos}%` }}
+        />
+        {/* caution zone (amber) pause..terminate */}
+        <div
+          className="absolute inset-y-0 bg-amber-200 dark:bg-amber-900/40"
+          style={{ left: `${pausePos}%`, right: 0 }}
+        />
+        {/* pause threshold line */}
+        <div className="absolute inset-y-0 w-px bg-amber-600" style={{ left: `${pausePos}%` }} />
+        {/* current DD marker */}
+        <div
+          className={cn("absolute inset-y-0 w-1.5 rounded", zoneColor)}
+          style={{ left: `${markerPos}%`, transform: "translateX(-50%)" }}
+        />
+      </div>
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="text-muted-foreground">
+          當前 DD <span className="font-semibold text-foreground tabular-nums">{fmt(currentDd)}</span>
+          {" / 終止 "}
+          <span className="tabular-nums">{fmt(terminateDd)}</span>
+        </span>
+        <span className={cn("tabular-nums", over ? "text-red-600 font-semibold dark:text-red-400" : "text-muted-foreground")}>
+          {over
+            ? `已逾終止 ${fmt(-h.toTerminate)}`
+            : `距暫停 ${fmt(Math.max(0, h.toPause))} · 距終止 ${fmt(h.toTerminate)}`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function KillSwitchPanel({ ks, currentDd }: { ks: KillswitchBlock; currentDd: number | null }) {
+  return (
+    <div className="space-y-3">
+      <RiskGauge
+        currentDd={currentDd}
+        pauseDd={ks.pause_drawdown}
+        terminateDd={ks.terminate_drawdown}
+        triggered={ks.triggered}
+      />
       {ks.triggered && (
         <div className="rounded-lg border border-red-400 bg-red-50 dark:bg-red-950/30 dark:border-red-700 px-4 py-3">
           <div className="text-sm font-semibold text-red-700 dark:text-red-400">
@@ -528,7 +593,7 @@ function TestnetCard({
         {/* Kill switch thresholds */}
         <div>
           <div className="text-xs font-medium text-muted-foreground mb-2">Kill Switch</div>
-          <KillSwitchPanel ks={killswitch} />
+          <KillSwitchPanel ks={killswitch} currentDd={live.max_drawdown} />
         </div>
 
         {/* Alerts */}
