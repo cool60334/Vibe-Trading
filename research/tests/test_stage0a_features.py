@@ -633,3 +633,24 @@ def test_oi_source_prefers_archive_over_bybit():
     )
     changes = feats["oi_change_24h"].dropna()
     assert (changes.abs() > 0).any()  # nonzero ⇒ archive (varying) used, not Bybit (constant)
+
+
+def test_maybe_live_oi_refresh_gated_by_env(monkeypatch):
+    import pipeline.stage0a_features as s0a
+
+    calls = []
+    monkeypatch.setattr(s0a, "_run_live_oi_dump", lambda sym: calls.append(sym))
+
+    class _Cfg:
+        name = "sol"
+        binance_usdt = "SOLUSDT"
+
+    # env unset -> no dump
+    monkeypatch.delenv("LIVE_OI_REFRESH", raising=False)
+    s0a._maybe_live_oi_refresh(_Cfg())
+    assert calls == []
+
+    # env set -> dump for this symbol
+    monkeypatch.setenv("LIVE_OI_REFRESH", "1")
+    s0a._maybe_live_oi_refresh(_Cfg())
+    assert calls == ["SOLUSDT"]

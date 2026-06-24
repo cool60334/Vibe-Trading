@@ -56,6 +56,7 @@ for _p in (_RESEARCH_DIR, _DASHBOARD_SCHEMAS):
 # ── Standard library ───────────────────────────────────────────────────────────
 import argparse
 import logging
+import os
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -492,6 +493,34 @@ def _fetch_non_price_data(
     return funding_df, oi_df, stablecoin_df
 
 
+# ─── Live OI refresh helpers ──────────────────────────────────────────────────
+
+
+def _env_truthy(val: "str | None") -> bool:
+    return val is not None and val.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _run_live_oi_dump(binance_symbol: str) -> None:
+    """Overlay a fresh Binance L/S tail onto the OI cache for one symbol.
+    Imported lazily so non-live runs never touch dump_oi. dump_oi is fail-soft
+    on the live tail; any hard error here is caught by the caller."""
+    from dump_oi import main as dump_oi_main
+    dump_oi_main(["--live", "--symbols", binance_symbol])
+
+
+def _maybe_live_oi_refresh(sym_cfg) -> None:
+    """When LIVE_OI_REFRESH is set, refresh this symbol's OI cache (live tail)
+    before features are built. Fail-soft: on any error the feature build proceeds
+    on the existing cache; the trader's index_end freshness guard then governs
+    whether it is fresh enough to trade."""
+    if not _env_truthy(os.environ.get("LIVE_OI_REFRESH")):
+        return
+    try:
+        _run_live_oi_dump(sym_cfg.binance_usdt)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("%s: live OI refresh failed: %s — using existing OI cache", sym_cfg.name, exc)
+
+
 def _process_symbol(
     sym_cfg: SymbolConfig,
     cfg: ResearchConfig,
@@ -548,6 +577,9 @@ def _process_symbol(
             log.info("%s: loaded orderflow cache (%d rows)", sym, len(orderflow_df))
         except (FileNotFoundError, ValueError):
             orderflow_df = None  # absent cache -> feature simply not present (1H runs unaffected)
+
+        # ── 3b2. Optional live OI refresh (hourly L/S Phase-1) ───────────────
+        _maybe_live_oi_refresh(sym_cfg)
 
         # ── 3c. Binance OI/L-S positioning cache (multi-year archive) ────────
         # research/data/oi/oi_<SYM>USDT_1H.parquet (dump_oi.py). Absent ⇒
