@@ -39,6 +39,17 @@ def test_ls_factors_no_inf_on_constant_window():
     assert not np.isinf(f["ls_divergence_s"].to_numpy()).any()
 
 
+def test_oi_velocity_factors_no_inf_on_zero_oi():
+    # a zero OI value (bad/early-archive row) makes pct_change inf -> must be NaN,
+    # else it survives dropna and crashes incremental_ic's lstsq. Regression.
+    idx = pd.date_range("2024-01-01", periods=20, freq="30min", tz="UTC")
+    df = pd.DataFrame({"oi": [100.0] * 5 + [0.0] + [100.0] * 14}, index=idx)
+    close = pd.Series(np.linspace(10, 11, 20), index=idx)
+    f = iof.oi_velocity_factors(df, close, "30m")
+    for name, s in f.items():
+        assert not np.isinf(s.to_numpy()).any(), name
+
+
 def test_oi_velocity_factors_present_and_interval_scaled():
     df = _oi_frame(100, "30min")
     close = pd.Series(np.linspace(10, 11, 100), index=df.index)

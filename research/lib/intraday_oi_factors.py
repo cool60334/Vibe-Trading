@@ -38,11 +38,15 @@ def oi_velocity_factors(oi_df: pd.DataFrame, close: pd.Series, interval: str) ->
     intraday-deployable). Magnitude form of oi_price_div (not sign)."""
     bph = bars_per_hour(interval)
     oi = oi_df["oi"]
-    mom = oi.pct_change(1 * bph)
+    # pct_change from a zero prior value (bad/zero OI rows in the early archive)
+    # yields inf, which survives dropna() and crashes downstream lstsq — map to NaN.
+    mom = oi.pct_change(1 * bph).replace([np.inf, -np.inf], np.nan)
     return {
         "oi_mom_1h": mom,
         "oi_accel": mom.diff(1 * bph),
-        "oi_price_div": oi.pct_change(1 * bph) * close.pct_change(1 * bph),
+        "oi_price_div": (oi.pct_change(1 * bph) * close.pct_change(1 * bph)).replace(
+            [np.inf, -np.inf], np.nan
+        ),
     }
 
 
