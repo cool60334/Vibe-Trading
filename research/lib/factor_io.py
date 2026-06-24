@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,6 +94,34 @@ def _symbol_short(symbol: str) -> str:
     return s.lower()
 
 
+def _atomic_to_parquet(df: "pd.DataFrame", path: Path) -> None:
+    """Write a parquet file atomically: write to a temp file in the same
+    directory, then os.replace onto the target so a concurrent reader (the
+    separate trader container) never sees a half-written file."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".parquet.tmp")
+    os.close(fd)
+    tmp_path = Path(tmp)
+    try:
+        df.to_parquet(tmp_path, engine="pyarrow", compression="snappy")
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text atomically (temp file + os.replace)."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    os.close(fd)
+    tmp_path = Path(tmp)
+    try:
+        tmp_path.write_text(text, encoding="utf-8")
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
 def dump_factor_values(
     symbol: str,
     factor_series_dict: dict[str, pd.Series],
@@ -141,7 +170,7 @@ def dump_factor_values(
     parquet_path = manifests_dir / f"factor_values_{sym_short}.parquet"
     meta_path = manifests_dir / f"factor_values_{sym_short}.meta.json"
 
-    df.to_parquet(parquet_path, engine="pyarrow", compression="snappy")
+    _atomic_to_parquet(df, parquet_path)
 
     factor_names = list(factor_series_dict.keys())
     n_rows = len(df)
@@ -158,7 +187,7 @@ def dump_factor_values(
         "index_end": index_end,
         "n_rows": n_rows,
     }
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    _atomic_write_text(meta_path, json.dumps(meta, indent=2))
 
     n_factors = len(factor_names)
     print(f"[stage1] {sym_short}: wrote factor_values parquet ({n_factors} factors, {n_rows} rows)")
@@ -288,7 +317,7 @@ def dump_features(
     parquet_path = manifests_dir / f"features_{sym_short}.parquet"
     meta_path = manifests_dir / f"features_{sym_short}.meta.json"
 
-    df.to_parquet(parquet_path, engine="pyarrow", compression="snappy")
+    _atomic_to_parquet(df, parquet_path)
 
     feature_names = list(feature_series_dict.keys())
     n_rows = len(df)
@@ -305,7 +334,7 @@ def dump_features(
         "index_end": index_end,
         "n_rows": n_rows,
     }
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    _atomic_write_text(meta_path, json.dumps(meta, indent=2))
 
     n_features = len(feature_names)
     print(f"[stage0a] {sym_short}: wrote features parquet ({n_features} features, {n_rows} rows)")

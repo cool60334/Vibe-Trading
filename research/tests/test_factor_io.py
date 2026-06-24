@@ -207,3 +207,31 @@ class TestSchemaVersionMismatch:
         # Should not raise:
         meta = load_factor_meta("eth", manifests_dir=tmp_path)
         assert meta["schema_version"] == SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# (e) atomic write helpers
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_helpers_exist():
+    from lib import factor_io
+    assert hasattr(factor_io, "_atomic_to_parquet")
+    assert hasattr(factor_io, "_atomic_write_text")
+
+
+def test_dump_factor_values_atomic_no_temp_left(tmp_path):
+    import pandas as pd
+    from lib.factor_io import dump_factor_values
+    idx = pd.date_range("2026-01-01", periods=5, freq="h", tz="UTC")
+    series = {"f1": pd.Series(range(5), index=idx, dtype="float64")}
+    dump_factor_values("sol", series, tmp_path)
+    # parquet + meta written, NO leftover temp files
+    assert (tmp_path / "factor_values_sol.parquet").exists()
+    assert (tmp_path / "factor_values_sol.meta.json").exists()
+    leftovers = list(tmp_path.glob("*.tmp")) + list(tmp_path.glob("*.tmp.*"))
+    assert leftovers == [], f"temp files left behind: {leftovers}"
+    # content round-trips
+    df = pd.read_parquet(tmp_path / "factor_values_sol.parquet")
+    assert list(df.columns) == ["f1"]
+    assert len(df) == 5
