@@ -344,13 +344,13 @@ function RiskGauge({
           className="absolute inset-y-0 bg-amber-200 dark:bg-amber-900/40"
           style={{ left: `${pausePos}%`, right: 0 }}
         />
-        {/* pause threshold line */}
-        <div className="absolute inset-y-0 w-px bg-amber-600" style={{ left: `${pausePos}%` }} />
         {/* current DD marker */}
         <div
           className={cn("absolute inset-y-0 w-1.5 rounded", zoneColor)}
           style={{ left: `${markerPos}%`, transform: "translateX(-50%)" }}
         />
+        {/* pause threshold line — painted last so it is never buried under a fill */}
+        <div className="absolute inset-y-0 w-px bg-amber-600 dark:bg-amber-400" style={{ left: `${pausePos}%` }} />
       </div>
       <div className="flex items-center justify-between text-[11px]">
         <span className="text-muted-foreground">
