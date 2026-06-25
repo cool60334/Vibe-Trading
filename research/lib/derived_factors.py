@@ -21,6 +21,34 @@ def basis_factors(perp_close: pd.Series, spot_close: pd.Series) -> dict[str, pd.
     return {"basis_rel": basis_rel, "basis_z": basis_z, "basis_mom": basis_mom}
 
 
+def cross_venue_premium_factors(
+    okx_spot_close: pd.Series,
+    massive_usd_close: pd.Series,
+    usdt_usd_rate: pd.Series,
+) -> dict[str, pd.Series]:
+    """Cross-venue premium factors from OKX USDT spot vs Massive USD spot.
+
+    Splits the muddy spread into two deconfounded factors (design spec §3):
+      depeg     = R - 1                       (pure USDT vs USD; category stablecoin)
+      fiat_prem = okx*R / usd - 1             (OKX repriced to USD, depeg removed;
+                                               pure offshore-vs-US fiat premium; basis)
+    where R = usdt_usd_rate. All outputs are aligned to okx_spot_close.index.
+    """
+    idx = okx_spot_close.index
+    usd = massive_usd_close.reindex(idx, method="ffill")
+    r = usdt_usd_rate.reindex(idx, method="ffill")
+
+    depeg = r - 1.0
+    fiat_prem = (okx_spot_close * r) / usd - 1.0
+
+    return {
+        "depeg": depeg,
+        "depeg_z": _rolling_z(depeg, SCREEN_ZSCORE_DAYS * 24),
+        "fiat_prem": fiat_prem,
+        "fiat_prem_z": _rolling_z(fiat_prem, SCREEN_ZSCORE_DAYS * 24),
+    }
+
+
 def funding_factors(funding_on_candle: pd.Series) -> dict[str, pd.Series]:
     funding_z = _rolling_z(funding_on_candle, SCREEN_ZSCORE_DAYS * 24)
     funding_mom = funding_on_candle - funding_on_candle.shift(SCREEN_MOM_HOURS)

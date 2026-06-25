@@ -216,3 +216,71 @@ def test_positioning_factors_reindex_no_ffill():
     candle_idx = pd.date_range("2022-01-01", periods=824, freq="h", tz="UTC")
     out = positioning_factors(oi, candle_idx)
     assert out["global_ls_acct_z"].iloc[800:].isna().all()
+
+
+# ─── cross_venue_premium_factors ──────────────────────────────────────────────
+
+from lib.derived_factors import cross_venue_premium_factors
+
+
+def _idx(n):
+    return pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
+
+
+def test_cross_venue_premium_keys_and_shape():
+    idx = _idx(800)
+    okx = pd.Series(100.0, index=idx)
+    usd = pd.Series(100.0, index=idx)
+    r = pd.Series(1.0, index=idx)
+    out = cross_venue_premium_factors(okx, usd, r)
+    assert set(out) == {"depeg", "depeg_z", "fiat_prem", "fiat_prem_z"}
+    for v in out.values():
+        assert len(v) == len(idx)
+
+
+def test_depeg_isolated_from_price():
+    """A pure USDT discount (R<1) with equal USD/OKX prices => depeg negative,
+    fiat_prem ~0 after deconfounding."""
+    idx = _idx(800)
+    okx = pd.Series(100.0, index=idx)   # USDT-denominated
+    usd = pd.Series(100.0, index=idx)   # real USD
+    r = pd.Series(0.99, index=idx)      # 1 USDT = 0.99 USD (discount)
+    out = cross_venue_premium_factors(okx, usd, r)
+    assert (out["depeg"] < 0).all()
+    # fiat_prem = okx*R/usd - 1 = 100*0.99/100 - 1 = -0.01  (NOT ~0 here)
+    assert np.allclose(out["fiat_prem"].dropna(), -0.01, atol=1e-9)
+
+
+def test_fiat_premium_pure_when_no_depeg():
+    """R==1 (no depeg): fiat_prem reduces to OKX-vs-USD spread."""
+    idx = _idx(800)
+    okx = pd.Series(101.0, index=idx)
+    usd = pd.Series(100.0, index=idx)
+    r = pd.Series(1.0, index=idx)
+    out = cross_venue_premium_factors(okx, usd, r)
+    assert np.allclose(out["fiat_prem"].dropna(), 0.01, atol=1e-9)
+    assert np.allclose(out["depeg"].dropna(), 0.0, atol=1e-9)
+
+
+def test_reindex_aligns_to_okx_index():
+    idx = _idx(800)
+    okx = pd.Series(100.0, index=idx)
+    usd = pd.Series(100.0, index=idx[::2])   # sparser
+    r = pd.Series(1.0, index=idx[::3])
+    out = cross_venue_premium_factors(okx, usd, r)
+    assert (out["fiat_prem"].index == idx).all()
+
+
+def test_truncation_stability():
+    idx = _idx(800)
+    okx = pd.Series(np.linspace(100, 110, 800), index=idx)
+    usd = pd.Series(np.linspace(100, 109, 800), index=idx)
+    r = pd.Series(1.0, index=idx)
+    full = cross_venue_premium_factors(okx, usd, r)
+    trunc = cross_venue_premium_factors(okx.iloc[:-1], usd.iloc[:-1], r.iloc[:-1])
+    # earlier values must not change when one bar is appended
+    assert np.allclose(
+        full["fiat_prem"].iloc[:-1].dropna().values,
+        trunc["fiat_prem"].dropna().values,
+        atol=1e-12,
+    )
