@@ -286,6 +286,64 @@ def test_truncation_stability():
     )
 
 
+# ─── cross_venue_premium_factors: data-quality guards (Phase-1 artifact fix) ───
+# Root cause of the spurious 0.3-0.56 IC: Massive free tier returned only a tiny
+# tail of the requested range, and unlimited reindex(ffill) stretched a few stale
+# bars into a flat line => fiat_prem became okx/const-1 = a disguised price level
+# => z-score correlated with forward returns. The factor must REFUSE such data.
+
+
+def test_partial_coverage_massive_refuses_factor():
+    """Massive covering only a small tail of the index (e.g. free-tier 30d of a
+    multi-year backtest) must NOT yield a factor. Isolates the COVERAGE guard:
+    the covered region tracks OKX (bps premium, in-bound) so only thin coverage
+    can trigger the refusal."""
+    idx = _idx(4000)
+    okx = pd.Series(np.linspace(100.0, 60.0, 4000), index=idx)  # real declining price
+    massive = pd.Series(np.nan, index=idx)
+    massive.iloc[-800:] = okx.iloc[-800:].values * 1.0005       # only last 20% covered
+    r = pd.Series(1.0, index=idx)
+    out = cross_venue_premium_factors(okx, massive, r)
+    assert out["fiat_prem_z"].notna().sum() == 0
+    assert out["fiat_prem"].notna().sum() == 0
+
+
+def test_partial_coverage_rate_refuses_depeg():
+    """USDT/USD rate covering only a small tail must refuse depeg too."""
+    idx = _idx(4000)
+    okx = pd.Series(100.0, index=idx)
+    massive = pd.Series(100.0, index=idx)
+    r = pd.Series(np.nan, index=idx)
+    r.iloc[-800:] = 1.001                                       # only last 20% covered
+    out = cross_venue_premium_factors(okx, massive, r)
+    assert out["depeg_z"].notna().sum() == 0
+    assert out["depeg"].notna().sum() == 0
+
+
+def test_out_of_bound_fiat_prem_refused():
+    """A 40% cross-venue 'premium' is impossible (arbitrage bounds it to bps) =>
+    misalignment => refused, not emitted as a constant. Isolates the SANITY
+    bound: coverage is full, only the magnitude is wrong."""
+    idx = _idx(4000)
+    okx = pd.Series(60.0, index=idx)
+    massive = pd.Series(100.0, index=idx)                        # 40% gap
+    r = pd.Series(1.0, index=idx)
+    out = cross_venue_premium_factors(okx, massive, r)
+    assert out["fiat_prem_z"].notna().sum() == 0
+
+
+def test_well_aligned_data_still_produces_factor():
+    """Regression: full-coverage, bps-scale premium must STILL yield a factor."""
+    idx = _idx(4000)
+    rng = np.random.default_rng(0)
+    price = pd.Series(100 + np.cumsum(rng.normal(0, 0.5, 4000)), index=idx)
+    massive = price * (1 + rng.normal(0, 0.0005, 4000))         # ~5bps noise, full coverage
+    r = pd.Series(1.0 + rng.normal(0, 0.0002, 4000), index=idx)
+    out = cross_venue_premium_factors(price, massive, r)
+    assert out["fiat_prem_z"].notna().sum() > 1000
+    assert out["fiat_prem"].abs().max() < 0.05
+
+
 # ─── massive_spot source registry ──────────────────────────────────────────────
 
 def test_massive_source_registered():

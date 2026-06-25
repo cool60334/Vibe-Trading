@@ -25,6 +25,10 @@ def cross_venue_premium_factors(
     okx_spot_close: pd.Series,
     massive_usd_close: pd.Series,
     usdt_usd_rate: pd.Series,
+    *,
+    max_ffill_bars: int = 6,
+    min_coverage: float = 0.5,
+    max_abs_prem: float = 0.10,
 ) -> dict[str, pd.Series]:
     """Cross-venue premium factors from OKX USDT spot vs Massive USD spot.
 
@@ -33,19 +37,40 @@ def cross_venue_premium_factors(
       fiat_prem = okx*R / usd - 1             (OKX repriced to USD, depeg removed;
                                                pure offshore-vs-US fiat premium; basis)
     where R = usdt_usd_rate. All outputs are aligned to okx_spot_close.index.
+
+    Data-quality guards (Phase-1 artifact fix). The cross-venue spread is only
+    meaningful when both legs have real, aligned, sane data; otherwise a factor
+    here is a disguised price level that shows spurious IC:
+      * ``max_ffill_bars`` — limit forward-fill so a few stale Massive bars are
+        not stretched into a flat line (the original 0.3-0.56 IC bug).
+      * ``max_abs_prem`` — an arbitrage-bound spot premium is ~bps; values beyond
+        this are misalignment, not signal, and are dropped.
+      * ``min_coverage`` — if a factor's real (non-NaN) coverage over the index
+        falls below this fraction, it is refused (all-NaN) rather than emitted.
+    Refused factors are all-NaN, so downstream screening simply skips them.
     """
     idx = okx_spot_close.index
-    usd = massive_usd_close.reindex(idx, method="ffill")
-    r = usdt_usd_rate.reindex(idx, method="ffill")
+    nan = pd.Series(float("nan"), index=idx)
+
+    usd = massive_usd_close.reindex(idx, method="ffill", limit=max_ffill_bars)
+    r = usdt_usd_rate.reindex(idx, method="ffill", limit=max_ffill_bars)
 
     depeg = r - 1.0
     fiat_prem = (okx_spot_close * r) / usd - 1.0
+    fiat_prem = fiat_prem.where(fiat_prem.abs() <= max_abs_prem)
 
+    def _guard(series: pd.Series) -> tuple[pd.Series, pd.Series]:
+        if series.notna().mean() < min_coverage:
+            return nan, nan
+        return series, _rolling_z(series, SCREEN_ZSCORE_DAYS * 24)
+
+    depeg_lvl, depeg_z = _guard(depeg)
+    fiat_lvl, fiat_z = _guard(fiat_prem)
     return {
-        "depeg": depeg,
-        "depeg_z": _rolling_z(depeg, SCREEN_ZSCORE_DAYS * 24),
-        "fiat_prem": fiat_prem,
-        "fiat_prem_z": _rolling_z(fiat_prem, SCREEN_ZSCORE_DAYS * 24),
+        "depeg": depeg_lvl,
+        "depeg_z": depeg_z,
+        "fiat_prem": fiat_lvl,
+        "fiat_prem_z": fiat_z,
     }
 
 
