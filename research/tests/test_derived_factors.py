@@ -284,3 +284,12 @@ def test_truncation_stability():
         trunc["fiat_prem"].dropna().values,
         atol=1e-12,
     )
+
+
+# ─── massive_spot source registry ──────────────────────────────────────────────
+
+def test_massive_source_registered():
+    from lib.sources import SOURCE_REGISTRY
+    spec = SOURCE_REGISTRY["massive_spot_usd"]
+    assert spec.status == "available"
+    assert spec.category in {"basis", "stablecoin"}

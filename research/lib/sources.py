@@ -17,6 +17,7 @@ import pandas as pd
 from lib.okx_data import fetch_candles, fetch_funding_history
 from lib.ccxt_data import fetch_oi_history_bybit
 from lib.coingecko_data import fetch_stablecoin_supply
+from lib.massive_data import fetch_spot_bars as _fetch_massive_spot
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,12 @@ SOURCE_REGISTRY: dict[str, SourceSpec] = {
         status="available",
         description="CoinGecko USDT+USDC+DAI 加總市值（日頻，免費 API）",
         category="stablecoin",
+    ),
+    "massive_spot_usd": SourceSpec(
+        fetcher=_fetch_massive_spot,
+        status="available",
+        description="Massive (Polygon) 真美元現貨 1H bar（跨場域溢價：USDT 脫鉤 + 法幣溢價）",
+        category="basis",
     ),
     # ── Unavailable entries (for Change 2) ────────────────────────────────
     "coinglass_liq": SourceSpec(
