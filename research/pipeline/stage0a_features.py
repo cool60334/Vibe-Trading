@@ -579,25 +579,30 @@ def _process_symbol(
         except Exception as exc:
             log.warning("%s: spot fetch failed: %s — skipping basis_* factors", sym, exc)
 
-        # ── 2b. Fetch Massive USD spot + USDT/USD rate (cross-venue premium) ──
+        # ── 2b. Real-USD spot + USDT/USD (cross-venue premium factor) ────────
+        # Source = ccxt Coinbase (real USD), full free coverage. The Massive free
+        # tier returned only ~30 days / ~4 bars for a multi-year request; the
+        # unlimited ffill stretched that into a flat line and produced a spurious
+        # 0.3-0.56 IC. ccxt Coinbase paginates full history for free. depeg_z is
+        # the surviving (thin, OOS-stable) factor; fiat_prem_z was rejected (OOS
+        # unstable). See memory project_massive_crossvenue_premium. Var names kept
+        # for the build_feature_dict kwargs.
         massive_usd_close: pd.Series | None = None
         usdt_usd_close: pd.Series | None = None
         try:
-            from lib import massive_data
             from lib.ccxt_data import fetch_ohlcv_ccxt
 
-            mdf = massive_data.fetch_spot_bars(sym_cfg.massive_usd, cfg.period, cfg.interval)
-            if mdf is not None and not mdf.empty:
-                massive_usd_close = mdf["close"]
-                # USDT/USD rate: prefer Massive X:USDTUSD, else ccxt Kraken USDT/USD
-                rdf = massive_data.fetch_spot_bars("X:USDTUSD", cfg.period, cfg.interval)
-                if rdf is None or rdf.empty:
-                    rdf = fetch_ohlcv_ccxt("kraken", "USDT/USD", cfg.period, timeframe="1h")
+            tf = cfg.interval.lower()
+            usd_df = fetch_ohlcv_ccxt("coinbase", f"{sym_cfg.name.upper()}/USD", cfg.period, timeframe=tf)
+            if usd_df is not None and not usd_df.empty:
+                massive_usd_close = usd_df["close"]
+                rdf = fetch_ohlcv_ccxt("coinbase", "USDT/USD", cfg.period, timeframe=tf)
                 if rdf is not None and not rdf.empty:
                     usdt_usd_close = rdf["close"]
-                    log.info("%s: fetched Massive USD spot + USDT/USD rate", sym)
+                    log.info("%s: fetched Coinbase USD spot + USDT/USD (%d/%d bars)",
+                             sym, len(usd_df), len(rdf))
         except Exception as exc:  # noqa: BLE001 — fetch failure must not break 1H line
-            log.warning("%s: Massive fetch failed: %s — skipping cross-venue factors", sym, exc)
+            log.warning("%s: cross-venue USD fetch failed: %s — skipping cross-venue factors", sym, exc)
 
         # ── 3. Fetch non-price data ──────────────────────────────────────────
         funding_df, oi_df, stablecoin_df = _fetch_non_price_data(sym_cfg, cfg.period)
