@@ -11,36 +11,48 @@ Prints, per (symbol, factor in {depeg_z, fiat_prem_z}):
   sign-flip rate, net-of-cost decile spread.
 Then you make the GO/No-Go call against the spec gate thresholds.
 """
+import sys
 from pathlib import Path
 
 import pandas as pd
 
-from lib.factor_metrics import add_forward_returns, compute_ic
-from lib.factor_gates import partial_ic, sign_flip_rate, decile_spread_net_of_cost
-from lib.orderflow_eval import execution_ic
-from pipeline.config import load_config
+_HERE = Path(__file__).resolve()
+_RESEARCH = _HERE.parents[1]
 
 FACTORS = ["depeg_z", "fiat_prem_z"]
 CONTROLS = ["funding_z", "basis_rel"]
 HORIZON_H = 24
 SYMBOLS = ["btc", "eth", "sol"]
-FEATURE_DIR = Path(__file__).resolve().parents[1] / "manifests"
+FEATURE_DIR = _RESEARCH / "manifests"
 
 
-def _load_feature_store(sym: str) -> pd.DataFrame:
-    """Load the stored feature parquet for one symbol (path per repo convention)."""
-    # Feature store path convention — adjust if dump_features writes elsewhere.
-    path = FEATURE_DIR / f"features_{sym}.parquet"
-    return pd.read_parquet(path)
+def _load_feature_store(sym: str, cfg) -> pd.DataFrame:
+    """Load feature parquet and join close price from OKX candles."""
+    from lib.okx_data import fetch_candles
+    from pipeline.config import SymbolConfig
+
+    feats = pd.read_parquet(FEATURE_DIR / f"features_{sym}.parquet")
+    sym_cfg = next(s for s in cfg.symbols if s.name == sym)
+    candles = fetch_candles(sym_cfg.okx_swap, days=cfg.period, bar=cfg.interval)
+    feats["close"] = candles["close"].reindex(feats.index).ffill()
+    return feats
 
 
 def main() -> None:
+    if str(_RESEARCH) not in sys.path:
+        sys.path.insert(0, str(_RESEARCH))
+
+    from lib.factor_metrics import add_forward_returns, compute_ic
+    from lib.factor_gates import partial_ic, sign_flip_rate, decile_spread_net_of_cost
+    from lib.orderflow_eval import execution_ic
+    from pipeline.config import load_config
+
     cfg = load_config()
     header = f"{'sym/factor':22}{'absIC':>9}{'partIC':>9}{'lag0':>9}{'lag1':>9}{'flip':>7}{'net_bps':>9}"
     print(header)
     print("-" * len(header))
     for sym in SYMBOLS:
-        df = _load_feature_store(sym)
+        df = _load_feature_store(sym, cfg)
         if "close" not in df.columns:
             print(f"{sym}: no close column — skip")
             continue
