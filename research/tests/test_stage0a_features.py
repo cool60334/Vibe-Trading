@@ -654,3 +654,35 @@ def test_maybe_live_oi_refresh_gated_by_env(monkeypatch):
     monkeypatch.setenv("LIVE_OI_REFRESH", "1")
     s0a._maybe_live_oi_refresh(_Cfg())
     assert calls == ["SOLUSDT"]
+
+
+def test_build_feature_dict_emits_cross_venue_keys(make_candles_fixture=None):
+    """build_feature_dict with all three spot legs emits the 4 cross-venue keys;
+    absent legs => keys simply absent (1H main line unaffected)."""
+    import pandas as pd
+    from pipeline.stage0a_features import build_feature_dict
+    from pipeline.config import load_config
+
+    cfg = load_config()
+    idx = pd.date_range("2024-01-01", periods=800, freq="1h", tz="UTC")
+    candles = pd.DataFrame(
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1.0},
+        index=idx,
+    )
+    okx_spot = pd.Series(100.0, index=idx)
+    massive_usd = pd.Series(100.0, index=idx)
+    usdt_usd = pd.Series(1.0, index=idx)
+
+    feats = build_feature_dict(
+        candles=candles,
+        config=cfg,
+        spot_close=okx_spot,
+        massive_usd_close=massive_usd,
+        usdt_usd_close=usdt_usd,
+    )
+    assert {"depeg_z", "fiat_prem_z"} <= set(feats)
+
+    # absent massive/usdt => no cross-venue keys, but basis_* still present
+    feats2 = build_feature_dict(candles=candles, config=cfg, spot_close=okx_spot)
+    assert "fiat_prem_z" not in feats2
+    assert "basis_rel" in feats2

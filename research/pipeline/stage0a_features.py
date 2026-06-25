@@ -66,7 +66,13 @@ from pipeline.config import ResearchConfig, SymbolConfig, load_config
 from lib.indicators import compute_indicator_pool
 from lib.factor_io import dump_features, dump_evidence
 from lib.factor_metrics import add_forward_returns, evaluate_factor, FactorResult
-from lib.derived_factors import basis_factors, funding_factors, oi_factors, positioning_factors
+from lib.derived_factors import (
+    basis_factors,
+    cross_venue_premium_factors,
+    funding_factors,
+    oi_factors,
+    positioning_factors,
+)
 from lib.orderflow_factors import orderflow_factors
 from lib.timeframe import bars_per_hour
 
@@ -208,6 +214,8 @@ def build_feature_dict(
     oi_df: pd.DataFrame | None = None,
     stablecoin_df: pd.DataFrame | None = None,
     spot_close: pd.Series | None = None,
+    massive_usd_close: pd.Series | None = None,
+    usdt_usd_close: pd.Series | None = None,
     orderflow_df: pd.DataFrame | None = None,
     oi_ls_df: pd.DataFrame | None = None,
 ) -> dict[str, pd.Series]:
@@ -290,6 +298,14 @@ def build_feature_dict(
     # ── Perp-derived factor families ─────────────────────────────────────────
     if spot_close is not None:
         features.update(basis_factors(candles["close"], spot_close))
+    if (
+        spot_close is not None
+        and massive_usd_close is not None
+        and usdt_usd_close is not None
+    ):
+        features.update(
+            cross_venue_premium_factors(spot_close, massive_usd_close, usdt_usd_close)
+        )
     if funding_on_candle is not None:
         features.update(funding_factors(funding_on_candle))
     if oi_on_candle is not None:
@@ -563,6 +579,26 @@ def _process_symbol(
         except Exception as exc:
             log.warning("%s: spot fetch failed: %s — skipping basis_* factors", sym, exc)
 
+        # ── 2b. Fetch Massive USD spot + USDT/USD rate (cross-venue premium) ──
+        massive_usd_close: pd.Series | None = None
+        usdt_usd_close: pd.Series | None = None
+        try:
+            from lib import massive_data
+            from lib.ccxt_data import fetch_ohlcv_ccxt
+
+            mdf = massive_data.fetch_spot_bars(sym_cfg.massive_usd, cfg.period, cfg.interval)
+            if mdf is not None and not mdf.empty:
+                massive_usd_close = mdf["close"]
+                # USDT/USD rate: prefer Massive X:USDTUSD, else ccxt Kraken USDT/USD
+                rdf = massive_data.fetch_spot_bars("X:USDTUSD", cfg.period, cfg.interval)
+                if rdf is None or rdf.empty:
+                    rdf = fetch_ohlcv_ccxt("kraken", "USDT/USD", cfg.period, timeframe="1h")
+                if rdf is not None and not rdf.empty:
+                    usdt_usd_close = rdf["close"]
+                    log.info("%s: fetched Massive USD spot + USDT/USD rate", sym)
+        except Exception as exc:  # noqa: BLE001 — fetch failure must not break 1H line
+            log.warning("%s: Massive fetch failed: %s — skipping cross-venue factors", sym, exc)
+
         # ── 3. Fetch non-price data ──────────────────────────────────────────
         funding_df, oi_df, stablecoin_df = _fetch_non_price_data(sym_cfg, cfg.period)
 
@@ -602,6 +638,8 @@ def _process_symbol(
             oi_df=oi_df,
             stablecoin_df=stablecoin_df,
             spot_close=spot_close,
+            massive_usd_close=massive_usd_close,
+            usdt_usd_close=usdt_usd_close,
             orderflow_df=orderflow_df,
             oi_ls_df=oi_ls_df,
         )
