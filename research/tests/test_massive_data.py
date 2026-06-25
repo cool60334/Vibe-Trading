@@ -64,3 +64,13 @@ def test_fetch_spot_bars_retries_on_429(monkeypatch):
     monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
     df = massive_data.fetch_spot_bars("X:BTCUSD", days=2, interval="1H", max_retries=2)
     assert df is not None and calls["n"] == 2
+
+
+from pipeline.config import SymbolConfig
+
+
+def test_symbolconfig_massive_usd_ticker():
+    sym = SymbolConfig(name="btc", okx_swap="BTC-USDT-SWAP", ccxt_bybit="BTC/USDT:USDT")
+    assert sym.massive_usd == "X:BTCUSD"
+    sym2 = SymbolConfig(name="sol", okx_swap="SOL-USDT-SWAP", ccxt_bybit="SOL/USDT:USDT")
+    assert sym2.massive_usd == "X:SOLUSD"

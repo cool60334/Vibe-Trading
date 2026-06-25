@@ -51,6 +51,15 @@ class SymbolConfig:
         """Binance USDT-perp ticker (e.g. 'BTCUSDT') for the daily-metrics archive."""
         return f"{self.name.upper()}USDT"
 
+    @property
+    def massive_usd(self) -> str:
+        """Massive (Polygon) USD spot ticker (e.g. 'X:BTCUSD') for cross-venue premium.
+
+        Note: no-coverage coins (e.g. BNB on US venues) still return a ticker;
+        the fetch then returns None and the factor is simply skipped.
+        """
+        return f"X:{self.name.upper()}USD"
+
 
 @dataclasses.dataclass(frozen=True)
 class FeesConfig:
