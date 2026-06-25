@@ -69,6 +69,7 @@ def test_list_strategies(client):
     assert data[0]["pipeline_stage"] == 2
     assert data[0]["gate_pass"] is None  # no gate block yet
     assert data[0]["sharpe_oos"] is None  # no backtest block → OOS fields null
+    assert data[0]["recommended_action"] is None  # no diagnosis block yet
 
 
 def test_list_strategies_empty(tmp_path):
@@ -659,3 +660,11 @@ def test_strategy_row_oos_null_when_no_walk_forward(tmp_path):
     assert row["dd_oos"] is None
     assert row["trades_oos"] is None
     assert row["pf_oos"] is None
+
+
+def test_strategy_row_exposes_recommended_action(tmp_path):
+    payload = json.loads(json.dumps(_PAYLOAD_WITH_OOS))
+    payload["diagnosis"] = {"recommended_action": "back_to_stage_4"}
+    with _client_for_payload(tmp_path, payload) as c:
+        row = c.get("/api/strategies").json()[0]
+    assert row["recommended_action"] == "back_to_stage_4"

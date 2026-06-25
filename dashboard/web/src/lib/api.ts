@@ -303,6 +303,7 @@ export interface StrategyRow {
   trades_oos: number | null;
   pf_oos: number | null;
   red_flags: RedFlagCode[];
+  recommended_action: RecommendedAction | null;  // stage-3 diagnosis verdict; null until diagnosed
   interval: string;
 }
 

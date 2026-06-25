@@ -60,6 +60,9 @@ def _strategy_row(m, interval: str) -> dict:
         "sharpe": m.backtest.in_sample.sharpe if m.backtest else None,
         "max_drawdown": m.backtest.in_sample.max_drawdown if m.backtest else None,
         "red_flags": [f.value for f in m.gate.red_flags] if m.gate else [],
+        # Stage-3 diagnosis verdict (proceed / back_to_stage_2 / back_to_stage_4);
+        # null until a diagnosis run exists. Drives the list's next-step chip.
+        "recommended_action": m.diagnosis.recommended_action.value if m.diagnosis else None,
         "interval": interval,
         # OOS (walk-forward held-out) — authoritative ranking metrics; null until an OOS run exists.
         "sharpe_oos": oos.sharpe if oos else None,
