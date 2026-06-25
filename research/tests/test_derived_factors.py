@@ -239,23 +239,27 @@ def test_cross_venue_premium_keys_and_shape():
 
 
 def test_depeg_isolated_from_price():
-    """A pure USDT discount (R<1) with equal USD/OKX prices => depeg negative,
-    fiat_prem ~0 after deconfounding."""
+    """A pure USDT discount (R<1) with equal USD/OKX prices => depeg = -0.01 and
+    fiat_prem = -0.01 after deconfounding. Prices VARY so the frozen-feed guard
+    is not tripped — this is the formula under test, not data quality."""
     idx = _idx(800)
-    okx = pd.Series(100.0, index=idx)   # USDT-denominated
-    usd = pd.Series(100.0, index=idx)   # real USD
-    r = pd.Series(0.99, index=idx)      # 1 USDT = 0.99 USD (discount)
+    rng = np.random.default_rng(7)
+    price = pd.Series(100 + np.cumsum(rng.normal(0, 0.3, 800)), index=idx)
+    okx = price                          # USDT-denominated
+    usd = price                          # real USD (same varying price)
+    r = pd.Series(0.99, index=idx)       # 1 USDT = 0.99 USD (discount)
     out = cross_venue_premium_factors(okx, usd, r)
     assert (out["depeg"] < 0).all()
-    # fiat_prem = okx*R/usd - 1 = 100*0.99/100 - 1 = -0.01  (NOT ~0 here)
+    # fiat_prem = price*0.99/price - 1 = -0.01
     assert np.allclose(out["fiat_prem"].dropna(), -0.01, atol=1e-9)
 
 
 def test_fiat_premium_pure_when_no_depeg():
-    """R==1 (no depeg): fiat_prem reduces to OKX-vs-USD spread."""
+    """R==1 (no depeg): fiat_prem reduces to the OKX-vs-USD spread (here 1%)."""
     idx = _idx(800)
-    okx = pd.Series(101.0, index=idx)
-    usd = pd.Series(100.0, index=idx)
+    rng = np.random.default_rng(8)
+    usd = pd.Series(100 + np.cumsum(rng.normal(0, 0.3, 800)), index=idx)
+    okx = usd * 1.01                     # 1% richer on OKX, both vary together
     r = pd.Series(1.0, index=idx)
     out = cross_venue_premium_factors(okx, usd, r)
     assert np.allclose(out["fiat_prem"].dropna(), 0.01, atol=1e-9)
@@ -321,12 +325,13 @@ def test_partial_coverage_rate_refuses_depeg():
 
 
 def test_out_of_bound_fiat_prem_refused():
-    """A 40% cross-venue 'premium' is impossible (arbitrage bounds it to bps) =>
-    misalignment => refused, not emitted as a constant. Isolates the SANITY
-    bound: coverage is full, only the magnitude is wrong."""
+    """A 50% cross-venue 'premium' is impossible (arbitrage bounds it to bps) =>
+    misalignment => refused. Isolates the SANITY bound: the USD leg VARIES (not
+    frozen) and coverage is full — only the magnitude is wrong."""
     idx = _idx(4000)
-    okx = pd.Series(60.0, index=idx)
-    massive = pd.Series(100.0, index=idx)                        # 40% gap
+    rng = np.random.default_rng(9)
+    okx = pd.Series(60 + np.cumsum(rng.normal(0, 0.2, 4000)), index=idx)
+    massive = okx * 1.5                                          # 50% gap, both vary
     r = pd.Series(1.0, index=idx)
     out = cross_venue_premium_factors(okx, massive, r)
     assert out["fiat_prem_z"].notna().sum() == 0
@@ -342,6 +347,19 @@ def test_well_aligned_data_still_produces_factor():
     out = cross_venue_premium_factors(price, massive, r)
     assert out["fiat_prem_z"].notna().sum() > 1000
     assert out["fiat_prem"].abs().max() < 0.05
+
+
+def test_flatline_massive_refused():
+    """A constant (flatlined) Massive series with FULL coverage and in-bound
+    premium must still be refused. ffill-limit & coverage guards miss this case
+    (no NaN gaps); only a flatline detector catches a stale/frozen feed."""
+    idx = _idx(4000)
+    rng = np.random.default_rng(3)
+    okx = pd.Series(80 + rng.normal(0, 1.0, 4000), index=idx)   # ~80±1 => fiat_prem ~bps
+    massive = pd.Series(80.0, index=idx)                        # frozen flatline, no NaN
+    r = pd.Series(1.0, index=idx)
+    out = cross_venue_premium_factors(okx, massive, r)
+    assert out["fiat_prem_z"].notna().sum() == 0
 
 
 # ─── massive_spot source registry ──────────────────────────────────────────────

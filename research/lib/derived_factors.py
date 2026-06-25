@@ -28,7 +28,8 @@ def cross_venue_premium_factors(
     *,
     max_ffill_bars: int = 6,
     min_coverage: float = 0.5,
-    max_abs_prem: float = 0.10,
+    max_abs_prem: float = 0.05,
+    min_price_rel_std: float = 0.005,
 ) -> dict[str, pd.Series]:
     """Cross-venue premium factors from OKX USDT spot vs Massive USD spot.
 
@@ -41,12 +42,17 @@ def cross_venue_premium_factors(
     Data-quality guards (Phase-1 artifact fix). The cross-venue spread is only
     meaningful when both legs have real, aligned, sane data; otherwise a factor
     here is a disguised price level that shows spurious IC:
-      * ``max_ffill_bars`` — limit forward-fill so a few stale Massive bars are
-        not stretched into a flat line (the original 0.3-0.56 IC bug).
+      * ``max_ffill_bars`` — limit forward-fill so a few stale USD bars are not
+        stretched into a flat line (the original 0.3-0.56 IC bug).
       * ``max_abs_prem`` — an arbitrage-bound spot premium is ~bps; values beyond
         this are misalignment, not signal, and are dropped.
       * ``min_coverage`` — if a factor's real (non-NaN) coverage over the index
         falls below this fraction, it is refused (all-NaN) rather than emitted.
+      * ``min_price_rel_std`` — the USD price leg must actually move; a frozen /
+        flatlined feed (rel std ~0, e.g. a repeated value over continuous
+        timestamps) makes fiat_prem a disguised price level, so it is refused.
+        Applies only to fiat_prem's price leg, never to depeg (USDT/USD is
+        legitimately near-constant for long stretches).
     Refused factors are all-NaN, so downstream screening simply skips them.
     """
     idx = okx_spot_close.index
@@ -59,13 +65,20 @@ def cross_venue_premium_factors(
     fiat_prem = (okx_spot_close * r) / usd - 1.0
     fiat_prem = fiat_prem.where(fiat_prem.abs() <= max_abs_prem)
 
-    def _guard(series: pd.Series) -> tuple[pd.Series, pd.Series]:
-        if series.notna().mean() < min_coverage:
+    usd_cov = usd.dropna()
+    price_frozen = (
+        usd_cov.empty
+        or usd_cov.mean() == 0
+        or (usd_cov.std() / abs(usd_cov.mean())) < min_price_rel_std
+    )
+
+    def _guard(series: pd.Series, ok: bool = True) -> tuple[pd.Series, pd.Series]:
+        if not ok or series.notna().mean() < min_coverage:
             return nan, nan
         return series, _rolling_z(series, SCREEN_ZSCORE_DAYS * 24)
 
     depeg_lvl, depeg_z = _guard(depeg)
-    fiat_lvl, fiat_z = _guard(fiat_prem)
+    fiat_lvl, fiat_z = _guard(fiat_prem, ok=not price_frozen)
     return {
         "depeg": depeg_lvl,
         "depeg_z": depeg_z,
