@@ -38,6 +38,7 @@ from pipeline.stage4_optimize import (  # noqa: E402
     apply_overrides_to_spec,
     build_optimization_block,
     expand_param_ranges,
+    is_all_bust_dd,
     rank_combos,
     sample_combos,
     _rewrite_invalidation_lookback,
@@ -480,3 +481,21 @@ class TestSizeMult:
         scaffold = _default_spec_scaffold(["some_factor"])
         assert "size_mult" in scaffold["parameter_search_ranges"]
         assert scaffold["parameter_search_ranges"]["size_mult"] == [0.4, 1.0, 0.2]
+
+
+class TestIsAllBustDd:
+    def test_true_when_metrics_exist_but_none_survive_dd(self):
+        results = [_combo(0, 2.0, 50, max_dd=0.20), _combo(1, 1.0, 50, max_dd=0.15)]
+        ranked = rank_combos(results)  # empty
+        assert is_all_bust_dd(results, ranked) is True
+
+    def test_false_when_a_combo_survives(self):
+        results = [_combo(0, 1.0, 50, max_dd=0.05)]
+        ranked = rank_combos(results)
+        assert is_all_bust_dd(results, ranked) is False
+
+    def test_false_when_no_combo_has_metrics(self):
+        # all-errored case: do NOT skip via the DD branch (keeps best=None path).
+        results = [_combo(0, 0.0, 0, metrics=False), _combo(1, 0.0, 0, metrics=False)]
+        ranked = rank_combos(results)  # empty
+        assert is_all_bust_dd(results, ranked) is False

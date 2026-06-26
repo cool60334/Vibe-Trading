@@ -434,6 +434,19 @@ def rank_combos(
     return sorted(dd_gated, key=lambda c: c.sharpe, reverse=True)
 
 
+def is_all_bust_dd(
+    results: list[ComboResult], ranked: list[ComboResult]
+) -> bool:
+    """True when combos produced metrics but none survived the DD gate.
+
+    Distinguishes "every combo busts the train DD budget" (→ fail-soft skip,
+    no OOS) from "no combo produced metrics at all" (→ keep the best=None
+    error path). ``ranked`` is the output of ``rank_combos(results)``.
+    """
+    have_metrics = any(r.metrics is not None for r in results)
+    return have_metrics and not ranked
+
+
 def _summarise(combos: list[ComboResult], ranked: list[ComboResult], top_n: int = 5) -> str:
     n_total = len(combos)
     n_with_metrics = sum(1 for c in combos if c.metrics is not None)
