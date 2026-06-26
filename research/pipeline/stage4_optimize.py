@@ -452,6 +452,10 @@ def _summarise(combos: list[ComboResult], ranked: list[ComboResult], top_n: int 
     n_with_metrics = sum(1 for c in combos if c.metrics is not None)
     n_errors = n_total - n_with_metrics
     n_gated = sum(1 for c in ranked if c.trade_count >= MIN_TRADE_COUNT_GATE)
+    n_dd_pass = sum(
+        1 for c in combos
+        if c.metrics is not None and c.max_drawdown <= DD_CEILING
+    )
 
     lines = [
         f"# Stage 4 grid sweep summary",
@@ -460,6 +464,7 @@ def _summarise(combos: list[ComboResult], ranked: list[ComboResult], top_n: int 
         f"- combos with metrics: {n_with_metrics}",
         f"- combos with errors: {n_errors}",
         f"- combos passing trade_count >= {MIN_TRADE_COUNT_GATE}: {n_gated}",
+        f"- combos passing max_drawdown <= {DD_CEILING}: {n_dd_pass}",
         f"",
         f"## Top {min(top_n, len(ranked))} (by sharpe)",
         f"",

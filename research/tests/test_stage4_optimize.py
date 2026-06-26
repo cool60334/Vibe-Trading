@@ -34,6 +34,7 @@ for _p in (_RESEARCH_DIR, _REPO_ROOT, _DASHBOARD_SCHEMAS):
 from pipeline.stage4_optimize import (  # noqa: E402
     OPTIMIZATION_METHOD,
     MIN_TRADE_COUNT_GATE,
+    DD_CEILING,
     ComboResult,
     apply_overrides_to_spec,
     build_optimization_block,
@@ -43,6 +44,7 @@ from pipeline.stage4_optimize import (  # noqa: E402
     sample_combos,
     _rewrite_invalidation_lookback,
     _rewrite_percentile_condition,
+    _summarise,
 )
 from pipeline.stage2_strategies import _default_spec_scaffold  # noqa: E402
 from schemas import StrategySpec  # noqa: E402
@@ -499,3 +501,20 @@ class TestIsAllBustDd:
         results = [_combo(0, 0.0, 0, metrics=False), _combo(1, 0.0, 0, metrics=False)]
         ranked = rank_combos(results)  # empty
         assert is_all_bust_dd(results, ranked) is False
+
+
+# ---------------------------------------------------------------------------
+# _summarise
+# ---------------------------------------------------------------------------
+
+
+class TestSummarise:
+    def test_reports_dd_pass_count(self):
+        combos = [
+            _combo(0, 1.5, 50, max_dd=0.05),  # passes DD
+            _combo(1, 1.0, 50, max_dd=0.20),  # busts DD
+            _combo(2, 0.0, 0, metrics=False),  # no metrics
+        ]
+        ranked = rank_combos(combos)
+        out = _summarise(combos, ranked)
+        assert f"combos passing max_drawdown <= {DD_CEILING}: 1" in out
