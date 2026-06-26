@@ -168,6 +168,32 @@ def get_testnet_status(repo_root: Path, testnet_id: str) -> Optional[TestnetStat
 _LIVE_TESTNET_STATUSES = {"running", "paused"}
 
 
+#: When a strategy has several live traders, the list shows the highest-stakes
+#: mode (a live deployment must not be masked by a co-running paper one).
+_MODE_PRECEDENCE = {"live": 3, "testnet": 2, "paper": 1}
+
+
+def running_modes_by_strategy(repo_root: Path) -> dict[str, str]:
+    """Map ``strategy_id -> trading mode`` for every live (running/paused) trader.
+
+    One pass over ``testnet_status.json`` files, so the strategy-list endpoint can
+    tag rows with their live deployment without an O(N) ``find_running_testnet``
+    call per row. A live trader with no explicit ``mode`` defaults to ``"paper"``
+    (the only deployment type in use). When a strategy has multiple live traders,
+    the highest-precedence mode wins (``live`` > ``testnet`` > ``paper``) rather
+    than relying on filesystem iteration order. Returns ``{}`` when nothing is live.
+    """
+    out: dict[str, str] = {}
+    for status in list_testnet_statuses(repo_root):
+        if status.live.status not in _LIVE_TESTNET_STATUSES:
+            continue
+        mode = status.mode or "paper"
+        current = out.get(status.strategy_id)
+        if current is None or _MODE_PRECEDENCE.get(mode, 0) > _MODE_PRECEDENCE.get(current, 0):
+            out[status.strategy_id] = mode
+    return out
+
+
 def find_running_testnet(repo_root: Path, strategy_id: str) -> Optional[TestnetStatus]:
     """Return the live (running/paused) testnet status for *strategy_id*, if any.
 

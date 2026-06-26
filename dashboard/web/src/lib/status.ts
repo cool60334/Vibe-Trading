@@ -8,14 +8,20 @@ import type { StrategyRow } from "./api";
 // Order matters: a FATAL strategy also has gate_pass === false, so the fatal
 // check must come before the pass check.
 //
+//   running    — a trader is live on it (running_mode set)  (operational truth)
 //   dead       — gate_fatal === true                (hard block, archive)
 //   incomplete — no gate block yet (gate_pass null)  (stalled pre-backtest)
 //   deployable — gate passed, not fatal              (GO)
 //   iterate    — gate ran, NO-GO, not fatal          (fixable)
+//
+// `running` is checked first: a live paper/testnet strategy is the operational
+// truth and must surface as running even if its manifest lacks a gate (which
+// would otherwise bucket it as `incomplete`/N/A — e.g. a CLI-deployed strategy).
 
-export type StatusBucket = "deployable" | "iterate" | "dead" | "incomplete";
+export type StatusBucket = "running" | "deployable" | "iterate" | "dead" | "incomplete";
 
 export function statusBucket(r: StrategyRow): StatusBucket {
+  if (r.running_mode) return "running";
   if (r.gate_fatal === true) return "dead";
   if (r.gate_pass === null) return "incomplete";
   if (r.gate_pass === true) return "deployable";
@@ -23,8 +29,8 @@ export function statusBucket(r: StrategyRow): StatusBucket {
 }
 
 // Render order + per-bucket presentation. `defaultOpen` drives which groups
-// start expanded (deployable + iterate); dead/incomplete start collapsed.
-export const BUCKET_ORDER: StatusBucket[] = ["deployable", "iterate", "dead", "incomplete"];
+// start expanded (running + deployable + iterate); dead/incomplete start collapsed.
+export const BUCKET_ORDER: StatusBucket[] = ["running", "deployable", "iterate", "dead", "incomplete"];
 
 export interface BucketMeta {
   label: string;
@@ -33,6 +39,7 @@ export interface BucketMeta {
 }
 
 export const BUCKET_META: Record<StatusBucket, BucketMeta> = {
+  running: { label: "運行中", hint: "Paper / Testnet / Live 模擬中", defaultOpen: true },
   deployable: { label: "可部署", hint: "通過 gate、非致命", defaultOpen: true },
   iterate: { label: "待優化", hint: "已評估、NO-GO，可迭代", defaultOpen: true },
   dead: { label: "淘汰", hint: "致命（FATAL）", defaultOpen: false },
@@ -53,6 +60,14 @@ export interface NextStep {
 export function nextStep(r: StrategyRow): NextStep {
   const bucket = statusBucket(r);
   switch (bucket) {
+    case "running": {
+      const mode = r.running_mode ?? "paper";
+      const label = mode.charAt(0).toUpperCase() + mode.slice(1);
+      // Safety: a strategy that is live yet has a fatal gate must not look healthy.
+      // It should never have been deployed — flag it so the user can kill it.
+      if (r.gate_fatal === true) return { label: `FATAL 卻在跑 (${label})`, tone: "danger" };
+      return { label: `${label} 監控中`, tone: "success" };
+    }
     case "deployable":
       return { label: "跑 paper-forward", tone: "success" };
     case "dead":

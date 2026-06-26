@@ -305,6 +305,7 @@ export interface StrategyRow {
   red_flags: RedFlagCode[];
   recommended_action: RecommendedAction | null;  // stage-3 diagnosis verdict; null until diagnosed
   interval: string;
+  running_mode: string | null;  // "paper"/"testnet"/"live" if a trader is live on it, else null
 }
 
 export interface PipelineRow {

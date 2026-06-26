@@ -48,10 +48,15 @@ def health() -> dict:
 # 3.4 Strategy list & detail
 # ---------------------------------------------------------------------------
 
-def _strategy_row(m, interval: str) -> dict:
+def _strategy_row(m, interval: str, running_modes: dict[str, str] | None = None) -> dict:
     oos = m.backtest.oos if (m.backtest and m.backtest.oos) else None
     return {
         "strategy_id": m.strategy_id,
+        # Live deployment mode ("paper"/"testnet"/"live") if a trader is running
+        # this strategy, else None. Lets the list surface running strategies
+        # regardless of their manifest gate state (a CLI-deployed paper strategy
+        # whose manifest lacks a gate would otherwise show as N/A).
+        "running_mode": (running_modes or {}).get(m.strategy_id),
         "symbol": m.symbol,
         "pipeline_stage": m.pipeline_stage,
         "generated_at": m.generated_at.isoformat(),
@@ -79,12 +84,19 @@ def list_intervals() -> list[str]:
 
 @app.get("/api/strategies")
 def list_strategies(interval: str = Query("1H")) -> list[dict]:
+    running_modes = artifacts.running_modes_by_strategy(REPO_ROOT)
     if interval == "all":
         rows: list[dict] = []
         for iv in artifacts.discover_intervals(REPO_ROOT):
-            rows.extend(_strategy_row(m, iv) for m in artifacts.list_strategy_manifests(REPO_ROOT, iv))
+            rows.extend(
+                _strategy_row(m, iv, running_modes)
+                for m in artifacts.list_strategy_manifests(REPO_ROOT, iv)
+            )
         return rows
-    return [_strategy_row(m, interval) for m in artifacts.list_strategy_manifests(REPO_ROOT, interval)]
+    return [
+        _strategy_row(m, interval, running_modes)
+        for m in artifacts.list_strategy_manifests(REPO_ROOT, interval)
+    ]
 
 
 @app.get("/api/strategies/{strategy_id}")

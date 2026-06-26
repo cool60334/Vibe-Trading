@@ -26,6 +26,7 @@ const TONE_CHIP: Record<ChipTone, string> = {
 };
 
 const BUCKET_ACCENT: Record<StatusBucket, string> = {
+  running: "text-sky-600 dark:text-sky-400",
   deployable: "text-emerald-600 dark:text-emerald-400",
   iterate: "text-amber-600 dark:text-amber-400",
   dead: "text-red-600 dark:text-red-400",
@@ -33,6 +34,7 @@ const BUCKET_ACCENT: Record<StatusBucket, string> = {
 };
 
 const BUCKET_BORDER: Record<StatusBucket, string> = {
+  running: "border-l-sky-500",
   deployable: "border-l-emerald-500",
   iterate: "border-l-amber-400",
   dead: "border-l-red-500",
@@ -219,6 +221,7 @@ export default function Compare() {
   const [activeCoin, setActiveCoin] = useState<string>("ALL");
   const [bucketFilter, setBucketFilter] = useState<StatusBucket | null>(null);
   const [openGroups, setOpenGroups] = useState<Record<StatusBucket, boolean>>({
+    running: BUCKET_META.running.defaultOpen,
     deployable: BUCKET_META.deployable.defaultOpen,
     iterate: BUCKET_META.iterate.defaultOpen,
     dead: BUCKET_META.dead.defaultOpen,
@@ -263,7 +266,7 @@ export default function Compare() {
   );
 
   const counts = useMemo(() => {
-    const c: Record<StatusBucket, number> = { deployable: 0, iterate: 0, dead: 0, incomplete: 0 };
+    const c: Record<StatusBucket, number> = { running: 0, deployable: 0, iterate: 0, dead: 0, incomplete: 0 };
     for (const r of coinFiltered) c[statusBucket(r)] += 1;
     return c;
   }, [coinFiltered]);

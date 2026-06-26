@@ -15,6 +15,7 @@ from artifacts import (
     list_factor_manifests,
     list_strategy_manifests,
     list_testnet_statuses,
+    running_modes_by_strategy,
 )
 
 
@@ -186,3 +187,54 @@ def test_get_testnet_status_found(tmp_path):
 
 def test_get_testnet_status_missing(tmp_path):
     assert get_testnet_status(tmp_path, "nonexistent") is None
+
+
+# ---------------------------------------------------------------------------
+# Running-mode map (drives the strategy-list "running" status)
+# ---------------------------------------------------------------------------
+
+def test_running_modes_by_strategy_includes_live_excludes_stopped(tmp_path):
+    """Only running/paused traders count; the map carries each one's mode."""
+    base = tmp_path / "runs" / "testnet"
+    _write(base / "a_paper" / "testnet_status.json", {
+        **TESTNET_PAYLOAD, "testnet_id": "a_paper", "strategy_id": "strat_a",
+        "mode": "paper",
+    })
+    _write(base / "b_stopped" / "testnet_status.json", {
+        **TESTNET_PAYLOAD, "testnet_id": "b_stopped", "strategy_id": "strat_b",
+        "mode": "paper",
+        "live": {**TESTNET_PAYLOAD["live"], "status": "stopped"},
+    })
+    assert running_modes_by_strategy(tmp_path) == {"strat_a": "paper"}
+
+
+def test_running_modes_by_strategy_paused_counts_and_null_mode_defaults_paper(tmp_path):
+    """Paused = live; a running trader with no explicit mode reports 'paper'."""
+    base = tmp_path / "runs" / "testnet"
+    _write(base / "c_paused" / "testnet_status.json", {
+        **TESTNET_PAYLOAD, "testnet_id": "c_paused", "strategy_id": "strat_c",
+        "live": {**TESTNET_PAYLOAD["live"], "status": "paused"},
+    })
+    assert running_modes_by_strategy(tmp_path) == {"strat_c": "paper"}
+
+
+def test_running_modes_by_strategy_empty(tmp_path):
+    assert running_modes_by_strategy(tmp_path) == {}
+
+
+def test_running_modes_by_strategy_prefers_live_over_paper(tmp_path):
+    """A strategy live on multiple traders reports the highest-stakes mode.
+
+    Dir names are chosen so the paper status is yielded first by sorted glob —
+    a naive first-wins would wrongly report 'paper'.
+    """
+    base = tmp_path / "runs" / "testnet"
+    _write(base / "strat_x_aaa_paper" / "testnet_status.json", {
+        **TESTNET_PAYLOAD, "testnet_id": "strat_x_aaa_paper",
+        "strategy_id": "strat_x", "mode": "paper",
+    })
+    _write(base / "strat_x_zzz_live" / "testnet_status.json", {
+        **TESTNET_PAYLOAD, "testnet_id": "strat_x_zzz_live",
+        "strategy_id": "strat_x", "mode": "live",
+    })
+    assert running_modes_by_strategy(tmp_path) == {"strat_x": "live"}

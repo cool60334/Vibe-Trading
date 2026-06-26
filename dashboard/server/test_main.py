@@ -70,6 +70,24 @@ def test_list_strategies(client):
     assert data[0]["gate_pass"] is None  # no gate block yet
     assert data[0]["sharpe_oos"] is None  # no backtest block → OOS fields null
     assert data[0]["recommended_action"] is None  # no diagnosis block yet
+    assert data[0]["running_mode"] is None  # no live trader → not running
+
+
+def test_list_strategies_tags_running_mode(repo_root, tmp_path):
+    """A live paper trader makes its strategy's list row report running_mode=paper.
+
+    Decouples the list status from the manifest gate so an actively-trading
+    strategy is never mislabeled N/A just because its manifest lacks a gate block.
+    """
+    _write_running_testnet(repo_root)  # strat_btc_001, mode=paper, running
+    os.environ["REPO_ROOT"] = str(repo_root)
+    import importlib, main as main_module
+    importlib.reload(main_module)
+    from main import app
+    with TestClient(app) as c:
+        row = c.get("/api/strategies").json()[0]
+    assert row["strategy_id"] == "strat_btc_001"
+    assert row["running_mode"] == "paper"
 
 
 def test_list_strategies_empty(tmp_path):

@@ -88,6 +88,7 @@ def test_api_strategies_all_merges_and_tags(monkeypatch):
             self.generated_at = datetime(2026, 6, 15, tzinfo=timezone.utc)
             self.gate = None
             self.backtest = None
+            self.diagnosis = None
 
     monkeypatch.setattr(main.artifacts, "list_strategy_manifests",
                         lambda r, interval="1H": [M(f"s_{interval}")])
@@ -95,6 +96,8 @@ def test_api_strategies_all_merges_and_tags(monkeypatch):
     rows = client.get("/api/strategies?interval=all").json()
     by_iv = {r["interval"]: r["strategy_id"] for r in rows}
     assert by_iv == {"1H": "s_1H", "30m": "s_30m"}
+    # not running (no testnet status) → running_mode tagged null on every row
+    assert all(r["running_mode"] is None for r in rows)
 
 
 def test_api_intervals_endpoint(monkeypatch):
