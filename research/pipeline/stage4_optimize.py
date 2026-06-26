@@ -71,7 +71,7 @@ _DASHBOARD_SCHEMAS = _REPO_ROOT / "dashboard" / "server"
 if str(_DASHBOARD_SCHEMAS) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_SCHEMAS))
 
-from schemas import OptimizationBlock, StrategySpec  # noqa: E402
+from schemas import GATE_MAX_DRAWDOWN, OptimizationBlock, StrategySpec  # noqa: E402
 
 from lib.signal_compiler import compile_strategy  # noqa: E402
 
@@ -80,6 +80,7 @@ OPTIMIZATION_METHOD = "deterministic grid sweep (stage 4)"
 DEFAULT_MAX_COMBOS = 60
 DEFAULT_SEED = 42
 MIN_TRADE_COUNT_GATE = 10
+DD_CEILING = GATE_MAX_DRAWDOWN  # 0.10 — deploy single source of truth (schemas.py)
 BACKTEST_TIMEOUT_S = 600
 
 
@@ -412,17 +413,25 @@ def _run_one_combo(
 # ─── Ranking / output ─────────────────────────────────────────────────────────
 
 
-def rank_combos(combos: list[ComboResult], min_trades: int = MIN_TRADE_COUNT_GATE) -> list[ComboResult]:
-    """Return combos sorted best→worst.
+def rank_combos(
+    combos: list[ComboResult],
+    min_trades: int = MIN_TRADE_COUNT_GATE,
+    dd_ceiling: float = DD_CEILING,
+) -> list[ComboResult]:
+    """Return combos sorted best→worst under two hard gates.
 
-    Primary filter: trade_count >= min_trades. Among gated combos, sort by
-    sharpe desc. If zero combos pass the gate, fall back to all combos
-    ranked by sharpe desc (caller sees that the best has trade_count < gate).
+    Gate 1 (trade_count): combos with trade_count >= min_trades. Falls back to
+    all valid combos when none qualify (unchanged legacy behaviour).
+    Gate 2 (max_drawdown): of that pool, keep combos with train max_drawdown
+    <= dd_ceiling. This gate has NO fallback — if none qualify, the result is
+    empty and the caller fail-soft skips the strategy (no DD-busting `best`).
+    Survivors are ranked by sharpe desc.
     """
     valid = [c for c in combos if c.metrics is not None]
-    gated = [c for c in valid if c.trade_count >= min_trades]
-    pool = gated if gated else valid
-    return sorted(pool, key=lambda c: c.sharpe, reverse=True)
+    trade_gated = [c for c in valid if c.trade_count >= min_trades]
+    pool = trade_gated if trade_gated else valid
+    dd_gated = [c for c in pool if c.max_drawdown <= dd_ceiling]
+    return sorted(dd_gated, key=lambda c: c.sharpe, reverse=True)
 
 
 def _summarise(combos: list[ComboResult], ranked: list[ComboResult], top_n: int = 5) -> str:

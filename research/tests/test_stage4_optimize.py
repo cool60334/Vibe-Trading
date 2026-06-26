@@ -260,10 +260,12 @@ class TestApplyOverridesToSpec:
 # ---------------------------------------------------------------------------
 
 
-def _combo(idx: int, sharpe, trade_count, *, metrics: bool = True) -> ComboResult:
+def _combo(idx: int, sharpe, trade_count, *, metrics: bool = True,
+           max_dd: float = 0.05) -> ComboResult:
     m = None
     if metrics:
-        m = {"sharpe": str(sharpe), "trade_count": str(trade_count)}
+        m = {"sharpe": str(sharpe), "trade_count": str(trade_count),
+             "max_drawdown": str(max_dd)}
     return ComboResult(idx=idx, overrides={}, run_name=f"s_{idx:03d}", metrics=m)
 
 
@@ -295,6 +297,41 @@ class TestRankCombos:
 
     def test_empty_input_returns_empty(self):
         assert rank_combos([]) == []
+
+    def test_low_dd_preferred_over_higher_sharpe_high_dd(self):
+        # A: higher sharpe but busts DD; B: lower sharpe, passes DD.
+        combos = [
+            _combo(0, 2.0, 50, max_dd=0.15),  # busts DD → excluded
+            _combo(1, 1.0, 50, max_dd=0.05),  # passes
+        ]
+        ranked = rank_combos(combos)
+        assert [c.idx for c in ranked] == [1]
+
+    def test_sub_min_trade_combo_not_selected_when_others_pass(self):
+        # trade_count gate must not be weakened by the DD layer: a 2-trade
+        # high-sharpe combo never wins when a real combo passes trade_count.
+        combos = [
+            _combo(0, 3.0, 2, max_dd=0.05),   # below trade gate
+            _combo(1, 1.0, 50, max_dd=0.05),  # passes both
+        ]
+        ranked = rank_combos(combos)
+        assert [c.idx for c in ranked] == [1]
+
+    def test_all_bust_dd_returns_empty(self):
+        combos = [
+            _combo(0, 2.0, 50, max_dd=0.20),
+            _combo(1, 1.0, 50, max_dd=0.15),
+        ]
+        assert rank_combos(combos) == []
+
+    def test_dd_boundary_inclusive(self):
+        # exactly 0.10 passes; 0.1001 fails.
+        combos = [
+            _combo(0, 1.0, 50, max_dd=0.10),
+            _combo(1, 2.0, 50, max_dd=0.1001),
+        ]
+        ranked = rank_combos(combos)
+        assert [c.idx for c in ranked] == [0]
 
 
 # ---------------------------------------------------------------------------
