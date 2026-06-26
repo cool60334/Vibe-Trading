@@ -662,6 +662,15 @@ def _optimize_strategy(
                   f"overrides={overrides}")
 
     ranked = rank_combos(results)
+    if is_all_bust_dd(results, ranked):
+        msg = (
+            f"all {len(results)} combos exceed train DD ceiling {DD_CEILING} — "
+            "skipping (redesign for DD; do not re-tune against OOS holdout)"
+        )
+        print(f"  [SKIP] {msg}")
+        return OptimizationCheckResult(
+            strategy_id=strategy_id, ok=False, skipped=True, error=msg
+        )
     best = ranked[0] if ranked else None
     summary = _summarise(results, ranked)
     print(f"\n{summary}\n")
