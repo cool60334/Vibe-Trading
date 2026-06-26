@@ -42,6 +42,7 @@ import argparse
 import csv
 import dataclasses
 import json
+import math
 import random
 import re
 import subprocess
@@ -118,6 +119,19 @@ class ComboResult:
             return int(float(self.metrics.get("trade_count", 0)))
         except (TypeError, ValueError):
             return 0
+
+    @property
+    def max_drawdown(self) -> float:
+        """Max drawdown as a positive fraction. inf when absent/unparseable/NaN
+        so a combo with no usable DD conservatively fails the DD gate."""
+        if not self.metrics:
+            return float("inf")
+        raw = self.metrics.get("max_drawdown")
+        try:
+            val = abs(float(raw))
+        except (TypeError, ValueError):
+            return float("inf")
+        return float("inf") if math.isnan(val) else val
 
 
 # ─── Parameter grid helpers (pure) ────────────────────────────────────────────

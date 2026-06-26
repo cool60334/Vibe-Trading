@@ -354,6 +354,32 @@ class TestComboResultProperties:
         assert c.sharpe == float("-inf")
         assert c.trade_count == 0
 
+    def test_max_drawdown_parses_and_abs(self):
+        c = ComboResult(idx=0, overrides={}, run_name="x",
+                        metrics={"sharpe": "1.0", "trade_count": "30",
+                                 "max_drawdown": "-0.12"})
+        assert c.max_drawdown == 0.12  # abs() applied
+
+    def test_max_drawdown_missing_field_is_inf(self):
+        c = ComboResult(idx=0, overrides={}, run_name="x",
+                        metrics={"sharpe": "1.0", "trade_count": "30"})
+        assert c.max_drawdown == float("inf")
+
+    def test_max_drawdown_none_metrics_is_inf(self):
+        c = ComboResult(idx=0, overrides={}, run_name="x", metrics=None)
+        assert c.max_drawdown == float("inf")
+
+    def test_max_drawdown_unparseable_is_inf(self):
+        c = ComboResult(idx=0, overrides={}, run_name="x",
+                        metrics={"max_drawdown": "n/a"})
+        assert c.max_drawdown == float("inf")
+
+    def test_max_drawdown_nan_string_is_inf(self):
+        # float("NaN") does not raise; abs(nan) is nan. Must be normalised to inf.
+        c = ComboResult(idx=0, overrides={}, run_name="x",
+                        metrics={"max_drawdown": "NaN"})
+        assert c.max_drawdown == float("inf")
+
 
 # ---------------------------------------------------------------------------
 # size_mult in apply_overrides_to_spec + scaffold
