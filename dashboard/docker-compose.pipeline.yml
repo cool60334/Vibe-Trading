@@ -42,7 +42,7 @@ services:
     command: ["python", "-m", "freshness_scheduler"]
     environment:
       REPO_ROOT: /repo
-      FRESHNESS_SYMBOLS: sol
+      FRESHNESS_SYMBOLS: sol,xrp
       FRESHNESS_INTERVAL_SEC: "3600"
     volumes:
       - ..:/repo
