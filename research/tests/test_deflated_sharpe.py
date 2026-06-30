@@ -66,3 +66,14 @@ class TestDeflatedSharpe:
             0.02, [0.001, 0.002, 0.0015, 0.0012, float("nan"), float("inf")], 8760
         )
         assert dirty == clean
+
+    def test_known_numerical_value(self):
+        import pytest
+        # Pins the DSR formula coefficients against silent regression.
+        # trials=[0.0, 0.01], best=0.01, T=100 (normal-returns assumption: skew=0, kurt=3)
+        # var_srs = ddof-1 variance = 5e-5  →  std ≈ 0.007071
+        # max_z ≈ 0.5198  →  expected_max_sr ≈ 0.003675
+        # sr_std = sqrt((1 + 0.5*0.01^2) / 99) ≈ 0.10051
+        # z ≈ 0.06293  →  dsr ≈ 0.5251
+        dsr = deflated_sharpe(0.01, [0.0, 0.01], 100)
+        assert dsr == pytest.approx(0.525, abs=0.005)
