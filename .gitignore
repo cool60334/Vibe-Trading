@@ -156,6 +156,10 @@ research/manifests/features_*.parquet
 research/manifests/features_*.meta.json
 research/manifests/evidence_*.json
 research/manifests/coin_scout.json
+research/manifests/*/missing_factor.json
+research/manifests/30m/
+research/manifests_bak_pre_xvenue/
+research/test_output.txt
 
 # Pipeline-generated logs
 stage*.log
