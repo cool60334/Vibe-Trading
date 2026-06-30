@@ -74,6 +74,7 @@ if str(_DASHBOARD_SCHEMAS) not in sys.path:
 from schemas import GATE_MAX_DRAWDOWN, OptimizationBlock, StrategySpec  # noqa: E402
 
 from lib.signal_compiler import compile_strategy  # noqa: E402
+from lib.deflated_sharpe import bars_in_window, bars_per_year, deflated_sharpe  # noqa: E402
 
 
 OPTIMIZATION_METHOD = "deterministic grid sweep (stage 4)"
@@ -481,6 +482,8 @@ def build_optimization_block(
     swept_params: list[str],
     best: ComboResult | None,
     summary: str,
+    deflated_sharpe: float | None = None,
+    n_trials: int | None = None,
 ) -> dict:
     best_params: dict[str, float] = {}
     if best is not None:
@@ -495,6 +498,8 @@ def build_optimization_block(
         "swept_params": sorted(swept_params),
         "best_params": best_params,
         "improvement_summary": summary[:2000] if summary else None,
+        "deflated_sharpe": deflated_sharpe,
+        "n_trials": n_trials,
     }
 
 
@@ -675,10 +680,25 @@ def _optimize_strategy(
     summary = _summarise(results, ranked)
     print(f"\n{summary}\n")
 
+    # ── Deflated Sharpe Ratio (multiple-testing haircut) ──────────────────────
+    # All valid combos are the search breadth (NOT the DD-gated survivors); the
+    # selected best's train Sharpe is deflated against that distribution. Sharpes
+    # are de-annualised to per-bar; T is the train-window bar count.
+    ppy = bars_per_year(cfg.interval)
+    trial_srs = [c.sharpe / (ppy ** 0.5) for c in results if c.metrics is not None]
+    n_trials = len(trial_srs)
+    dsr: float | None = None
+    if best is not None and trial_srs:
+        T = bars_in_window(base_config["start_date"], base_config["end_date"], cfg.interval)
+        dsr = deflated_sharpe(best.sharpe / (ppy ** 0.5), trial_srs, T)
+        print(f"  [DSR] deflated_sharpe={dsr:.3f}  n_trials={n_trials}  T={T}")
+
     block = build_optimization_block(
         swept_params=list(expanded.keys()),
         best=best,
         summary=summary,
+        deflated_sharpe=dsr,
+        n_trials=n_trials,
     )
     out_dir = manifests_dir / strategy_id
     out_dir.mkdir(parents=True, exist_ok=True)

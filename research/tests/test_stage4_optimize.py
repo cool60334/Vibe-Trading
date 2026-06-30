@@ -370,6 +370,22 @@ class TestBuildOptimizationBlock:
         block = build_optimization_block(["tp_pct"], best, "ok")
         OptimizationBlock.model_validate(block)  # raises if invalid
 
+    def test_carries_deflated_sharpe_and_n_trials(self):
+        best = ComboResult(idx=0, overrides={"tp_pct": 5.0}, run_name="x_sweep_000",
+                           metrics={"sharpe": "1.2", "trade_count": "40"})
+        block = build_optimization_block(
+            ["tp_pct"], best, "ok", deflated_sharpe=0.97, n_trials=50
+        )
+        assert block["deflated_sharpe"] == 0.97
+        assert block["n_trials"] == 50
+        from schemas import OptimizationBlock
+        OptimizationBlock.model_validate(block)
+
+    def test_dsr_fields_default_none(self):
+        block = build_optimization_block(["a"], None, "")
+        assert block["deflated_sharpe"] is None
+        assert block["n_trials"] is None
+
 
 # ---------------------------------------------------------------------------
 # ComboResult properties
