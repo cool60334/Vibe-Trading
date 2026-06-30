@@ -39,6 +39,7 @@ class TestRegistryKeys:
         "okx_candles",
         "bybit_oi",
         "coingecko_stablecoin_supply",
+        "massive_spot_usd",
         "coinglass_liq",
         "glassnode_pub",
         "deribit_skew",
@@ -65,8 +66,8 @@ class TestRegistryKeys:
         for key in self._EXPECTED_TRANSFORMS:
             assert key in TRANSFORM_REGISTRY, f"TRANSFORM_REGISTRY missing key: {key!r}"
 
-    def test_source_registry_has_exactly_9_entries(self) -> None:
-        assert len(SOURCE_REGISTRY) == 9
+    def test_source_registry_has_exactly_10_entries(self) -> None:
+        assert len(SOURCE_REGISTRY) == 10
 
     def test_transform_registry_has_exactly_8_entries(self) -> None:
         assert len(TRANSFORM_REGISTRY) == 8
@@ -98,9 +99,9 @@ class TestAvailableSources:
                     f"SOURCE_REGISTRY[{key!r}] is 'available' but fetcher is None"
                 )
 
-    def test_exactly_4_available_sources(self) -> None:
+    def test_exactly_5_available_sources(self) -> None:
         available = [k for k, v in SOURCE_REGISTRY.items() if v.status == "available"]
-        assert len(available) == 4, f"Expected 4 available sources, got {len(available)}: {available}"
+        assert len(available) == 5, f"Expected 5 available sources, got {len(available)}: {available}"
 
     def test_known_available_keys(self) -> None:
         available_keys = {k for k, v in SOURCE_REGISTRY.items() if v.status == "available"}
@@ -109,6 +110,7 @@ class TestAvailableSources:
             "okx_candles",
             "bybit_oi",
             "coingecko_stablecoin_supply",
+            "massive_spot_usd",
         }
 
 
