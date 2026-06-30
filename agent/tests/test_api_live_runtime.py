@@ -121,9 +121,10 @@ def test_authorize_onramp_describes_cli_flow(tmp_path: Path, monkeypatch) -> Non
     assert response.status_code == 200
     body = response.json()
     assert body["broker"] == "robinhood"
+    assert body["connector_profile"] == "robinhood-live-mcp"
     assert body["oauth_token_present"] is False
     # On-ramp must point at the desktop CLI flow and never return a token.
-    assert "vibe-trading live authorize robinhood" in body["instruction"]
+    assert "vibe-trading connector authorize robinhood-live-mcp" in body["instruction"]
     assert "token" not in body
 
 
@@ -147,6 +148,19 @@ def test_runner_start_requires_committed_mandate(tmp_path: Path, monkeypatch) ->
 
     assert response.status_code == 409
     assert "mandate" in response.json()["detail"].lower()
+
+
+def test_runner_start_rejects_readonly_connector_without_runner(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post("/live/runner/start", json={"broker": "ibkr"})
+
+    assert response.status_code == 400
+    detail = response.json()["detail"].lower()
+    assert "ibkr" in detail
+    assert "runner" in detail
 
 
 def test_runner_start_blocked_by_kill_switch(tmp_path: Path, monkeypatch) -> None:
@@ -247,7 +261,7 @@ def _seed_proposal(tmp_path: Path, proposal_id: str, broker: str = "robinhood") 
 
 def test_c1_relay_builds_mandate_proposal_frame(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path), raising=False)
-    proposal_id = "mp_01ABCdef"
+    proposal_id = "mp_" + "1" * 32
     _seed_proposal(tmp_path, proposal_id)
 
     event = SimpleNamespace(
@@ -292,7 +306,7 @@ def test_c1_relay_returns_none_when_proposal_missing(tmp_path: Path, monkeypatch
         data={
             "tool": "propose_mandate_profiles",
             "status": "ok",
-            "preview": json.dumps({"proposal_id": "mp_missing01"})[:200],
+            "preview": json.dumps({"proposal_id": "mp_" + "2" * 32})[:200],
         },
     )
     assert api_server._mandate_proposal_frame_from_tool_result(event) is None

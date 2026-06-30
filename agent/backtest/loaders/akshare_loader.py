@@ -11,7 +11,8 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from backtest.loaders.base import validate_date_range
+from backtest.loaders._symbol_utils import _is_etf_listed
+from backtest.loaders.base import cached_loader_fetch, validate_date_range
 from backtest.loaders.registry import register
 
 logger = logging.getLogger(__name__)
@@ -39,22 +40,7 @@ def _is_crypto(code: str) -> bool:
     return "-USDT" in code.upper() or "/USDT" in code.upper()
 
 
-# Exchange-listed ETF / LOF prefix codes:
-#   SH: 50/51/52/56/58 (ETFs), SZ: 15/16 (ETFs + LOFs).
-# Issue #50 — these symbols look like A-shares (.SH / .SZ) but stock_zh_a_hist
-# can't price them; route through fund_etf_hist_sina instead.
-_ETF_PREFIXES = frozenset({"15", "16", "50", "51", "52", "56", "58"})
 
-
-def _is_etf_listed(code: str) -> bool:
-    """Detect exchange-listed ETF / LOF symbols (e.g. 518880.SH, 159915.SZ)."""
-    upper = code.upper()
-    if not upper.endswith((".SH", ".SZ")):
-        return False
-    digits = upper.split(".")[0]
-    if len(digits) != 6 or not digits.isdigit():
-        return False
-    return digits[:2] in _ETF_PREFIXES
 
 
 def _is_forex(code: str) -> bool:
@@ -116,7 +102,15 @@ class DataLoader:
         result: Dict[str, pd.DataFrame] = {}
         for code in codes:
             try:
-                df = self._fetch_one(code, start_date, end_date, interval)
+                df = cached_loader_fetch(
+                    source=self.name,
+                    symbol=code,
+                    timeframe=interval,
+                    start_date=start_date,
+                    end_date=end_date,
+                    fields=None,
+                    fetch=lambda code=code: self._fetch_one(code, start_date, end_date, interval),
+                )
                 if df is not None and not df.empty:
                     result[code] = df
             except Exception as exc:

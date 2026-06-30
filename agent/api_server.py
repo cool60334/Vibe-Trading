@@ -10,23 +10,26 @@ import asyncio
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import signal
 import time
 import csv
 import uuid
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Security, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from rich.console import Console
 
+from cli._version import __version__ as APP_VERSION
 from src.goal.context import default_goal_criteria
 from src.ui_services import build_run_analysis, load_run_context
 
@@ -47,11 +50,7 @@ ENV_EXAMPLE_PATH = AGENT_DIR / ".env.example"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
 _UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
-# Rich console for colored logs
 console = Console()
-
-import logging
-
 logger = logging.getLogger(__name__)
 
 
@@ -117,6 +116,7 @@ class RunResponse(BaseModel):
     metrics: Optional[BacktestMetrics] = Field(None, description="Backtest metrics")
     artifacts: List[Artifact] = Field(default_factory=list, description="Run artifacts")
     run_card: Optional[Dict[str, Any]] = Field(None, description="Trust Layer run card payload")
+    llm_usage: Optional[Dict[str, Any]] = Field(None, description="Provider-reported AgentLoop usage summary")
 
     equity_curve: Optional[List[Dict[str, Any]]] = Field(None, description="Equity preview")
     trade_log: Optional[List[Dict[str, Any]]] = Field(None, description="Trade preview")
@@ -173,6 +173,7 @@ class LLMSettingsResponse(BaseModel):
     timeout_seconds: int
     max_retries: int
     reasoning_effort: str
+    sse_timeout_seconds: int
     env_path: str
     providers: List[LLMProviderOption]
 
@@ -354,7 +355,7 @@ class CommitMandateRequest(BaseModel):
     """
 
     broker: str = Field(..., min_length=1, max_length=64)
-    proposal_id: str = Field(..., min_length=1, max_length=128)
+    proposal_id: str = Field(..., pattern=r"^mp_[0-9a-f]{32}$")
     selected_ordinal: int = Field(..., ge=1, le=10)
     adjustments: Optional[Dict[str, Any]] = None
     consent_ack: bool = Field(..., description="Explicit affirmative; must be true")
@@ -457,6 +458,12 @@ class LiveStatusResponse(BaseModel):
     brokers: List[LiveBrokerStatus]
 
 
+class ChannelPairingCommandRequest(BaseModel):
+    """Pairing command executed through the IM control surface."""
+
+    channel: str = Field(..., min_length=1, max_length=64)
+    command: str = Field("list", max_length=500)
+
 
 # ============================================================================
 # FastAPI Application
@@ -465,7 +472,7 @@ class LiveStatusResponse(BaseModel):
 app = FastAPI(
     title="Vibe-Trading API",
     description="Vibe-Trading API: natural-language finance research, backtesting, and swarm workflows",
-    version="5.0.0",
+    version=APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -478,6 +485,16 @@ _DEFAULT_CORS_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8000",
 ]
+
+_DEFAULT_LOOPBACK_HOSTS = frozenset({
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "[::1]",
+    # Starlette/FastAPI TestClient default host; included so unit tests exercise
+    # the API without having to override Host on every request.
+    "testserver",
+})
 
 
 def _parse_cors_origins(raw: Optional[str]) -> List[str]:
@@ -505,6 +522,37 @@ def _parse_cors_origins(raw: Optional[str]) -> List[str]:
     return origins
 
 
+def _parse_extra_loopback_hosts(raw: Optional[str]) -> set[str]:
+    """Return additional trusted Host names for loopback API traffic."""
+    if raw is None or not raw.strip():
+        return set()
+    return {host.strip().lower().rstrip(".") for host in raw.split(",") if host.strip()}
+
+
+_EXTRA_LOOPBACK_HOSTS = _parse_extra_loopback_hosts(os.getenv("API_ALLOWED_HOSTS"))
+
+
+def _host_without_port(host: str) -> str:
+    """Normalize a Host header to a lowercase hostname without a port."""
+    value = host.strip().lower().rstrip(".")
+    if not value:
+        return ""
+    if value.startswith("["):
+        end = value.find("]")
+        if end != -1:
+            return value[: end + 1]
+        return value
+    if value.count(":") == 1:
+        return value.rsplit(":", 1)[0]
+    return value
+
+
+def _is_allowed_loopback_host(host: str) -> bool:
+    """Return whether ``host`` is allowed for loopback-trusted API requests."""
+    normalized = _host_without_port(host)
+    return normalized in _DEFAULT_LOOPBACK_HOSTS or normalized in _EXTRA_LOOPBACK_HOSTS
+
+
 # CORS: override with CORS_ORIGINS (comma-separated explicit origins)
 _CORS_ORIGINS = _parse_cors_origins(os.getenv("CORS_ORIGINS"))
 
@@ -515,6 +563,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _reject_untrusted_loopback_host(request: Request, call_next):
+    """Block DNS-rebinding Host headers before loopback auth bypasses run."""
+    if _is_local_client(request) and not _is_allowed_loopback_host(request.headers.get("host", "")):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "Untrusted local API host"},
+        )
+    return await call_next(request)
 
 
 # ----------------------------------------------------------------------------
@@ -578,6 +637,16 @@ async def _run_startup_preflight() -> None:
     from src.preflight import run_preflight
 
     run_preflight(console)
+    _start_scheduled_research_executor()
+    if os.getenv("VIBE_TRADING_CHANNELS_AUTO_START", "").strip().lower() in {"1", "true", "yes"}:
+        await _start_channel_runtime()
+
+
+@app.on_event("shutdown")
+async def _stop_scheduled_research_on_shutdown() -> None:
+    """Stop the scheduled research executor on server shutdown."""
+    await _stop_channel_runtime()
+    await _stop_scheduled_research_executor()
 
 
 # ============================================================================
@@ -645,6 +714,92 @@ def _auth_credential_from_header_or_query(
     return ""
 
 
+def _is_loopback_origin(origin: str) -> bool:
+    """Return whether a browser Origin header names a loopback web UI."""
+    try:
+        parsed = urllib.parse.urlsplit(origin)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _origin_matches_request_host(origin: str, request: Request) -> bool:
+    """Return whether ``origin`` is the same site serving this request."""
+    try:
+        parsed = urllib.parse.urlsplit(origin)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+
+    origin_host = parsed.hostname.rstrip(".").lower()
+    origin_port = parsed.port
+    request_host = _host_without_port(request.headers.get("host", ""))
+    if origin_host != request_host:
+        return False
+
+    if origin_port is None:
+        origin_port = 443 if parsed.scheme == "https" else 80
+    request_port = request.url.port
+    if request_port is None:
+        request_port = 443 if request.url.scheme == "https" else 80
+    return origin_port == request_port
+
+
+def _reject_cross_site_browser_request(request: Request) -> None:
+    """Reject unsafe browser requests from untrusted cross-site origins.
+
+    CORS protects response reads, not blind form/fetch side effects. Keep local
+    CLI/curl clients and same-origin browser UI deployments working while
+    refusing browser-originated cross-site POSTs to local control-plane actions
+    such as shutdown.
+    """
+    sec_fetch_site = request.headers.get("sec-fetch-site", "").lower()
+    if sec_fetch_site == "cross-site":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-site request denied")
+
+    origin = request.headers.get("origin")
+    if origin and not (_is_loopback_origin(origin) or _origin_matches_request_host(origin, request)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-site request denied")
+
+
+def _require_shutdown_authorization(
+    *,
+    request: Request,
+    cred: Optional[HTTPAuthorizationCredentials],
+) -> None:
+    """Authorize the local shutdown control-plane action.
+
+    Loopback peer IP alone is not enough for this browser-reachable, destructive
+    action. When API_AUTH_KEY is configured, require the Bearer token even for
+    loopback requests; otherwise preserve local dev-mode shutdown for direct
+    loopback clients while rejecting cross-site browser requests.
+    """
+    _reject_cross_site_browser_request(request)
+    api_key = _configured_api_key()
+    if api_key:
+        token = _auth_credential_from_header_or_query(cred, None, allow_query=False)
+        if not token or not hmac.compare_digest(token, api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return
+    if not _is_local_client(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API_AUTH_KEY is required for non-local API access",
+        )
+
+
+_SAFE_BROWSER_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
 def _validate_api_auth(
     *,
     request: Request,
@@ -653,10 +808,19 @@ def _validate_api_auth(
     allow_query: bool = False,
 ) -> None:
     """Validate configured auth, preserving loopback-only dev mode."""
+    # CORS protects response reads, not blind side effects. Reject unsafe
+    # browser-originated cross-site requests before honoring loopback dev-mode
+    # trust, otherwise a malicious page can drive local POST/PUT/DELETE routes.
+    if request.method.upper() not in _SAFE_BROWSER_METHODS:
+        _reject_cross_site_browser_request(request)
+
+    # Loopback clients are always trusted, even when API_AUTH_KEY is set.
+    # The key only gates non-local (LAN/remote) access.
+    if _is_local_client(request):
+        return
+
     api_key = _configured_api_key()
     if not api_key:
-        if _is_local_client(request):
-            return
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="API_AUTH_KEY is required for non-local API access",
@@ -728,7 +892,12 @@ def _env_shell_tools_enabled() -> bool:
 
 def _shell_tools_enabled_for_request(request: Request) -> bool:
     """Return whether this API request may expose shell tools to the agent."""
-    return _is_local_client(request) or _env_shell_tools_enabled()
+    # Shell-capable tools execute commands on the host as the API process user.
+    # Do not infer that privilege from peer IP alone: browser DNS rebinding can
+    # make attacker-controlled pages appear as loopback clients. Operators who
+    # intentionally want API-started agents or swarm workers to receive shell
+    # tools must opt in explicitly.
+    return _env_shell_tools_enabled()
 
 
 async def require_local_or_auth(
@@ -748,6 +917,31 @@ async def require_local_or_auth(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Settings access requires API_AUTH_KEY or a local loopback client",
+        )
+
+
+async def require_settings_write_auth(
+    request: Request,
+    cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
+) -> None:
+    """Require explicit authorization before changing credential-routing settings.
+
+    Settings writes can redirect stored provider credentials to a different
+    endpoint. When an API key is configured, loopback peer IP alone is not a
+    sufficient user-intent signal because a browser can reach local APIs after
+    DNS rebinding.
+    """
+    api_key = _configured_api_key()
+    if api_key:
+        token = _auth_credential_from_header_or_query(cred, None, allow_query=False)
+        if not token or not hmac.compare_digest(token, api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return
+
+    if not _is_local_client(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Settings writes require API_AUTH_KEY or a local loopback client",
         )
 
 
@@ -929,6 +1123,7 @@ def _build_llm_settings_response(values: Optional[Dict[str, str]] = None) -> LLM
         timeout_seconds=_coerce_int(env_values.get("TIMEOUT_SECONDS", "120"), 120),
         max_retries=_coerce_int(env_values.get("MAX_RETRIES", "2"), 2),
         reasoning_effort=env_values.get("LANGCHAIN_REASONING_EFFORT", "").strip().lower(),
+        sse_timeout_seconds=_coerce_int(env_values.get("VIBE_TRADING_SSE_TIMEOUT", "90"), 90),
         env_path=_project_relative_path(ENV_PATH),
         providers=LLM_PROVIDERS,
     )
@@ -1023,7 +1218,15 @@ def _load_csv_to_dict(path: Path, limit: Optional[int] = None) -> List[Dict[str,
 
 
 
-def _build_response_from_run_dir(run_dir: Path, elapsed: float, *, include_analysis: bool = False) -> RunResponse:
+def _build_response_from_run_dir(
+    run_dir: Path,
+    elapsed: float,
+    *,
+    include_analysis: bool = False,
+    chart_symbol: Optional[str] = None,
+    chart_payload: str = "full",
+    chart_symbols_out: Optional[List[str]] = None,
+) -> RunResponse:
     """Build a run response from a persisted run directory."""
     run_id = run_dir.name
 
@@ -1113,6 +1316,13 @@ def _build_response_from_run_dir(run_dir: Path, elapsed: float, *, include_analy
         except (json.JSONDecodeError, OSError):
             pass
 
+    llm_usage_path = run_dir / "llm_usage.json"
+    if llm_usage_path.exists():
+        try:
+            response.llm_usage = json.loads(llm_usage_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
     trades_path = run_dir / "artifacts" / "trades.csv"
     if trades_path.exists():
         response.artifacts_trades_csv = _load_csv_to_dict(trades_path)
@@ -1141,7 +1351,14 @@ def _build_response_from_run_dir(run_dir: Path, elapsed: float, *, include_analy
         response.trade_log = response.artifacts_trades_csv[:500]
 
     if include_analysis:
-        analysis = build_run_analysis(run_dir)
+        analysis = build_run_analysis(
+            run_dir,
+        symbols=[chart_symbol] if chart_symbol else None,
+        include_payload=chart_payload != "summary" or bool(chart_symbol),
+        include_symbol_list=chart_symbols_out is not None,
+    )
+        if chart_symbols_out is not None:
+            chart_symbols_out.extend(analysis.get("chart_symbols") or [])
         response.run_stage = analysis.get("run_stage")
         response.run_context = analysis.get("run_context")
         response.price_series = analysis.get("price_series")
@@ -1150,6 +1367,11 @@ def _build_response_from_run_dir(run_dir: Path, elapsed: float, *, include_analy
         response.run_logs = analysis.get("run_logs")
 
     return response
+
+
+def _run_response_payload(response: RunResponse) -> Dict[str, Any]:
+    """Return a JSON-ready payload for opt-in run response variants."""
+    return response.model_dump(mode="json")
 
 
 # ============================================================================
@@ -1224,9 +1446,22 @@ async def get_run_pine(run_id: str):
 
 
 @app.get("/runs/{run_id}", response_model=RunResponse, dependencies=[Depends(require_auth)])
-async def get_run_result(run_id: str):
-    """Fetch full details for a historical run by ``run_id``."""
+async def get_run_result(
+    run_id: str,
+    chart_symbol: Optional[str] = Query(None, description="Opt in to chart payloads for a single symbol"),
+    chart_payload: Optional[str] = Query(
+        None,
+        description="Optional chart payload mode. Use 'summary' to omit chart rows and trade markers.",
+    ),
+):
+    """Fetch details for a historical run by ``run_id``.
+
+    The default response stays unchanged for existing consumers. Chart-heavy
+    optimizations are opt-in via query parameters.
+    """
     _validate_path_param(run_id, "run_id")
+    if chart_payload not in (None, "summary"):
+        raise HTTPException(status_code=400, detail="invalid chart_payload")
     run_dir = RUNS_DIR / run_id
 
     if not run_dir.exists():
@@ -1235,7 +1470,21 @@ async def get_run_result(run_id: str):
             detail=f"Run {run_id} not found"
         )
 
-    response = _build_response_from_run_dir(run_dir, elapsed=0.0, include_analysis=True)
+    wants_chart_meta = bool(chart_payload or chart_symbol)
+    chart_symbols: List[str] = []
+    response = _build_response_from_run_dir(
+        run_dir,
+        elapsed=0.0,
+        include_analysis=True,
+        chart_symbol=chart_symbol,
+        chart_payload=chart_payload or "full",
+        chart_symbols_out=chart_symbols if wants_chart_meta else None,
+    )
+
+    if wants_chart_meta:
+        payload = _run_response_payload(response)
+        payload["chart_symbols"] = chart_symbols
+        return JSONResponse(payload)
 
     return response
 
@@ -1245,20 +1494,20 @@ async def list_runs(limit: int = 20):
     """List recent runs with summary fields."""
     limit = min(max(1, limit), 100)
     runs_dir = RUNS_DIR
-    
+
     if not runs_dir.exists():
         return []
-    
+
     run_dirs = sorted(
         [d for d in runs_dir.iterdir() if d.is_dir()],
         key=lambda x: x.name,
         reverse=True
     )
-    
+
     results = []
     for d in run_dirs[:limit]:
         run_id = d.name
-        
+
         # Status from state.json or artifacts
         status_val = "unknown"
         state_file = _load_json_file(d / "state.json")
@@ -1268,7 +1517,7 @@ async def list_runs(limit: int = 20):
             status_val = "success"
         elif (d / "review_report.json").exists():
             status_val = "success"
-        
+
         # Parse created_at from run_id (YYYYMMDD_HHMMSS or run_YYYYMMDD_HHMMSS)
         created_at = "Unknown"
         if run_id.startswith("run_"):
@@ -1283,11 +1532,11 @@ async def list_runs(limit: int = 20):
                 d_str, t_str = parts[0], parts[1]
                 if len(d_str) == 8 and len(t_str) == 6:
                     created_at = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]} {t_str[:2]}:{t_str[2:4]}:{t_str[4:6]}"
-        
+
         if created_at == "Unknown":
             mtime = datetime.fromtimestamp(d.stat().st_mtime)
             created_at = mtime.strftime("%Y-%m-%d %H:%M:%S")
-        
+
         prompt = None
         req_file = d / "req.json"
         planner_file = d / "planner_output.json"
@@ -1304,12 +1553,12 @@ async def list_runs(limit: int = 20):
                 prompt = planner_data.get("user_goal") or planner_data.get("goal")
             except (json.JSONDecodeError, OSError):
                 pass
-            
+
         if not prompt:
             prompt_file = d / "user_prompt.txt"
             if prompt_file.exists():
                 prompt = prompt_file.read_text(encoding="utf-8").strip()
-        
+
         total_return = None
         sharpe = None
         metrics_file = d / "artifacts" / "metrics.csv"
@@ -1324,7 +1573,7 @@ async def list_runs(limit: int = 20):
                         break
             except (OSError, ValueError):
                 pass
-        
+
         run_context = load_run_context(d)
         results.append(RunInfo(
             run_id=run_id,
@@ -1337,7 +1586,7 @@ async def list_runs(limit: int = 20):
             start_date=run_context.get("start_date"),
             end_date=run_context.get("end_date"),
         ))
-        
+
     return results
 
 
@@ -1351,7 +1600,7 @@ async def get_llm_settings():
     return _build_llm_settings_response()
 
 
-@app.put("/settings/llm", response_model=LLMSettingsResponse, dependencies=[Depends(require_local_or_auth)])
+@app.put("/settings/llm", response_model=LLMSettingsResponse, dependencies=[Depends(require_settings_write_auth)])
 async def update_llm_settings(payload: UpdateLLMSettingsRequest):
     """Persist project-local LLM settings and update the running process."""
     provider_name = payload.provider.strip().lower()
@@ -1422,7 +1671,7 @@ async def get_data_source_settings():
 @app.put(
     "/settings/data-sources",
     response_model=DataSourceSettingsResponse,
-    dependencies=[Depends(require_local_or_auth)],
+    dependencies=[Depends(require_settings_write_auth)],
 )
 async def update_data_source_settings(payload: UpdateDataSourceSettingsRequest):
     """Persist project-local data source credentials and update the running process."""
@@ -1455,6 +1704,39 @@ async def health_check():
         service="Vibe-Trading API",
         timestamp=datetime.now().isoformat()
     )
+
+
+@app.get("/channels/status", dependencies=[Depends(require_auth)])
+async def channels_status():
+    """Return IM channel runtime and adapter status."""
+    runtime = _get_channel_runtime()
+    return runtime.status()
+
+
+@app.post("/channels/start", dependencies=[Depends(require_auth)])
+async def channels_start():
+    """Start configured IM channel adapters."""
+    runtime = await _start_channel_runtime()
+    return {"status": "started", **runtime.status()}
+
+
+@app.post("/channels/stop", dependencies=[Depends(require_auth)])
+async def channels_stop():
+    """Stop configured IM channel adapters."""
+    runtime = _get_channel_runtime()
+    await runtime.stop()
+    return {"status": "stopped", **runtime.status()}
+
+
+@app.post("/channels/pairing/command", dependencies=[Depends(require_auth)])
+async def channels_pairing_command(payload: ChannelPairingCommandRequest):
+    """Run a pairing command against the shared pairing store."""
+    from src.channels.pairing import handle_pairing_command
+
+    return {
+        "channel": payload.channel,
+        "reply": handle_pairing_command(payload.channel, payload.command),
+    }
 
 
 @app.get("/correlation")
@@ -1493,9 +1775,14 @@ def _terminate_current_process() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-@app.post("/system/shutdown", dependencies=[Depends(require_auth)])
-async def shutdown_local_api(background_tasks: BackgroundTasks, request: Request):
-    """Shut down the local API server when requested from loopback clients."""
+@app.post("/system/shutdown")
+async def shutdown_local_api(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
+):
+    """Shut down the local API server after explicit local authorization."""
+    _require_shutdown_authorization(request=request, cred=cred)
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Local access only")
@@ -1528,7 +1815,7 @@ async def api_info():
     """Service metadata."""
     return {
         "service": "Vibe-Trading API",
-        "version": "5.0.0",
+        "version": APP_VERSION,
         "docs": "/docs",
         "health": "/health",
     }
@@ -1540,6 +1827,9 @@ async def api_info():
 
 _session_service = None
 _goal_store = None
+_channel_runtime = None
+_channel_bus = None
+_channel_manager = None
 
 
 def _get_session_service():
@@ -1571,6 +1861,46 @@ def _get_session_service():
         runs_dir=RUNS_DIR,
     )
     return _session_service
+
+
+def _get_channel_runtime():
+    """Lazy-init IM channel runtime without starting platform adapters."""
+    global _channel_runtime, _channel_bus, _channel_manager
+    if _channel_runtime is not None:
+        return _channel_runtime
+
+    from src.channels.bus.queue import MessageBus
+    from src.channels.config import load_channels_config
+    from src.channels.manager import ChannelManager
+    from src.channels.runtime import ChannelRuntime
+
+    svc = _get_session_service()
+    if not svc:
+        raise HTTPException(status_code=501, detail="Session runtime not enabled")
+
+    _channel_bus = MessageBus()
+    config = load_channels_config()
+    _channel_manager = ChannelManager(config, _channel_bus, session_service=svc)
+    _channel_runtime = ChannelRuntime(
+        bus=_channel_bus,
+        session_service=svc,
+        manager=_channel_manager,
+    )
+    return _channel_runtime
+
+
+async def _start_channel_runtime():
+    """Start the IM channel runtime."""
+    runtime = _get_channel_runtime()
+    await runtime.start(start_manager=True)
+    return runtime
+
+
+async def _stop_channel_runtime() -> None:
+    """Stop the IM channel runtime if it was initialized."""
+    if _channel_runtime is None:
+        return
+    await _channel_runtime.stop()
 
 
 def _get_goal_store():
@@ -2240,12 +2570,45 @@ async def cancel_swarm_run(run_id: str):
     return {"status": "cancelled"}
 
 
+@app.post("/swarm/runs/{run_id}/retry", dependencies=[Depends(require_auth)])
+async def retry_swarm_run(run_id: str, http_request: Request):
+    """Retry a failed, stale, or cancelled swarm run.
+
+    Creates a new run with the same preset and user_vars as the original.
+    """
+    _validate_path_param(run_id, "run_id")
+    runtime = _get_swarm_runtime()
+    loaded = runtime._store.load_run(run_id)
+    if not loaded:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    # Reconcile first so a stale "running" run whose host died gets demoted
+    # before we gate on status; only a genuinely active run blocks retry.
+    from src.swarm.models import RunStatus
+
+    reconciled = runtime._store.reconcile_run(loaded, write=True)
+    if reconciled.status == RunStatus.running:
+        raise HTTPException(status_code=409, detail="Cannot retry a running run. Cancel it first.")
+
+    try:
+        new_run = runtime.start_run(
+            reconciled.preset_name,
+            reconciled.user_vars or {},
+            include_shell_tools=_shell_tools_enabled_for_request(http_request),
+        )
+        return {"id": new_run.id, "status": new_run.status.value, "preset_name": new_run.preset_name}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ============================================================================
 # Live trading channel — consent commit + kill switch
 # ============================================================================
 #
 # These are the privileged SURFACE actions of the live-trading channel
-# (docs/live-trading/SPEC.md, Consent §1/§3/§4). None is an agent tool:
+# (live-trading SPEC, Consent §1/§3/§4). None is an agent tool:
 #   - POST /mandate/commit  -> the single mandate writer (commit_mandate)
 #   - POST /live/halt       -> trip the kill switch (P5 trip_halt)
 #   - POST /live/resume     -> clear the kill switch (P5 clear_halt)
@@ -2291,7 +2654,7 @@ def _emit_live_event(session_id: Optional[str], event_type: str, data: Dict[str,
 # ``mandate.proposal`` frame. No protected touch.
 
 _PROPOSAL_TOOL_NAME = "propose_mandate_profiles"
-_PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-zA-Z]+)"')
+_PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-f]{32})"')
 
 
 def _load_full_proposal(proposal_id: str) -> Optional[Dict[str, Any]]:
@@ -2745,13 +3108,18 @@ async def live_authorize_endpoint(payload: LiveAuthorizeRequest):
     if broker not in set(_known_live_brokers()):
         raise HTTPException(status_code=400, detail=f"unknown live broker: {broker}")
 
+    from src.trading.service import connector_profile_id_for_broker
+
+    connector_profile = connector_profile_id_for_broker(broker)
     return {
         "broker": broker,
+        "connector_profile": connector_profile,
         "oauth_token_present": _oauth_token_present(broker),
         "instruction": (
-            f"Run `vibe-trading live authorize {broker}` from the device that will "
-            "hold the broker session. This opens the broker's own OAuth consent flow; "
-            "Vibe-Trading never holds funds and only relays intent once you authorize."
+            f"Run `vibe-trading connector authorize {connector_profile}` "
+            "from the device that will hold the broker session. This opens the "
+            "broker's own OAuth consent flow; Vibe-Trading never holds funds and "
+            "only relays intent once you authorize."
         ),
         "note": (
             "The live channel stays read-only until the OAuth token is present AND a "
@@ -2837,14 +3205,26 @@ def _build_live_runner(broker: str) -> Any:
     if _runner_factory is not None:
         return _runner_factory(broker)
 
-    from functools import partial
-
     from src.live.audit import write_live_action
     from src.live.runtime.reconcile import reconcile
     from src.live.runtime.runner import LiveRunner
     from src.live.runtime.scheduler import Scheduler
     from src.live.runtime.triggers import Trigger
+    from src.trading.service import runner_tool_name
 
+    def _tool(operation: str) -> str:
+        remote_tool = runner_tool_name(broker, operation)
+        if remote_tool is None:
+            raise LiveRunnerUnavailable(
+                f"live runner for {broker!r} does not define remote tool {operation!r}"
+            )
+        return remote_tool
+
+    positions_tool = _tool("positions")
+    balance_tool = _tool("account")
+    open_orders_tool = _tool("orders")
+    submit_order_tool = _tool("submit_order")
+    cancel_order_tool = _tool("cancel_order")
     adapter = _live_broker_adapter(broker)  # raises LiveRunnerUnavailable if absent
 
     def _read(remote_tool: str):
@@ -2856,8 +3236,8 @@ def _build_live_runner(broker: str) -> Any:
         # Field mapping against the real Robinhood schema is finalized post-access
         # (L6); the action discriminator is broker-agnostic.
         if order.get("action") == "cancel":
-            return adapter.call_tool("cancel_order", order)
-        return adapter.call_tool("place_order", order)
+            return adapter.call_tool(cancel_order_tool, order)
+        return adapter.call_tool(submit_order_tool, order)
 
     svc = _get_session_service()
     session = svc.create_session(title=f"live-runner:{broker}")
@@ -2892,9 +3272,9 @@ def _build_live_runner(broker: str) -> Any:
         broker,
         agent_caller=_agent_caller,
         reconcile_fn=reconcile,
-        read_positions=_read("get_positions"),
-        read_balance=_read("get_account"),
-        read_open_orders=_read("list_orders"),
+        read_positions=_read(positions_tool),
+        read_balance=_read(balance_tool),
+        read_open_orders=_read(open_orders_tool),
         submit_fn=_submit,
         write_audit_fn=_audit_with_bus,
         scheduler=scheduler,
@@ -2932,6 +3312,13 @@ async def start_runner_endpoint(payload: LiveRunnerControlRequest):
     broker = payload.broker.strip().lower()
     if not broker:
         raise HTTPException(status_code=400, detail="broker must not be blank")
+    from src.trading.service import broker_supports_live_runner
+
+    if not broker_supports_live_runner(broker):
+        raise HTTPException(
+            status_code=400,
+            detail=f"live runner is not supported for {broker}",
+        )
 
     existing = _runner_tasks.get(broker)
     if existing is not None and not existing.done():
@@ -2954,9 +3341,15 @@ async def start_runner_endpoint(payload: LiveRunnerControlRequest):
 
     task = asyncio.ensure_future(_drive_runner(runner))
     _runner_tasks[broker] = task
-    task.add_done_callback(lambda t, b=broker: _runner_tasks.pop(b, None) if _runner_tasks.get(b) is t else None)
+    task.add_done_callback(
+        lambda t, b=broker: _runner_tasks.pop(b, None) if _runner_tasks.get(b) is t else None
+    )
 
-    _emit_live_event(payload.session_id, "live.action", {"kind": "runner_started", "broker": broker})
+    _emit_live_event(
+        payload.session_id,
+        "live.action",
+        {"kind": "runner_started", "broker": broker},
+    )
     return {"broker": broker, "started": True, "already_running": False}
 
 
@@ -2971,13 +3364,24 @@ async def stop_runner_endpoint(payload: LiveRunnerControlRequest):
     broker = payload.broker.strip().lower()
     if not broker:
         raise HTTPException(status_code=400, detail="broker must not be blank")
+    from src.trading.service import broker_supports_live_runner
+
+    if not broker_supports_live_runner(broker):
+        raise HTTPException(
+            status_code=400,
+            detail=f"live runner is not supported for {broker}",
+        )
 
     task = _runner_tasks.pop(broker, None)
     if task is None or task.done():
         return {"broker": broker, "stopped": False, "was_running": False}
 
     task.cancel()
-    _emit_live_event(payload.session_id, "live.action", {"kind": "runner_stopped", "broker": broker})
+    _emit_live_event(
+        payload.session_id,
+        "live.action",
+        {"kind": "runner_stopped", "broker": broker},
+    )
     return {"broker": broker, "stopped": True, "was_running": True}
 
 
@@ -2987,6 +3391,166 @@ async def stop_runner_endpoint(payload: LiveRunnerControlRequest):
 
 from src.api.alpha_routes import register_alpha_routes  # noqa: E402
 register_alpha_routes(app)
+
+
+# ============================================================================
+# Scheduled Research Routes
+# ============================================================================
+#
+# Lightweight CRUD endpoints backed by ScheduledResearchJobStore. The endpoint
+# handlers only record and expose jobs; the optional executor lifecycle is
+# guarded separately by VIBE_TRADING_ENABLE_SCHEDULER.
+
+
+_SCHEDULED_RESEARCH_SCHEDULER_ENV = "VIBE_TRADING_ENABLE_SCHEDULER"
+_SCHEDULED_RESEARCH_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+_scheduled_research_store: Optional["ScheduledResearchJobStore"] = None
+_scheduled_research_executor: Optional["ScheduledResearchExecutor"] = None
+
+
+def _get_scheduled_research_store() -> "ScheduledResearchJobStore":
+    """Return the singleton ScheduledResearchJobStore, creating it on first call."""
+    global _scheduled_research_store
+    if _scheduled_research_store is None:
+        from src.scheduled_research.store import ScheduledResearchJobStore
+
+        _scheduled_research_store = ScheduledResearchJobStore()
+    return _scheduled_research_store
+
+
+def _scheduled_research_scheduler_enabled() -> bool:
+    """Return whether scheduled research execution is enabled."""
+    return os.getenv(_SCHEDULED_RESEARCH_SCHEDULER_ENV, "").strip().lower() in _SCHEDULED_RESEARCH_TRUE_VALUES
+
+
+async def _dispatch_scheduled_research_job(job: "ScheduledResearchJob") -> None:
+    """Enqueue one scheduled research job through the session runtime.
+
+    ``send_message`` queues the agent attempt and returns once accepted; it
+    does not wait for that agent run to reach a terminal status. The executor's
+    ``COMPLETED`` state for this dispatch path means "successfully enqueued."
+    """
+    svc = _get_session_service()
+    if not svc:
+        raise RuntimeError("Session runtime not enabled")
+    # Pass a copy so the session runtime's internal config writes (e.g.
+    # include_shell_tools) do not mutate the persisted scheduled-run config.
+    session = svc.create_session(title=f"scheduled-research:{job.id}", config=dict(job.config))
+    logger.info("dispatching scheduled research job %s via session %s", job.id, session.session_id)
+    await svc.send_message(session.session_id, job.prompt)
+
+
+def _get_scheduled_research_executor() -> "ScheduledResearchExecutor":
+    """Return the singleton scheduled research executor."""
+    global _scheduled_research_executor
+    if _scheduled_research_executor is None:
+        from src.scheduled_research.executor import ScheduledResearchExecutor
+
+        _scheduled_research_executor = ScheduledResearchExecutor(
+            _get_scheduled_research_store(),
+            _dispatch_scheduled_research_job,
+            enabled=_scheduled_research_scheduler_enabled(),
+        )
+    return _scheduled_research_executor
+
+
+def _start_scheduled_research_executor() -> None:
+    """Start scheduled research execution when explicitly enabled."""
+    if not _scheduled_research_scheduler_enabled():
+        return
+    _get_scheduled_research_executor().start()
+
+
+async def _stop_scheduled_research_executor() -> None:
+    """Stop scheduled research execution if it was started."""
+    executor = _scheduled_research_executor
+    if executor is not None:
+        await executor.stop()
+
+
+class CreateScheduledRunRequest(BaseModel):
+    """Request body for POST /scheduled-runs."""
+
+    id: Optional[str] = Field(None, description="Job id; auto-generated UUID when omitted")
+    prompt: str = Field(..., min_length=1, description="Research prompt or backtest description")
+    schedule: str = Field(..., min_length=1, description="Interval-ms or 5-field cron expression")
+    next_run_at: Optional[int] = Field(None, description="Epoch-ms for next run; defaults to now")
+    config: Dict[str, Any] = Field(default_factory=dict, description="Optional backtest parameters")
+
+
+class ScheduledRunResponse(BaseModel):
+    """API response for a single scheduled job."""
+
+    id: str
+    prompt: str
+    schedule: str
+    next_run_at: int
+    status: str
+    created_at: int
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post(
+    "/scheduled-runs",
+    response_model=ScheduledRunResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_auth)],
+)
+async def create_scheduled_run(request: CreateScheduledRunRequest) -> ScheduledRunResponse:
+    """Create (or replace) a scheduled research job.
+
+    The job is persisted immediately. No execution is triggered.
+    """
+    import time
+
+    from src.scheduled_research.models import JobStatus, ScheduledResearchJob
+    from src.scheduled_research.models import validate_schedule
+
+    try:
+        validate_schedule(request.schedule)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    now_ms = int(time.time() * 1000)
+    job = ScheduledResearchJob(
+        id=request.id or str(uuid.uuid4()),
+        prompt=request.prompt,
+        schedule=request.schedule,
+        next_run_at=request.next_run_at if request.next_run_at is not None else now_ms,
+        status=JobStatus.PENDING,
+        created_at=now_ms,
+        config=request.config,
+    )
+    _get_scheduled_research_store().upsert(job)
+    return ScheduledRunResponse(**job.to_dict())
+
+
+@app.get(
+    "/scheduled-runs",
+    response_model=List[ScheduledRunResponse],
+    dependencies=[Depends(require_auth)],
+)
+async def list_scheduled_runs(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    limit: int = Query(50, ge=1, le=200),
+) -> List[ScheduledRunResponse]:
+    """List scheduled research jobs, optionally filtered by status."""
+    jobs = _get_scheduled_research_store().list_jobs(status=status_filter, limit=limit)
+    return [ScheduledRunResponse(**j.to_dict()) for j in jobs]
+
+
+@app.delete(
+    "/scheduled-runs/{job_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_auth)],
+)
+async def delete_scheduled_run(job_id: str) -> None:
+    """Cancel (delete) a scheduled research job by id."""
+    _validate_path_param(job_id, "job_id")
+    removed = _get_scheduled_research_store().delete(job_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"scheduled run {job_id} not found")
 
 
 # ============================================================================

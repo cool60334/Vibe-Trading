@@ -1,6 +1,6 @@
 """Consent backend: propose -> select -> commit state machine + invariants.
 
-Covers (docs/live-trading/SPEC.md Consent §1/§3, Mandate §2):
+Covers (live-trading SPEC, Consent §1/§3, Mandate §2):
 
 * PROPOSE -> SELECT -> COMMIT happy path, then the mandate loads back.
 * commit-is-the-only-write: an AST + registry scan proves no agent tool / tool
@@ -252,7 +252,7 @@ def _save_handcrafted_proposal(
     Lets a test exercise commit-time validation against a profile the clamping
     proposer would never emit (e.g. one that breaches an alias-keyed ceiling).
     """
-    proposal_id = "mp_handcrafted_h9"
+    proposal_id = "mp_" + "9" * 32
     save_proposal(
         {
             "type": "mandate.proposal",

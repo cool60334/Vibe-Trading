@@ -13,7 +13,7 @@
     "label": "OpenAI",
     "api_key_env": "OPENAI_API_KEY",
     "base_url_env": "OPENAI_BASE_URL",
-    "default_model": "gpt-5.5-instant",
+    "default_model": "gpt-5.5",
     "default_base_url": "https://api.openai.com/v1",
     "api_key_required": true
   },
@@ -83,6 +83,15 @@
     "api_key_required": true
   },
   {
+    "name": "glm",
+    "label": "GLM (Zhipu)",
+    "api_key_env": "ZHIPU_API_KEY",
+    "base_url_env": "ZHIPU_BASE_URL",
+    "default_model": "glm-5.1",
+    "default_base_url": "https://open.bigmodel.cn/api/paas/v4",
+    "api_key_required": true
+  },
+  {
     "name": "moonshot",
     "label": "Moonshot / Kimi",
     "api_key_env": "MOONSHOT_API_KEY",
@@ -96,7 +105,7 @@
     "label": "MiniMax",
     "api_key_env": "MINIMAX_API_KEY",
     "base_url_env": "MINIMAX_BASE_URL",
-    "default_model": "MiniMax-M2.7",
+    "default_model": "MiniMax-M3",
     "default_base_url": "https://api.minimax.io/v1",
     "api_key_required": true
   },

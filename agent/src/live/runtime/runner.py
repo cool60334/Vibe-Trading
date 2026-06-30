@@ -30,7 +30,7 @@ Trust + safety invariants honored here:
 
 Every external dependency — scheduler, triggers, reconcile, the agent caller and
 the clock — is injectable, so the runner is unit-testable with no live agent or
-broker. See ``docs/live-trading/SPEC.md`` §7.5.
+broker. See the live-trading SPEC §7.5.
 """
 
 from __future__ import annotations

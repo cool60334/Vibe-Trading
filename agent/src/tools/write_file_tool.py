@@ -6,8 +6,8 @@ import json
 from typing import Any
 
 from src.agent.tools import BaseTool
-from src.tools.path_utils import safe_path as _safe_path
-from src.tools.path_utils import safe_run_dir as _safe_run_dir
+from src.tools.path_utils import allowed_write_roots
+from src.tools.path_utils import resolve_safe_path
 from src.tools.redaction import redact_internal_paths
 
 
@@ -40,18 +40,13 @@ class WriteFileTool(BaseTool):
         content = kwargs["content"]
         run_dir = kwargs.get("run_dir")
 
-        if not run_dir:
-            return json.dumps(
-                {
-                    "status": "error",
-                    "error": "run_dir is required for write_file",
-                },
-                ensure_ascii=False,
-            )
-
         try:
-            run_root = _safe_run_dir(str(run_dir))
-            resolved = _safe_path(file_path, run_root)
+            resolved = resolve_safe_path(
+                file_path=file_path,
+                run_dir=run_dir,
+                allowed_roots=allowed_write_roots(),
+                purpose="write",
+            )
         except ValueError as exc:
             return json.dumps(
                 {

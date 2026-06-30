@@ -1,7 +1,9 @@
+import i18n from "@/i18n";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Database, KeyRound, Loader2, RotateCcw, Save, Server, SlidersHorizontal } from "lucide-react";
+import { Database, KeyRound, Loader2, MessageSquareMore, Play, RefreshCw, RotateCcw, Save, Server, SlidersHorizontal, Square } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { api, isAuthRequiredError, type DataSourceSettings, type LLMProviderOption, type LLMSettings } from "@/lib/api";
+import { api, isAuthRequiredError, type ChannelRuntimeStatus, type DataSourceSettings, type LLMProviderOption, type LLMSettings } from "@/lib/api";
 import { getApiAuthKey, setApiAuthKey } from "@/lib/apiAuth";
 
 interface LLMFormState {
@@ -32,8 +34,10 @@ function toForm(settings: LLMSettings): LLMFormState {
 }
 
 export function Settings() {
+  const { t } = useTranslation();
   const [settings, setSettings] = useState<LLMSettings | null>(null);
   const [dataSettings, setDataSettings] = useState<DataSourceSettings | null>(null);
+  const [channelStatus, setChannelStatus] = useState<ChannelRuntimeStatus | null>(null);
   const [form, setForm] = useState<LLMFormState | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [localApiKey, setLocalApiKeyState] = useState(() => getApiAuthKey());
@@ -43,16 +47,19 @@ export function Settings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dataSaving, setDataSaving] = useState(false);
+  const [channelRefreshing, setChannelRefreshing] = useState(false);
+  const [channelAction, setChannelAction] = useState<"start" | "stop" | null>(null);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([api.getLLMSettings(), api.getDataSourceSettings()])
-      .then(([llmData, dataSourceData]) => {
+    Promise.all([api.getLLMSettings(), api.getDataSourceSettings(), api.getChannelStatus()])
+      .then(([llmData, dataSourceData, channelData]) => {
         if (!alive) return;
         setSettings(llmData);
         setForm(toForm(llmData));
         setDataSettings(dataSourceData);
+        setChannelStatus(channelData);
         setSettingsLoadError(null);
       })
       .catch((error) => {
@@ -70,6 +77,30 @@ export function Settings() {
       });
     return () => { alive = false; };
   }, []);
+
+  const refreshChannelStatus = async () => {
+    setChannelRefreshing(true);
+    try {
+      setChannelStatus(await api.getChannelStatus());
+    } catch (error) {
+      toast.error(`${t("settings.channels.refreshFailed")}: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setChannelRefreshing(false);
+    }
+  };
+
+  const setChannelsRunning = async (action: "start" | "stop") => {
+    setChannelAction(action);
+    try {
+      const updated = action === "start" ? await api.startChannels() : await api.stopChannels();
+      setChannelStatus(updated);
+      toast.success(action === "start" ? t("settings.channels.started") : t("settings.channels.stoppedToast"));
+    } catch (error) {
+      toast.error(`${action === "start" ? t("settings.channels.startFailed") : t("settings.channels.stopFailed")}: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setChannelAction(null);
+    }
+  };
 
   const providers = settings?.providers ?? [];
   const selectedProvider = useMemo<LLMProviderOption | undefined>(
@@ -173,14 +204,14 @@ export function Settings() {
           className="inline-flex items-center justify-center gap-2 self-end rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Save className="h-4 w-4" />
-          {"Save local key"}
+          {i18n.t("settings.save")}
         </button>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">{"Stored only in this browser. Leave blank to clear it."}</p>
     </form>
   );
 
-  if (loading || !form || !settings || !dataSettings) {
+  if (loading || !form || !settings || !dataSettings || !channelStatus) {
     return (
       <div className="mx-auto max-w-5xl space-y-6 p-6">
         <div className="space-y-2">
@@ -216,6 +247,11 @@ export function Settings() {
   const tushareStatus = dataSettings.tushare_token_configured
     ? "Configured"
     : "Leave blank to keep the current token";
+  const channelRows = Object.entries(channelStatus.channels ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const channelEnabledCount = channelRows.filter(([, item]) => item.enabled).length;
+  const channelLoadedCount = channelRows.filter(([, item]) => item.loaded).length;
+  const channelUnavailableCount = channelRows.filter(([, item]) => item.available === false).length;
+  const channelBusy = channelRefreshing || channelAction !== null;
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
@@ -225,6 +261,104 @@ export function Settings() {
       </div>
 
       {localApiAccessSection}
+
+      <section className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="mb-5 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <MessageSquareMore className="h-4 w-4 text-primary" />
+              <h2 className="text-base font-semibold">{t("settings.channels.title")}</h2>
+            </div>
+            <p className="max-w-3xl text-sm text-muted-foreground">{t("settings.channels.description")}</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={refreshChannelStatus}
+              disabled={channelBusy}
+              className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {channelRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {t("settings.channels.refresh")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setChannelsRunning("start")}
+              disabled={channelBusy}
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {channelAction === "start" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              {t("settings.channels.start")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setChannelsRunning("stop")}
+              disabled={channelBusy}
+              className="inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {channelAction === "stop" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+              {t("settings.channels.stop")}
+            </button>
+          </div>
+        </div>
+
+        <div className="mb-4 grid gap-3 md:grid-cols-4">
+          <div className="rounded-md border bg-muted/20 px-3 py-2">
+            <div className="text-xs text-muted-foreground">{t("settings.channels.runtime")}</div>
+            <div className="text-sm font-medium">{channelStatus.running ? t("settings.channels.running") : t("settings.channels.stopped")}</div>
+          </div>
+          <div className="rounded-md border bg-muted/20 px-3 py-2">
+            <div className="text-xs text-muted-foreground">{t("settings.channels.enabled")}</div>
+            <div className="text-sm font-medium">{channelEnabledCount}</div>
+          </div>
+          <div className="rounded-md border bg-muted/20 px-3 py-2">
+            <div className="text-xs text-muted-foreground">{t("settings.channels.loaded")}</div>
+            <div className="text-sm font-medium">{channelLoadedCount}</div>
+          </div>
+          <div className="rounded-md border bg-muted/20 px-3 py-2">
+            <div className="text-xs text-muted-foreground">{t("settings.channels.unavailable")}</div>
+            <div className="text-sm font-medium">{channelUnavailableCount}</div>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-md border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 text-xs text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">{t("settings.channels.channel")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("settings.channels.state")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("settings.channels.recovery")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {channelRows.map(([name, item]) => (
+                <tr key={name} className="border-t">
+                  <td className="px-3 py-2 align-top">
+                    <div className="font-medium">{item.display_name || name}</div>
+                    <div className="text-xs text-muted-foreground">{name}</div>
+                  </td>
+                  <td className="px-3 py-2 align-top">
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${item.enabled ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>
+                        {item.enabled ? t("settings.channels.enabled") : t("settings.channels.disabled")}
+                      </span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${item.loaded ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>
+                        {item.loaded ? t("settings.channels.loaded") : t("settings.channels.notLoaded")}
+                      </span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${item.running ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>
+                        {item.running ? t("settings.channels.running") : t("settings.channels.stopped")}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="max-w-md px-3 py-2 align-top text-xs text-muted-foreground">
+                    {item.install_hint || item.error || t("settings.channels.noRecovery")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <div className="space-y-2">
         <h2 className="text-lg font-semibold tracking-tight">{"LLM Settings"}</h2>
@@ -240,7 +374,7 @@ export function Settings() {
 
           <div className="grid gap-4">
             <label className="grid gap-2">
-              <span className={labelClass}>{"Provider"}</span>
+              <span className={labelClass}>{i18n.t("settings.provider")}</span>
               <select
                 value={form.provider}
                 onChange={(event) => onProviderChange(event.target.value)}
@@ -276,7 +410,7 @@ export function Settings() {
             </label>
 
             <label className="grid gap-2">
-              <span className={labelClass}>{"Base URL"}</span>
+              <span className={labelClass}>{i18n.t("settings.baseUrl")}</span>
               <input
                 value={form.base_url}
                 onChange={(event) => setForm({ ...form, base_url: event.target.value })}
@@ -331,7 +465,7 @@ export function Settings() {
 
           <div className="grid gap-4">
             <label className="grid gap-2">
-              <span className={labelClass}>{"Temperature"}</span>
+              <span className={labelClass}>{i18n.t("settings.temperature")}</span>
               <input
                 type="number"
                 min={0}
@@ -344,7 +478,7 @@ export function Settings() {
             </label>
 
             <label className="grid gap-2">
-              <span className={labelClass}>{"Timeout seconds"}</span>
+              <span className={labelClass}>{i18n.t("settings.timeoutSeconds")}</span>
               <input
                 type="number"
                 min={1}
@@ -370,7 +504,7 @@ export function Settings() {
             </label>
 
             <label className="grid gap-2">
-              <span className={labelClass}>{"Reasoning effort"}</span>
+              <span className={labelClass}>{i18n.t("settings.reasoningEffort")}</span>
               <select
                 value={form.reasoning_effort}
                 onChange={(event) => setForm({ ...form, reasoning_effort: event.target.value })}
@@ -382,10 +516,11 @@ export function Settings() {
                 <option value="high">high</option>
                 <option value="max">max</option>
               </select>
+              <span className={hintClass}>{"How hard the model thinks before answering. Higher is more thorough but slower; leave Off for fastest replies."}</span>
             </label>
 
             <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">{"Saved to"}: </span>
+              <span className="font-medium text-foreground">{i18n.t("settings.saved")}: </span>
               <span className="break-all font-mono">{settings.env_path}</span>
             </div>
 
@@ -395,7 +530,7 @@ export function Settings() {
               className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {saving ? "Saving..." : "Save settings"}
+              {saving ? i18n.t("settings.saving") : i18n.t("settings.save")}
             </button>
           </div>
         </section>
@@ -444,7 +579,7 @@ export function Settings() {
             </label>
 
             <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">{"Saved to"}: </span>
+              <span className="font-medium text-foreground">{i18n.t("settings.saved")}: </span>
               <span className="break-all font-mono">{dataSettings.env_path}</span>
             </div>
 
@@ -454,7 +589,7 @@ export function Settings() {
               className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
             >
               {dataSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {dataSaving ? "Saving..." : "Save data source settings"}
+              {dataSaving ? i18n.t("settings.saving") : "Save data source settings"}
             </button>
           </div>
 

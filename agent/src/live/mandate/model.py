@@ -3,7 +3,7 @@
 Frozen dataclasses (no Pydantic): the mandate is read once at boot and never
 mutated, so plain frozen dataclasses give the strongest immutability guarantee
 with zero validation surface the agent could exploit. See
-``docs/live-trading/SPEC.md`` Mandate §1.
+the live-trading SPEC, Mandate §1.
 """
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ class AssetClass(str, Enum):
 
     US_EQUITY = "us_equity"
     US_ETF = "us_etf"
+    HK_EQUITY = "hk_equity"
+    CN_EQUITY = "cn_equity"
     CRYPTO = "crypto"
 
 

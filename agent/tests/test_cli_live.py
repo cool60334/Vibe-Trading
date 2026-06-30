@@ -1,11 +1,11 @@
-"""Tests for the `vibe-trading live` CLI surface + REPL intercepts (P6).
+"""Tests for the connector-first live CLI surface + REPL intercepts (P6).
 
 Covers SPEC.md §9 Decision 1 (CLI surface table) and Consent §2/§4:
 
-* The ``live`` subcommand group dispatches each verb to the right handler.
-* ``live halt`` / ``live resume`` trip and clear the kill switch on disk.
-* ``live status`` / ``live mandate`` are read-only and reflect disk state.
-* ``live revoke`` deletes the token cache + mandate.
+* The ``connector`` subcommand group dispatches each verb to the right handler.
+* Connector live commands trip/clear the kill switch on disk.
+* Live status/mandate helpers are read-only and reflect disk state.
+* Connector revoke deletes the token cache + mandate.
 * The REPL intercepts a bare numeric pick as a COMMIT — it calls the commit
   endpoint directly and NEVER routes the pick to the agent/model.
 * The REPL intercepts a bare "停"/"stop"/"/halt" turn — it trips the kill
@@ -91,60 +91,55 @@ def _write_mandate(root: Path, broker: str = "robinhood", *, schema_version: int
 # ---------------------------------------------------------------------------
 
 
-class TestLiveDispatch:
+class TestConnectorLiveDispatch:
     def _dispatch(self, argv: list[str]) -> int:
-        from cli._legacy import _build_parser, _dispatch_live
+        from cli._legacy import _build_parser, _dispatch_connector
 
         args = _build_parser().parse_args(argv)
-        return _dispatch_live(args)
+        return _dispatch_connector(args)
 
     def test_authorize_routes_to_handler(self) -> None:
-        with patch("cli._legacy.cmd_live_authorize", return_value=0) as m:
-            assert self._dispatch(["live", "authorize", "robinhood"]) == 0
-        m.assert_called_once_with("robinhood")
+        with patch("cli._legacy.cmd_connector_authorize", return_value=0) as m:
+            assert self._dispatch(["connector", "authorize", "robinhood-live-mcp"]) == 0
+        m.assert_called_once_with("robinhood-live-mcp")
 
     def test_status_routes_with_broker(self) -> None:
-        with patch("cli._legacy.cmd_live_status", return_value=0) as m:
-            self._dispatch(["live", "status", "robinhood"])
-        m.assert_called_once_with("robinhood")
+        with patch("cli._legacy.cmd_connector_status", return_value=0) as m:
+            self._dispatch(["connector", "status", "robinhood-live-mcp"])
+        m.assert_called_once_with("robinhood-live-mcp")
 
-    def test_status_routes_default_broker_none(self) -> None:
-        with patch("cli._legacy.cmd_live_status", return_value=0) as m:
-            self._dispatch(["live", "status"])
-        m.assert_called_once_with(None)
-
-    def test_mandate_routes(self) -> None:
-        with patch("cli._legacy.cmd_live_mandate", return_value=0) as m:
-            self._dispatch(["live", "mandate"])
+    def test_status_routes_default_profile_none(self) -> None:
+        with patch("cli._legacy.cmd_connector_status", return_value=0) as m:
+            self._dispatch(["connector", "status"])
         m.assert_called_once_with(None)
 
     def test_halt_routes(self) -> None:
-        with patch("cli._legacy.cmd_live_halt", return_value=0) as m:
-            self._dispatch(["live", "halt"])
+        with patch("cli._legacy.cmd_connector_halt", return_value=0) as m:
+            self._dispatch(["connector", "halt"])
         m.assert_called_once_with(None)
 
     def test_resume_routes(self) -> None:
-        with patch("cli._legacy.cmd_live_resume", return_value=0) as m:
-            self._dispatch(["live", "resume", "robinhood"])
-        m.assert_called_once_with("robinhood")
+        with patch("cli._legacy.cmd_connector_resume", return_value=0) as m:
+            self._dispatch(["connector", "resume", "robinhood-live-mcp"])
+        m.assert_called_once_with("robinhood-live-mcp")
 
     def test_revoke_routes(self) -> None:
-        with patch("cli._legacy.cmd_live_revoke", return_value=0) as m:
-            self._dispatch(["live", "revoke", "robinhood"])
-        m.assert_called_once_with("robinhood")
+        with patch("cli._legacy.cmd_connector_revoke", return_value=0) as m:
+            self._dispatch(["connector", "revoke", "robinhood-live-mcp"])
+        m.assert_called_once_with("robinhood-live-mcp")
 
     def test_no_subcommand_is_usage_error(self) -> None:
         from cli._legacy import EXIT_USAGE_ERROR
 
-        assert self._dispatch(["live"]) == EXIT_USAGE_ERROR
+        assert self._dispatch(["connector"]) == EXIT_USAGE_ERROR
 
-    def test_no_live_commit_verb_exists(self) -> None:
-        """SPEC: the CLI live group must not be able to create/widen a mandate."""
+    def test_no_connector_commit_verb_exists(self) -> None:
+        """SPEC: the CLI connector group must not be able to create/widen a mandate."""
         from cli._legacy import _build_parser
 
         parser = _build_parser()
         with pytest.raises(SystemExit):
-            parser.parse_args(["live", "commit", "robinhood"])
+            parser.parse_args(["connector", "commit", "robinhood-live-mcp"])
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +177,58 @@ class TestLiveHaltResume:
         from cli._legacy import cmd_live_resume
 
         assert cmd_live_resume(None) == 0
+
+
+class TestConnectorHaltResume:
+    def test_halt_without_profile_rejects_default_paper_profile(
+        self, live_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cli._legacy import EXIT_USAGE_ERROR, cmd_connector_halt
+        from src.trading import profiles
+
+        monkeypatch.setattr(profiles, "get_runtime_root", lambda: live_root)
+
+        assert cmd_connector_halt(None) == EXIT_USAGE_ERROR
+        assert not (live_root / "live" / "HALT").exists()
+
+    def test_halt_without_profile_uses_selected_connector(
+        self, live_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from cli._legacy import cmd_connector_halt
+        from src.live.halt import halt_flag_set
+        from src.trading import profiles
+
+        monkeypatch.setattr(profiles, "get_runtime_root", lambda: live_root)
+        profiles.save_selected_profile_id("robinhood-live-mcp")
+
+        assert cmd_connector_halt(None) == 0
+        assert (live_root / "live" / "robinhood" / "HALT").exists()
+        assert not (live_root / "live" / "HALT").exists()
+        assert halt_flag_set("robinhood") is True
+
+        out = capsys.readouterr().out
+        assert "vibe-trading connector resume" in out
+        assert "vibe-trading live" not in out
+
+    def test_resume_without_profile_uses_selected_connector(
+        self, live_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cli._legacy import cmd_connector_halt, cmd_connector_resume
+        from src.live.halt import halt_flag_set
+        from src.trading import profiles
+
+        monkeypatch.setattr(profiles, "get_runtime_root", lambda: live_root)
+        profiles.save_selected_profile_id("robinhood-live-mcp")
+
+        cmd_connector_halt(None)
+        assert cmd_connector_resume(None) == 0
+        assert halt_flag_set("robinhood") is False
+
+    def test_halt_with_explicit_non_live_profile_fails(self, live_root: Path) -> None:
+        from cli._legacy import EXIT_USAGE_ERROR, cmd_connector_halt
+
+        assert cmd_connector_halt("ibkr-paper-local") == EXIT_USAGE_ERROR
+        assert not (live_root / "live" / "HALT").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +344,95 @@ class TestLiveAuthorize:
         build.assert_called_once()
         assert build.call_args.args[0] == "robinhood"
 
+    def test_authorize_widens_tool_timeout_to_deadline(self) -> None:
+        """list_tools is bounded by tool_timeout, so authorize must widen it too.
+
+        Regression for #259: the OAuth flow is driven by the list_tools
+        handshake (per-call tool_timeout, default 30 s), not init_timeout. Both
+        must reach the 300 s authorize deadline.
+        """
+        from cli._legacy import cmd_live_authorize
+        from src.config.schema import MCPServerConfig
+
+        cfg = MCPServerConfig.model_validate(
+            {
+                "type": "streamableHttp",
+                "url": "https://agent.robinhood.com/mcp/trading",
+                "auth": {"type": "oauth", "scopes": ["trading.read"]},
+                "enabledTools": ["get_account"],
+            }
+        )
+        with patch("cli._legacy._live_server_config", return_value=cfg), patch(
+            "src.tools.mcp.build_mcp_tool_wrappers", return_value=[1]
+        ) as build:
+            assert cmd_live_authorize("robinhood") == 0
+
+        passed_cfg = build.call_args.args[1]
+        assert cfg.tool_timeout == 30  # original unchanged
+        assert passed_cfg.init_timeout == 300
+        assert passed_cfg.tool_timeout == 300
+        # Single attempt: no retry that would orphan the OAuth callback.
+        assert build.call_args.kwargs["max_list_tools_attempts"] == 1
+
+    def test_authorize_preserves_larger_configured_tool_timeout(self) -> None:
+        """Raise-only: an already-larger configured timeout is not lowered."""
+        from cli._legacy import cmd_live_authorize
+        from src.config.schema import MCPServerConfig
+
+        cfg = MCPServerConfig.model_validate(
+            {
+                "type": "streamableHttp",
+                "url": "https://agent.robinhood.com/mcp/trading",
+                "auth": {"type": "oauth", "scopes": ["trading.read"]},
+                "enabledTools": ["get_account"],
+                "toolTimeout": 600,
+                "initTimeout": 600,
+            }
+        )
+        with patch("cli._legacy._live_server_config", return_value=cfg), patch(
+            "src.tools.mcp.build_mcp_tool_wrappers", return_value=[1]
+        ) as build:
+            assert cmd_live_authorize("robinhood") == 0
+
+        passed_cfg = build.call_args.args[1]
+        assert passed_cfg.tool_timeout == 600
+        assert passed_cfg.init_timeout == 600
+
+    def test_authorize_honors_timeout_env_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """VIBE_LIVE_AUTHORIZE_TIMEOUT_SECONDS overrides the 300 s default."""
+        from cli._legacy import cmd_live_authorize
+        from src.config.schema import MCPServerConfig
+
+        monkeypatch.setenv("VIBE_LIVE_AUTHORIZE_TIMEOUT_SECONDS", "900")
+        cfg = MCPServerConfig.model_validate(
+            {
+                "type": "streamableHttp",
+                "url": "https://agent.robinhood.com/mcp/trading",
+                "auth": {"type": "oauth", "scopes": ["trading.read"]},
+                "enabledTools": ["get_account"],
+            }
+        )
+        with patch("cli._legacy._live_server_config", return_value=cfg), patch(
+            "src.tools.mcp.build_mcp_tool_wrappers", return_value=[1]
+        ) as build:
+            assert cmd_live_authorize("robinhood") == 0
+
+        passed_cfg = build.call_args.args[1]
+        assert passed_cfg.tool_timeout == 900
+        assert passed_cfg.init_timeout == 900
+
+    @pytest.mark.parametrize("raw", ["", "abc", "0", "-5"])
+    def test_authorize_timeout_env_invalid_falls_back_to_default(
+        self, raw: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty / non-numeric / non-positive env values fall back to 300 s."""
+        from cli._legacy import _authorize_timeout_seconds
+
+        monkeypatch.setenv("VIBE_LIVE_AUTHORIZE_TIMEOUT_SECONDS", raw)
+        assert _authorize_timeout_seconds() == 300.0
+
 
 # ---------------------------------------------------------------------------
 # REPL intercept helpers
@@ -333,7 +469,7 @@ class TestNumericPick:
 
 def _proposal() -> Dict[str, Any]:
     return {
-        "proposal_id": "mp_test",
+        "proposal_id": "mp_" + "3" * 32,
         "session_id": "sess_1",
         "intent_normalized": "aggressive tech, ~$5000",
         "account": {"broker": "robinhood", "type": "cash"},
@@ -357,7 +493,7 @@ class TestProposalPickIntercept:
         commit.assert_called_once()
         # The commit binds the exact rendered proposal + the picked ordinal.
         called_proposal, called_ordinal = commit.call_args.args
-        assert called_proposal["proposal_id"] == "mp_test"
+        assert called_proposal["proposal_id"] == "mp_" + "3" * 32
         assert called_ordinal == 2
         # Successful commit clears the pending proposal.
         assert ctx.pending_proposal is None
@@ -417,7 +553,7 @@ class TestProposalPickIntercept:
         assert result["mandate_id"] == "m1"
         assert captured["url"].endswith("/mandate/commit")
         assert captured["body"]["selected_ordinal"] == 2
-        assert captured["body"]["proposal_id"] == "mp_test"
+        assert captured["body"]["proposal_id"] == "mp_" + "3" * 32
         assert captured["body"]["consent_ack"] is True
 
 
@@ -511,7 +647,7 @@ class TestProposalArmingRelay:
         directly). Drives the event THROUGH the real ``on_event`` relay and
         asserts the full proposal is reloaded from disk into the sink.
         """
-        proposal_id = "mp_armtest01"
+        proposal_id = "mp_" + "4" * 32
         _write_proposal_to_disk(live_root, proposal_id)
 
         captured: Dict[str, Any] = {}
@@ -546,7 +682,7 @@ class TestProposalArmingRelay:
         ``_handle_proposal_reply`` and routed to the commit endpoint, NOT the
         agent.
         """
-        proposal_id = "mp_e2e01"
+        proposal_id = "mp_" + "5" * 32
         _write_proposal_to_disk(live_root, proposal_id)
 
         # 1) Arm through the real relay.

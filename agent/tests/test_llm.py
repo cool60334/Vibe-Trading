@@ -7,7 +7,44 @@ from unittest.mock import patch
 
 import pytest
 
+from src.providers.capabilities import get_provider_capabilities, provider_env_names
 from src.providers.llm import _sync_provider_env, build_llm
+
+
+class TestProviderCapabilityAliases:
+    """Provider aliases and model-name inference."""
+
+    def test_glm_alias_uses_zhipu_capabilities(self) -> None:
+        glm_caps = get_provider_capabilities("glm")
+        zhipu_caps = get_provider_capabilities("zhipu")
+
+        assert (
+            glm_caps.name,
+            glm_caps.api_key_env,
+            glm_caps.base_url_env,
+        ) == (
+            zhipu_caps.name,
+            zhipu_caps.api_key_env,
+            zhipu_caps.base_url_env,
+        )
+
+    @pytest.mark.parametrize("model", ["glm-4.6", "glm-5.1"])
+    def test_glm_model_inference_uses_zhipu(self, model: str) -> None:
+        caps = get_provider_capabilities(provider=None, model=model)
+
+        assert caps.name == "zhipu"
+
+    def test_glm_provider_env_names_use_zhipu_env(self) -> None:
+        assert provider_env_names("glm") == ("ZHIPU_API_KEY", "ZHIPU_BASE_URL")
+
+    @pytest.mark.parametrize("model", ["", "something-unknown"])
+    def test_unknown_or_empty_model_without_provider_falls_back_to_openai(
+        self,
+        model: str,
+    ) -> None:
+        caps = get_provider_capabilities(provider=None, model=model)
+
+        assert caps.name == "openai"
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +193,7 @@ class TestMinimaxTemperature:
             "LANGCHAIN_PROVIDER": "minimax",
             "MINIMAX_API_KEY": "minimax-key",
             "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
-            "LANGCHAIN_MODEL_NAME": "MiniMax-M2.7",
+            "LANGCHAIN_MODEL_NAME": "MiniMax-M3",
             "LANGCHAIN_TEMPERATURE": "0.0",
         }
         with patch.dict(os.environ, env, clear=True):
@@ -181,7 +218,7 @@ class TestMinimaxTemperature:
             "LANGCHAIN_PROVIDER": "minimax",
             "MINIMAX_API_KEY": "minimax-key",
             "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
-            "LANGCHAIN_MODEL_NAME": "MiniMax-M2.7",
+            "LANGCHAIN_MODEL_NAME": "MiniMax-M3",
             "LANGCHAIN_TEMPERATURE": "0.7",
         }
         with patch.dict(os.environ, env, clear=True):
@@ -237,5 +274,4 @@ class TestReasoningEffortPassthrough:
             "LANGCHAIN_REASONING_EFFORT": "HIGH",
         })
         assert captured["extra_body"]["reasoning"]["effort"] == "high"
-
 

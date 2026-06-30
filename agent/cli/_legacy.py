@@ -12,19 +12,23 @@ Usage:
 
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import csv
 import json
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import threading
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import warnings
 warnings.filterwarnings("ignore", message=".*Importing verbose from langchain.*")
@@ -60,6 +64,9 @@ EXIT_USAGE_ERROR = 2
 RICH_TAG_PATTERN = re.compile(r"\[/?[^\]]+\]")
 
 from cli._version import __version__ as _VERSION  # noqa: E402 — single source of truth
+
+if TYPE_CHECKING:
+    from src.agent.loop import AgentLoop
 
 # Agent color assignments for swarm display
 _AGENT_STYLES = ["cyan", "magenta", "green", "yellow", "blue", "bright_red", "bright_cyan", "bright_magenta"]
@@ -858,7 +865,7 @@ def _format_tool_result_preview(tool: str, status: str, preview: str) -> str:
 # protected ``loop.py``.
 
 _PROPOSAL_TOOL_NAME = "propose_mandate_profiles"
-_PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-zA-Z]+)"')
+_PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-f]{32})"')
 
 
 def _load_full_proposal(proposal_id: str) -> Optional[Dict[str, Any]]:
@@ -1389,7 +1396,15 @@ def cmd_run(prompt: str, max_iter: int, *, json_mode: bool = False, no_rich: boo
 def _build_history_from_trace(run_dir: Path) -> List[Dict[str, str]]:
     """Build conversation history from trace.jsonl."""
     from src.agent.trace import TraceWriter
-    entries = TraceWriter.read(run_dir)
+
+    trace_dir = TraceWriter.find_trace_dir(run_dir.name, runs_dir=RUNS_DIR, sessions_dir=SESSIONS_DIR)
+    if trace_dir is None:
+        return []
+    entries = TraceWriter.read(
+        trace_dir,
+        resolve_offloads=True,
+        resolve_fields={"prompt", "content"},
+    )
     history: List[Dict[str, str]] = []
     for e in entries:
         if e.get("type") == "start" and e.get("prompt"):
@@ -1409,12 +1424,15 @@ def cmd_continue(
 ) -> int:
     """Continue an existing run."""
     run_dir = RUNS_DIR / run_id
-    if not run_dir.exists():
+    session_trace_dir = SESSIONS_DIR / run_id
+    if not run_dir.exists() and not session_trace_dir.exists():
         if no_rich:
             print(f"Run {run_id} not found")
             return EXIT_USAGE_ERROR
         console.print(f"[red]Run {run_id} not found[/red]")
         return EXIT_USAGE_ERROR
+    if not run_dir.exists():
+        run_dir.mkdir(parents=True, exist_ok=True)
 
     history = _build_history_from_trace(run_dir)
     if not json_mode and no_rich:
@@ -1977,7 +1995,7 @@ class _SwarmDashboard:
             color = "green" if self.final_status == "completed" else "red"
             title_status = f"[{color}]{self.final_status.upper()}[/{color}]"
         else:
-            title_status = f"[cyan]RUNNING[/cyan]"
+            title_status = "[cyan]RUNNING[/cyan]"
 
         title = f"{self.preset}  {title_status}  {mins}:{secs:02d}"
 
@@ -2145,7 +2163,7 @@ def cmd_swarm_run_live(preset: str, vars_json: Optional[str] = None) -> None:
         token_str = f"\nTokens: ~{tokens_in + tokens_out:,} (in: {tokens_in:,} out: {tokens_out:,})"
 
     if current.final_report:
-        console.print(f"\n[bold]\u2500\u2500 Final Report \u2500\u2500[/bold]")
+        console.print("\n[bold]\u2500\u2500 Final Report \u2500\u2500[/bold]")
         console.print(current.final_report[:2000])
 
     console.print(f"\n[{status_color}]{current.status.value.upper()}[/{status_color}]  Time: {mins}m {secs}s{token_str}")
@@ -2217,7 +2235,12 @@ def cmd_show(run_id: str) -> None:
         lines.extend(f"  {k}: {v}" for k, v in metrics.items())
 
     from src.agent.trace import TraceWriter
-    entries = TraceWriter.read(run_dir)
+    trace_dir = TraceWriter.find_trace_dir(run_id, runs_dir=RUNS_DIR, sessions_dir=SESSIONS_DIR)
+    entries = (
+        TraceWriter.read(trace_dir, resolve_offloads=True, resolve_fields={"content"})
+        if trace_dir
+        else []
+    )
     answers = [e["content"] for e in entries if e.get("type") == "answer" and e.get("content")]
     if answers:
         summary = answers[-1][:200]
@@ -2276,12 +2299,16 @@ def cmd_trace(run_id: str) -> None:
     """Replay trace.jsonl to show full execution."""
     from src.agent.trace import TraceWriter
 
-    run_dir = RUNS_DIR / run_id
-    if not run_dir.exists():
-        console.print(f"[red]{run_id} not found[/red]")
+    trace_dir = TraceWriter.find_trace_dir(run_id, runs_dir=RUNS_DIR, sessions_dir=SESSIONS_DIR)
+    if trace_dir is None:
+        console.print(f"[red]{run_id}/trace.jsonl not found[/red]")
         return
 
-    entries = TraceWriter.read(run_dir)
+    entries = TraceWriter.read(
+        trace_dir,
+        resolve_offloads=True,
+        resolve_fields={"prompt", "content", "summary"},
+    )
     if not entries:
         console.print(f"[red]{run_id}/trace.jsonl is empty or missing[/red]")
         return
@@ -2303,7 +2330,7 @@ def cmd_trace(run_id: str) -> None:
         elif etype == "tool_call":
             tool = entry.get("tool", "")
             args = entry.get("args", {})
-            args_str = ", ".join(f"{k}={v[:40]}" for k, v in args.items()) if args else ""
+            args_str = ", ".join(f"{k}={str(v)[:40]}" for k, v in args.items()) if args else ""
             console.print(f"[dim]{ts_str}[/dim] {iter_tag}[cyan]\u25b6 {tool}[/cyan]({args_str})")
         elif etype == "tool_result":
             tool = entry.get("tool", "")
@@ -2312,13 +2339,21 @@ def cmd_trace(run_id: str) -> None:
             ok = status == "ok"
             mark = "\u2713" if ok else "\u2717"
             color = "green" if ok else "red"
-            preview = entry.get("preview", "")[:80]
-            console.print(f"[dim]{ts_str}[/dim] {iter_tag}[{color}]{mark} {tool}[/{color}] [dim]{elapsed}ms[/dim]  {preview}")
+            preview = (entry.get("preview") or entry.get("result_preview") or entry.get("result") or "")[:80]
+            size_hint = ""
+            if entry.get("result_path"):
+                size_hint = f" [{int(entry.get('result_size') or 0) // 1024}K offloaded]"
+            console.print(f"[dim]{ts_str}[/dim] {iter_tag}[{color}]{mark} {tool}[/{color}] [dim]{elapsed}ms[/dim]  {preview}{size_hint}")
         elif etype == "tool_skipped":
             console.print(f"[dim]{ts_str}[/dim] {iter_tag}[yellow]\u2298 {entry.get('tool', '')} (skipped)[/yellow]")
+        elif etype == "message":
+            role = entry.get("role", "?")
+            content = entry.get("content") or entry.get("content_preview") or ""
+            role_color = "cyan" if role == "user" else "green"
+            console.print(f"\n[dim]{ts_str}[/dim] {iter_tag}[bold {role_color}]{role.upper()}[/bold {role_color}] {content[:120]}")
         elif etype == "answer":
             content = entry.get("content", "")
-            console.print(f"\n[dim]{ts_str}[/dim] {iter_tag}[bold green]ANSWER[/bold green]\n{content[:500]}")
+            console.print(f"\n[dim]{ts_str}[/dim] {iter_tag}[bold green]ANSWER[/bold green]\n{content}")
         elif etype == "end":
             status = entry.get("status", "?")
             iters = entry.get("iterations", "?")
@@ -2696,30 +2731,44 @@ def cmd_provider_login(provider: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Live trading channel (`vibe-trading live ...`) — SPEC.md §9 Decision 1.
+# Live connector runtime internals.
 #
 # Every state-changing verb here is a PRIVILEGED USER-SIDE action: none is
 # reachable from the agent loop / tool registry. There is deliberately NO
 # `live commit` verb — committing a mandate happens only through the consent
-# flow's `POST /mandate/commit`, never the CLI (the CLI cannot create or widen
-# a mandate). The verbs are:
-#
-#   live authorize <broker>  Desktop OAuth bootstrap (opens browser, writes
-#                            the token cache). The only way to turn on the channel.
-#   live run [<broker>]      Run the persistent runner in the FOREGROUND (tails
-#                            the heartbeat; Ctrl+C stops it). SPEC §7.5.
-#   live start [<broker>]    Start the persistent runner in the background.
-#   live stop [<broker>]     Stop the persistent runner.
-#   live status              Per-broker auth state + active mandate (limits +
-#                            expires_at countdown) + halt state + runner
-#                            liveness / last-tick (read-only).
-#   live mandate [<broker>]  Print the committed mandate (read-only).
-#   live halt [<broker>]     Trip the kill switch (writes the HALT sentinel).
-#   live resume [<broker>]   Clear the halt (explicit privileged re-enable).
-#   live revoke <broker>     Revoke OAuth token + delete the mandate (full off).
+# flow's `POST /mandate/commit`, never a CLI command (the CLI cannot create or
+# widen a mandate). The public CLI surface is `vibe-trading connector ...`;
+# `cmd_live_*` helpers remain only as the broker-runtime implementation behind
+# connector profiles.
 # ---------------------------------------------------------------------------
 
 _DEFAULT_LIVE_BROKER = "robinhood"
+_LIVE_AUTHORIZE_INIT_TIMEOUT_SECONDS = 300.0
+_LIVE_AUTHORIZE_TIMEOUT_ENV = "VIBE_LIVE_AUTHORIZE_TIMEOUT_SECONDS"
+
+
+def _authorize_timeout_seconds() -> float:
+    """Resolve the OAuth authorize handshake deadline in seconds.
+
+    Reads ``VIBE_LIVE_AUTHORIZE_TIMEOUT_SECONDS`` and falls back to
+    :data:`_LIVE_AUTHORIZE_INIT_TIMEOUT_SECONDS` (300 s) when it is unset,
+    empty, non-numeric, or not strictly positive. This deadline bounds the
+    interactive ``list_tools`` handshake that drives the broker OAuth flow, so
+    a multi-minute human sign-in (e.g. Robinhood's face scan) has room to
+    complete.
+
+    Returns:
+        The authorize deadline in seconds (a positive float).
+    """
+    raw = os.getenv(_LIVE_AUTHORIZE_TIMEOUT_ENV)
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return _LIVE_AUTHORIZE_INIT_TIMEOUT_SECONDS
+        if value > 0:
+            return value
+    return _LIVE_AUTHORIZE_INIT_TIMEOUT_SECONDS
 
 
 def _live_api_base() -> str:
@@ -2735,6 +2784,12 @@ def _live_api_base() -> str:
         The API base URL with any trailing slash removed.
     """
     return os.environ.get("VIBE_TRADING_API_URL", "http://127.0.0.1:8000").rstrip("/")
+
+
+def _api_auth_headers() -> Dict[str, str]:
+    """Return Bearer auth headers for CLI-to-API control calls."""
+    key = (os.environ.get("VIBE_TRADING_API_KEY") or os.environ.get("API_AUTH_KEY") or "").strip()
+    return {"Authorization": f"Bearer {key}"} if key else {}
 
 
 def _live_api_call(method: str, path: str, *, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2765,6 +2820,173 @@ def _live_api_call(method: str, path: str, *, body: Optional[Dict[str, Any]] = N
         return {"status": "error", "error": str(exc)}
 
 
+def _channels_api_call(method: str, path: str, *, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Call an IM channel runtime endpoint on the local API server."""
+    import httpx
+
+    url = f"{_live_api_base()}{path}"
+    headers = _api_auth_headers()
+    try:
+        if method.upper() == "GET":
+            response = httpx.get(url, headers=headers, timeout=10.0)
+        else:
+            response = httpx.post(url, json=body or {}, headers=headers, timeout=10.0)
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:  # noqa: BLE001 - CLI should explain offline API cleanly
+        return {"status": "error", "error": str(exc)}
+
+
+def _channels_local_status() -> Dict[str, Any]:
+    """Build local channel config/import status without starting adapters."""
+    from src.channels.config import load_channels_config
+    from src.channels.registry import inspect_channels
+
+    config = load_channels_config()
+    return {
+        "running": False,
+        "source": "local_config",
+        "channels": inspect_channels(config),
+    }
+
+
+def _print_channels_status(payload: Dict[str, Any]) -> None:
+    """Render IM channel status."""
+    table = Table(title="IM Channels", box=box.SIMPLE)
+    table.add_column("Channel")
+    table.add_column("Configured")
+    table.add_column("Enabled")
+    table.add_column("Available")
+    table.add_column("Loaded")
+    table.add_column("Running")
+    table.add_column("Recovery")
+    channels = payload.get("channels") if isinstance(payload, dict) else {}
+    if not isinstance(channels, dict):
+        channels = {}
+    for name, item in sorted(channels.items()):
+        if not isinstance(item, dict):
+            continue
+        recovery = item.get("install_hint") or item.get("error") or ""
+        table.add_row(
+            str(name),
+            "yes" if item.get("configured") else "no",
+            "yes" if item.get("enabled") else "no",
+            "yes" if item.get("available") else "no",
+            "yes" if item.get("loaded") else "no",
+            "yes" if item.get("running") else "no",
+            str(recovery),
+        )
+    console.print(table)
+    if payload.get("status") == "error":
+        console.print(f"[yellow]API unavailable:[/yellow] {payload.get('error')}")
+        console.print("[dim]Start the backend with `vibe-trading serve --port 8000`, or inspect local config with this status output.[/dim]")
+
+
+def cmd_channels_status(*, json_mode: bool = False, local: bool = False) -> int:
+    """Show IM channel status."""
+    payload = _channels_local_status() if local else _channels_api_call("GET", "/channels/status")
+    if payload.get("status") == "error":
+        local_payload = _channels_local_status()
+        local_payload["status"] = "error"
+        local_payload["error"] = payload.get("error", "")
+        payload = local_payload
+    if json_mode:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        _print_channels_status(payload)
+    return EXIT_SUCCESS
+
+
+def cmd_channels_start(*, json_mode: bool = False) -> int:
+    """Start configured IM channels through the API runtime."""
+    payload = _channels_api_call("POST", "/channels/start")
+    if json_mode:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif payload.get("status") == "error":
+        console.print(f"[red]Failed to start IM channels:[/red] {payload.get('error')}")
+        console.print("[dim]Run `vibe-trading serve --port 8000` first, or set VIBE_TRADING_API_URL.[/dim]")
+        return EXIT_RUN_FAILED
+    else:
+        console.print("[green]IM channels started.[/green]")
+        _print_channels_status(payload)
+    return EXIT_SUCCESS
+
+
+def cmd_channels_stop(*, json_mode: bool = False) -> int:
+    """Stop configured IM channels through the API runtime."""
+    payload = _channels_api_call("POST", "/channels/stop")
+    if json_mode:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif payload.get("status") == "error":
+        console.print(f"[red]Failed to stop IM channels:[/red] {payload.get('error')}")
+        console.print("[dim]Run `vibe-trading serve --port 8000` first, or set VIBE_TRADING_API_URL.[/dim]")
+        return EXIT_RUN_FAILED
+    else:
+        console.print("[green]IM channels stopped.[/green]")
+        _print_channels_status(payload)
+    return EXIT_SUCCESS
+
+
+def cmd_channels_pairing(channel: str, command: str) -> int:
+    """Run a pairing command against the shared local pairing store."""
+    from src.channels.pairing import handle_pairing_command
+
+    console.print(handle_pairing_command(channel, command))
+    return EXIT_SUCCESS
+
+
+def cmd_channels_login(channel_name: str, *, force: bool = False) -> int:
+    """Run a channel adapter's interactive login hook when available."""
+    import asyncio
+
+    from src.channels.config import load_channels_config
+    from src.channels.manager import ChannelManager
+    from src.channels.bus.queue import MessageBus
+
+    config = load_channels_config()
+    section = dict(config.get(channel_name, {})) if isinstance(config.get(channel_name), dict) else {}
+    if channel_name == "websocket":
+        console.print("[green]WebSocket channel does not require interactive login.[/green]")
+        console.print("[dim]Configure channels.websocket in ~/.vibe-trading/agent.json, then run `vibe-trading channels start`.[/dim]")
+        return EXIT_SUCCESS
+    if not section:
+        console.print(f"[red]No config found for channel '{channel_name}'.[/red]")
+        console.print("[dim]Add it under channels.<name> in ~/.vibe-trading/agent.json, then retry.[/dim]")
+        return EXIT_USAGE_ERROR
+    section["enabled"] = True
+    manager = ChannelManager({channel_name: section}, MessageBus())
+    adapter = manager.get_channel(channel_name)
+    if adapter is None:
+        status = manager.get_status().get(channel_name, {})
+        recovery = status.get("install_hint") or status.get("error") or "adapter unavailable"
+        console.print(f"[red]Channel '{channel_name}' is unavailable.[/red] {recovery}")
+        return EXIT_RUN_FAILED
+    ok = asyncio.run(adapter.login(force=force))
+    if ok:
+        console.print(f"[green]Channel '{channel_name}' login completed.[/green]")
+        return EXIT_SUCCESS
+    console.print(f"[red]Channel '{channel_name}' login failed.[/red]")
+    return EXIT_RUN_FAILED
+
+
+def _dispatch_channels(args: argparse.Namespace) -> int:
+    """Dispatch IM channel subcommands."""
+    command = args.channels_command
+    if command == "status":
+        return cmd_channels_status(json_mode=args.channels_json, local=args.local)
+    if command == "start":
+        return cmd_channels_start(json_mode=args.channels_json)
+    if command == "stop":
+        return cmd_channels_stop(json_mode=args.channels_json)
+    if command == "pairing":
+        text = " ".join([args.pairing_command, *args.pairing_args]).strip()
+        return cmd_channels_pairing(args.channel, text or "list")
+    if command == "login":
+        return cmd_channels_login(args.channel_name, force=args.force)
+    console.print("[red]channels requires a subcommand.[/red] Try: vibe-trading channels status")
+    return EXIT_USAGE_ERROR
+
+
 def _live_server_config(broker: str):
     """Resolve the protected MCP server config for ``broker``.
 
@@ -2786,6 +3008,66 @@ def _live_server_config(broker: str):
     return servers.get(broker.strip().lower())
 
 
+def _raw_live_server_config_entry(broker: str) -> dict[str, Any] | None:
+    """Best-effort raw lookup used only to explain invalid live config."""
+    from src.config.loader import _read_config_file
+    from src.config.paths import get_config_path
+    from src.config.schema import live_broker_key_for_url
+
+    try:
+        path = get_config_path()
+        if not path.exists():
+            return None
+        raw = _read_config_file(path)
+    except Exception:  # noqa: BLE001 — diagnostics must not mask the real CLI error
+        return None
+
+    servers = raw.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = raw.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return None
+
+    key = broker.strip().lower()
+    for server_key, server in servers.items():
+        if isinstance(server, dict) and str(server_key).strip().lower() == key:
+            return server
+
+    if key != "robinhood":
+        return None
+
+    for server in servers.values():
+        if isinstance(server, dict) and live_broker_key_for_url(str(server.get("url") or "")) == key:
+            return server
+    return None
+
+
+def _raw_server_entry_uses_wildcard(entry: dict[str, Any] | None) -> bool:
+    """Return whether a raw MCP server entry uses a wildcard enabledTools list."""
+    if entry is None:
+        return False
+    enabled_tools = entry.get("enabledTools", entry.get("enabled_tools"))
+    if not isinstance(enabled_tools, list):
+        return False
+    return "*" in {str(tool).strip() for tool in enabled_tools}
+
+
+def _print_missing_live_channel_config(key: str) -> None:
+    """Print actionable guidance when a live broker config cannot be loaded."""
+    if key == "robinhood":
+        from src.config.schema import format_robinhood_mcp_config_guidance
+
+        reason = "wildcard" if _raw_server_entry_uses_wildcard(_raw_live_server_config_entry(key)) else "missing"
+        console.print("[red]Robinhood live channel is not configured safely.[/red]")
+        console.print(format_robinhood_mcp_config_guidance(reason=reason), markup=False, soft_wrap=True)
+        return
+
+    console.print(
+        f"[red]No live channel configured for '{key}'.[/red] "
+        "Add the broker's mcpServers entry to ~/.vibe-trading/agent.json first."
+    )
+
+
 def cmd_live_authorize(broker: str) -> int:
     """Bootstrap the OAuth handshake for a live broker channel (desktop only).
 
@@ -2803,10 +3085,7 @@ def cmd_live_authorize(broker: str) -> int:
     key = broker.strip().lower()
     server_config = _live_server_config(key)
     if server_config is None:
-        console.print(
-            f"[red]No live channel configured for '{key}'.[/red] "
-            "Add the broker's mcpServers entry to ~/.vibe-trading/agent.json first."
-        )
+        _print_missing_live_channel_config(key)
         return EXIT_USAGE_ERROR
     if getattr(server_config, "auth", None) is None:
         console.print(
@@ -2823,7 +3102,36 @@ def cmd_live_authorize(broker: str) -> int:
     try:
         from src.tools.mcp import build_mcp_tool_wrappers
 
-        tools = build_mcp_tool_wrappers(key, server_config)
+        # The OAuth flow is driven lazily by the first request to the server —
+        # the `list_tools` discovery handshake — which is bounded by the
+        # per-call `tool_timeout` (default 30 s), NOT `init_timeout`. Raise both
+        # to the authorize deadline so a multi-minute human sign-in (e.g.
+        # Robinhood's face scan) does not trip the handshake. Raise-only: never
+        # shrink an already-larger user-configured timeout.
+        authorize_timeout = _authorize_timeout_seconds()
+        if hasattr(server_config, "model_copy"):
+            updates: dict[str, float] = {}
+            configured_init_timeout = getattr(server_config, "init_timeout", None)
+            if (
+                configured_init_timeout is None
+                or float(configured_init_timeout) < authorize_timeout
+            ):
+                updates["init_timeout"] = authorize_timeout
+            configured_tool_timeout = getattr(server_config, "tool_timeout", None)
+            if (
+                configured_tool_timeout is None
+                or float(configured_tool_timeout) < authorize_timeout
+            ):
+                updates["tool_timeout"] = authorize_timeout
+            if updates:
+                server_config = server_config.model_copy(update=updates)
+
+        # Single attempt: a transient-retry would open a fresh client context
+        # that starts a SECOND OAuth callback server on a new port, orphaning
+        # the sign-in the user just completed against the first one (see #259).
+        tools = build_mcp_tool_wrappers(
+            key, server_config, max_list_tools_attempts=1
+        )
     except Exception as exc:  # noqa: BLE001 — surface any handshake failure
         console.print(f"[red]Authorization failed:[/red] {exc}")
         return EXIT_RUN_FAILED
@@ -2834,8 +3142,16 @@ def cmd_live_authorize(broker: str) -> int:
     )
     console.print(
         "[dim]The channel is read-only until you commit a mandate and enable "
-        "order tools. Use `vibe-trading live status` to check state.[/dim]"
+        "order tools. Use `vibe-trading connector status` to check state.[/dim]"
     )
+    return EXIT_SUCCESS
+
+
+def cmd_provider_doctor() -> int:
+    """Print redacted provider diagnostics."""
+    from src.providers.llm import provider_diagnostics
+
+    console.print_json(data=provider_diagnostics())
     return EXIT_SUCCESS
 
 
@@ -3043,7 +3359,7 @@ def cmd_live_halt(broker: Optional[str] = None) -> int:
 
     With no broker, trips the global switch (halts all brokers); with a broker,
     trips only that broker's sentinel. The gate rejects all order attempts until
-    the switch is cleared with ``live resume``.
+    the switch is cleared with ``vibe-trading connector resume``.
 
     Args:
         broker: Broker key, or ``None`` for the global switch.
@@ -3058,7 +3374,7 @@ def cmd_live_halt(broker: Optional[str] = None) -> int:
     scope = target or "ALL brokers"
     console.print(f"[bold red]Live trading halted[/bold red] for {scope}.")
     console.print(f"[dim]Sentinel: {path}[/dim]")
-    console.print("[dim]Run `vibe-trading live resume` to re-enable.[/dim]")
+    console.print("[dim]Run `vibe-trading connector resume` to re-enable.[/dim]")
     return EXIT_SUCCESS
 
 
@@ -3166,7 +3482,7 @@ def cmd_live_start(broker: Optional[str] = None) -> int:
 
     runner_id = result.get("runner_id") or _runner_id_for(key)
     console.print(f"[green]Live runner started[/green] for {key} [dim]({runner_id})[/dim].")
-    console.print("[dim]Check it with `vibe-trading live status`.[/dim]")
+    console.print("[dim]Check it with `vibe-trading connector status`.[/dim]")
     return EXIT_SUCCESS
 
 
@@ -3175,7 +3491,7 @@ def cmd_live_stop(broker: Optional[str] = None) -> int:
 
     Relays a stop request to ``POST /live/runner/stop``. Stopping the runner
     halts autonomous activity but does NOT clear a tripped kill switch or revoke
-    the mandate — use ``live resume`` / ``live revoke`` for those.
+    the mandate — use ``connector resume`` / ``connector revoke`` for those.
 
     Args:
         broker: Broker key, or ``None`` for the default broker (``robinhood``).
@@ -3266,31 +3582,621 @@ def cmd_live_run(broker: Optional[str] = None) -> int:
     return EXIT_SUCCESS
 
 
-def _dispatch_live(args: argparse.Namespace) -> int:
-    """Route a parsed ``live`` subcommand to its handler."""
-    sub = getattr(args, "live_command", None)
-    if sub == "authorize":
-        return cmd_live_authorize(args.live_broker)
-    if sub == "run":
-        return cmd_live_run(getattr(args, "live_broker", None))
-    if sub == "start":
-        return cmd_live_start(getattr(args, "live_broker", None))
-    if sub == "stop":
-        return cmd_live_stop(getattr(args, "live_broker", None))
-    if sub == "status":
-        return cmd_live_status(getattr(args, "live_broker", None))
-    if sub == "mandate":
-        return cmd_live_mandate(getattr(args, "live_broker", None))
-    if sub == "halt":
-        return cmd_live_halt(getattr(args, "live_broker", None))
-    if sub == "resume":
-        return cmd_live_resume(getattr(args, "live_broker", None))
-    if sub == "revoke":
-        return cmd_live_revoke(args.live_broker)
-    console.print(
-        "[red]live requires a subcommand.[/red] "
-        "Try: vibe-trading live status"
+# ---------------------------------------------------------------------------
+# Trading connector commands
+# ---------------------------------------------------------------------------
+
+def _profile_id(value: Optional[str]) -> Optional[str]:
+    """Normalize an optional connector profile id."""
+    if value is None:
+        return None
+    text = value.strip().lower()
+    return text or None
+
+
+def _selected_profile_or(value: Optional[str]):
+    """Resolve the selected or explicit trading profile."""
+    from src.trading.profiles import profile_by_id
+
+    return profile_by_id(_profile_id(value))
+
+
+def cmd_connector_list() -> int:
+    """List selectable trading connector profiles."""
+    from src.trading.profiles import list_profiles, load_selected_profile_id
+
+    selected = load_selected_profile_id()
+    table = Table(title="Trading Connectors", box=box.SIMPLE_HEAVY, show_lines=False)
+    table.add_column("Selected", justify="center", width=8)
+    table.add_column("Profile")
+    table.add_column("Connector")
+    table.add_column("Env")
+    table.add_column("Transport")
+    table.add_column("Capabilities")
+    for profile in list_profiles():
+        table.add_row(
+            "[green]*[/green]" if profile.id == selected else "",
+            f"[cyan]{profile.id}[/cyan]\n[dim]{profile.label}[/dim]",
+            profile.connector,
+            profile.environment,
+            profile.transport,
+            ", ".join(profile.capabilities),
+        )
+    console.print(table)
+    console.print("[dim]Use `vibe-trading connector use <profile>` to set the default profile.[/dim]")
+    return EXIT_SUCCESS
+
+
+def cmd_connector_use(profile_id: str) -> int:
+    """Select the default trading connector profile."""
+    from src.trading.profiles import profile_by_id, save_selected_profile_id
+
+    try:
+        profile = profile_by_id(profile_id)
+        path = save_selected_profile_id(profile.id)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    console.print(f"[green]Selected trading connector[/green] {profile.id}")
+    console.print(f"[dim]{profile.label} · {profile.environment} · {profile.transport}[/dim]")
+    console.print(f"[dim]Config: {path}[/dim]")
+    return EXIT_SUCCESS
+
+
+def cmd_connector_configure(
+    profile_id: str,
+    *,
+    host: str = "127.0.0.1",
+    port: int | None = None,
+    client_id: int = 77,
+    account: str | None = None,
+    yes: bool = False,
+) -> int:
+    """Configure a local connector profile."""
+    from src.trading.connectors.ibkr.local import IBKRLocalConfig, config_path, save_config
+
+    try:
+        profile = _selected_profile_or(profile_id)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    if profile.transport != "local_tws" or profile.connector != "ibkr":
+        console.print(f"[red]{profile.id} is not a local TWS/Gateway profile.[/red]")
+        return EXIT_USAGE_ERROR
+
+    path = config_path()
+    if path.exists() and not yes:
+        console.print(f"[yellow]Local connector config already exists:[/yellow] {path}")
+        try:
+            if not Confirm.ask("Overwrite it?", default=False):
+                console.print("[dim]Aborted.[/dim]")
+                return EXIT_SUCCESS
+        except EOFError:
+            console.print("[dim]No input available; use --yes for non-interactive setup.[/dim]")
+            return EXIT_USAGE_ERROR
+
+    cfg = IBKRLocalConfig.from_mapping(
+        {
+            **profile.config,
+            "host": host,
+            "port": port or profile.config.get("port"),
+            "clientId": client_id,
+            "account": account,
+            "readonly": True,
+        }
     )
+    path = save_config(cfg)
+    console.print(f"[green]Configured[/green] {profile.id} [dim]({path})[/dim]")
+    console.print(f"[dim]Run `vibe-trading connector check {profile.id}` to verify it.[/dim]")
+    return EXIT_SUCCESS
+
+
+def cmd_connector_check(
+    profile_id: Optional[str] = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+) -> int:
+    """Check selected or explicit trading connector profile."""
+    from src.trading.service import check_connection
+
+    try:
+        profile = _selected_profile_or(profile_id)
+        report = check_connection(profile.id, host=host, port=port, client_id=client_id, account=account)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Connector check failed:[/red] {exc}")
+        return EXIT_RUN_FAILED
+
+    title = f"Trading Connector: {profile.id}"
+    if profile.transport == "local_tws":
+        table = Table(title=title, box=box.SIMPLE_HEAVY, show_lines=False)
+        table.add_column("Endpoint")
+        table.add_column("Profile")
+        table.add_column("Address")
+        table.add_column("State")
+        for row in report.get("ports", []):
+            open_state = "[green]open[/green]" if row.get("open") else "[dim]closed[/dim]"
+            table.add_row(
+                str(row.get("label")),
+                str(row.get("profile")),
+                f"{row.get('host')}:{row.get('port')}",
+                open_state,
+            )
+        console.print(table)
+        target = report.get("target", {})
+        target_state = "open" if target.get("open") else "closed"
+        console.print(f"Target: [bold]{target.get('host')}:{target.get('port')}[/bold] ({target_state})")
+        sdk = report.get("sdk", {})
+        if not sdk.get("installed"):
+            console.print("[yellow]Missing optional dependency:[/yellow] pip install 'ib_async>=2.0'")
+        if report.get("account"):
+            accounts = ", ".join(report["account"].get("accounts", [])) or "(none)"
+            console.print(f"Accounts: [cyan]{rich_escape(accounts)}[/cyan]")
+    else:
+        table = Table(title=title, box=box.SIMPLE_HEAVY, show_lines=False)
+        table.add_column("Field", style="cyan")
+        table.add_column("Value")
+        table.add_row("Connector", profile.connector)
+        table.add_row("Environment", profile.environment)
+        table.add_row("Transport", profile.transport)
+        table.add_row("Configured", "yes" if report.get("configured") else "[red]no[/red]")
+        table.add_row("OAuth token", "present" if report.get("oauth_token_present") else "[yellow]missing[/yellow]")
+        table.add_row("Capabilities", ", ".join(report.get("capabilities", [])))
+        console.print(table)
+
+    if report.get("status") not in {"ok"}:
+        console.print(f"[red]{rich_escape(str(report.get('error') or report.get('status') or 'not ready'))}[/red]")
+        return EXIT_RUN_FAILED
+    console.print("[green]Connector profile is ready.[/green]")
+    return EXIT_SUCCESS
+
+
+def _print_connector_account(result: dict[str, Any]) -> int:
+    accounts = ", ".join(result.get("accounts", [])) or "(none)"
+    console.print(f"Accounts: [cyan]{rich_escape(accounts)}[/cyan]")
+    rows = result.get("summary", [])
+    if not rows:
+        console.print("[dim]No account summary returned.[/dim]")
+        return EXIT_SUCCESS
+    table = Table(title=f"Account Summary · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False)
+    table.add_column("Account")
+    table.add_column("Tag")
+    table.add_column("Value", justify="right")
+    table.add_column("Currency")
+    for row in rows:
+        table.add_row(
+            str(row.get("account") or ""),
+            str(row.get("tag") or ""),
+            str(row.get("value") or ""),
+            str(row.get("currency") or ""),
+        )
+    console.print(table)
+    return EXIT_SUCCESS
+
+
+def cmd_connector_account(
+    profile_id: Optional[str] = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+) -> int:
+    """Print account summary from a connector profile."""
+    from src.trading.service import get_account
+
+    try:
+        result = get_account(_profile_id(profile_id), host=host, port=port, client_id=client_id, account=account)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Connector account failed:[/red] {exc}")
+        return EXIT_RUN_FAILED
+    if result.get("status") == "error":
+        console.print(f"[red]{rich_escape(str(result.get('error')))}[/red]")
+        return EXIT_RUN_FAILED
+    return _print_connector_account(result)
+
+
+def cmd_connector_positions(
+    profile_id: Optional[str] = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+) -> int:
+    """Print positions from a connector profile."""
+    from src.trading.service import get_positions
+
+    try:
+        result = get_positions(_profile_id(profile_id), host=host, port=port, client_id=client_id, account=account)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Connector positions failed:[/red] {exc}")
+        return EXIT_RUN_FAILED
+    if result.get("status") == "error":
+        console.print(f"[red]{rich_escape(str(result.get('error')))}[/red]")
+        return EXIT_RUN_FAILED
+    rows = result.get("positions", [])
+    if not rows:
+        console.print("[dim]No positions returned.[/dim]")
+        return EXIT_SUCCESS
+    table = Table(title=f"Positions · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False)
+    table.add_column("Account")
+    table.add_column("Symbol")
+    table.add_column("Type")
+    table.add_column("Qty", justify="right")
+    table.add_column("Avg Cost", justify="right")
+    table.add_column("Currency")
+    for row in rows:
+        table.add_row(
+            str(row.get("account") or ""),
+            str(row.get("local_symbol") or row.get("symbol") or ""),
+            str(row.get("sec_type") or ""),
+            str(row.get("position") or ""),
+            str(row.get("avg_cost") or ""),
+            str(row.get("currency") or ""),
+        )
+    console.print(table)
+    return EXIT_SUCCESS
+
+
+def cmd_connector_orders(
+    profile_id: Optional[str] = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+    include_executions: bool = False,
+) -> int:
+    """Print open orders from a connector profile."""
+    from src.trading.service import get_open_orders
+
+    try:
+        result = get_open_orders(
+            _profile_id(profile_id),
+            host=host,
+            port=port,
+            client_id=client_id,
+            account=account,
+            include_executions=include_executions,
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Connector orders failed:[/red] {exc}")
+        return EXIT_RUN_FAILED
+    if result.get("status") == "error":
+        console.print(f"[red]{rich_escape(str(result.get('error')))}[/red]")
+        return EXIT_RUN_FAILED
+    orders = result.get("open_orders", [])
+    if not orders:
+        console.print("[dim]No open orders returned.[/dim]")
+        return EXIT_SUCCESS
+    table = Table(title=f"Open Orders · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False)
+    table.add_column("Account")
+    table.add_column("Symbol")
+    table.add_column("Action")
+    table.add_column("Type")
+    table.add_column("Qty", justify="right")
+    table.add_column("Limit", justify="right")
+    table.add_column("Status")
+    for row in orders:
+        contract = row.get("contract") or {}
+        order = row.get("order") or row
+        order_status = row.get("status") or {}
+        table.add_row(
+            str(order.get("account") or ""),
+            str(contract.get("local_symbol") or contract.get("symbol") or ""),
+            str(order.get("action") or ""),
+            str(order.get("order_type") or ""),
+            str(order.get("total_quantity") or ""),
+            str(order.get("limit_price") or ""),
+            str(order_status.get("status") or ""),
+        )
+    console.print(table)
+    return EXIT_SUCCESS
+
+
+def cmd_connector_quote(
+    symbol: str,
+    profile_id: Optional[str] = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    sec_type: str = "STK",
+) -> int:
+    """Print a quote from a connector profile."""
+    from src.trading.service import get_quote
+
+    try:
+        result = get_quote(
+            symbol,
+            _profile_id(profile_id),
+            host=host,
+            port=port,
+            client_id=client_id,
+            account=account,
+            exchange=exchange,
+            currency=currency,
+            sec_type=sec_type,
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Connector quote failed:[/red] {exc}")
+        return EXIT_RUN_FAILED
+    if result.get("status") == "error":
+        console.print(f"[red]{rich_escape(str(result.get('error')))}[/red]")
+        return EXIT_RUN_FAILED
+    quote = result.get("quote", {})
+    table = Table(title=f"Quote {result.get('symbol', symbol)} · {result.get('profile_id')}", box=box.SIMPLE_HEAVY)
+    table.add_column("Bid", justify="right")
+    table.add_column("Ask", justify="right")
+    table.add_column("Last", justify="right")
+    table.add_column("Close", justify="right")
+    table.add_column("Volume", justify="right")
+    table.add_row(
+        str(quote.get("bid") or ""),
+        str(quote.get("ask") or ""),
+        str(quote.get("last") or ""),
+        str(quote.get("close") or ""),
+        str(quote.get("volume") or ""),
+    )
+    console.print(table)
+    return EXIT_SUCCESS
+
+
+def cmd_connector_history(
+    symbol: str,
+    profile_id: Optional[str] = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    sec_type: str = "STK",
+    duration: str = "30 D",
+    bar_size: str = "1 day",
+    what_to_show: str = "TRADES",
+    use_rth: bool = True,
+    period: str = "1d",
+    limit: int = 90,
+) -> int:
+    """Print historical bars from a connector profile."""
+    from src.trading.service import get_history
+
+    try:
+        result = get_history(
+            symbol,
+            _profile_id(profile_id),
+            host=host,
+            port=port,
+            client_id=client_id,
+            account=account,
+            exchange=exchange,
+            currency=currency,
+            sec_type=sec_type,
+            duration=duration,
+            bar_size=bar_size,
+            what_to_show=what_to_show,
+            use_rth=use_rth,
+            period=period,
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Connector history failed:[/red] {exc}")
+        return EXIT_RUN_FAILED
+    if result.get("status") == "error":
+        console.print(f"[red]{rich_escape(str(result.get('error')))}[/red]")
+        return EXIT_RUN_FAILED
+    rows = result.get("bars", [])
+    if not rows:
+        console.print("[dim]No historical bars returned.[/dim]")
+        return EXIT_SUCCESS
+    table = Table(title=f"History {result.get('symbol', symbol)} · {result.get('profile_id')}", box=box.SIMPLE_HEAVY)
+    table.add_column("Date")
+    table.add_column("Open", justify="right")
+    table.add_column("High", justify="right")
+    table.add_column("Low", justify="right")
+    table.add_column("Close", justify="right")
+    table.add_column("Volume", justify="right")
+    for row in rows[-20:]:
+        table.add_row(
+            str(row.get("date") or ""),
+            str(row.get("open") or ""),
+            str(row.get("high") or ""),
+            str(row.get("low") or ""),
+            str(row.get("close") or ""),
+            str(row.get("volume") or ""),
+        )
+    console.print(table)
+    return EXIT_SUCCESS
+
+
+def _live_profile_connector(
+    profile_id: Optional[str],
+    *,
+    require_runner: bool = False,
+) -> tuple[int, Optional[str]]:
+    """Resolve a profile to a live-capable connector key."""
+    try:
+        profile = _selected_profile_or(profile_id)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR, None
+    if profile.environment != "live" or profile.transport != "remote_mcp":
+        console.print(f"[red]{profile.id} is not a live remote MCP connector profile.[/red]")
+        return EXIT_USAGE_ERROR, None
+    if require_runner:
+        from src.trading.service import profile_supports_live_runner
+
+        if not profile_supports_live_runner(profile):
+            console.print(f"[red]{profile.id} does not support live runner management.[/red]")
+            return EXIT_USAGE_ERROR, None
+    return EXIT_SUCCESS, profile.connector
+
+
+def cmd_connector_authorize(profile_id: Optional[str]) -> int:
+    """Authorize a remote MCP connector profile."""
+    code, broker = _live_profile_connector(profile_id)
+    if code != EXIT_SUCCESS or broker is None:
+        return code
+    return cmd_live_authorize(broker)
+
+
+def cmd_connector_status(profile_id: Optional[str]) -> int:
+    """Show connector status."""
+    try:
+        profile = _selected_profile_or(profile_id)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    if profile.environment == "live" and profile.transport == "remote_mcp":
+        check_code = cmd_connector_check(profile.id)
+        if check_code != EXIT_SUCCESS:
+            return check_code
+        return cmd_live_status(profile.connector)
+    return cmd_connector_check(profile.id)
+
+
+def cmd_connector_start(profile_id: Optional[str]) -> int:
+    """Start a live remote MCP connector runner."""
+    code, broker = _live_profile_connector(profile_id, require_runner=True)
+    if code != EXIT_SUCCESS or broker is None:
+        return code
+    return cmd_live_start(broker)
+
+
+def cmd_connector_stop(profile_id: Optional[str]) -> int:
+    """Stop a live remote MCP connector runner."""
+    code, broker = _live_profile_connector(profile_id, require_runner=True)
+    if code != EXIT_SUCCESS or broker is None:
+        return code
+    return cmd_live_stop(broker)
+
+
+def cmd_connector_halt(profile_id: Optional[str]) -> int:
+    """Trip the halt switch for a live remote MCP connector profile."""
+    code, broker = _live_profile_connector(profile_id, require_runner=True)
+    if code != EXIT_SUCCESS or broker is None:
+        return code
+    return cmd_live_halt(broker)
+
+
+def cmd_connector_resume(profile_id: Optional[str]) -> int:
+    """Clear the halt switch for a live remote MCP connector profile."""
+    code, broker = _live_profile_connector(profile_id, require_runner=True)
+    if code != EXIT_SUCCESS or broker is None:
+        return code
+    return cmd_live_resume(broker)
+
+
+def cmd_connector_revoke(profile_id: Optional[str]) -> int:
+    """Revoke a live remote MCP connector profile."""
+    code, broker = _live_profile_connector(profile_id)
+    if code != EXIT_SUCCESS or broker is None:
+        return code
+    return cmd_live_revoke(broker)
+
+
+def _dispatch_connector(args: argparse.Namespace) -> int:
+    """Route parsed ``connector`` subcommands."""
+    sub = getattr(args, "connector_command", None)
+    if sub == "list":
+        return cmd_connector_list()
+    if sub == "use":
+        return cmd_connector_use(args.profile)
+    if sub == "configure":
+        return cmd_connector_configure(
+            args.profile,
+            host=args.host,
+            port=args.port,
+            client_id=args.client_id,
+            account=args.account,
+            yes=args.yes,
+        )
+    if sub == "check":
+        return cmd_connector_check(
+            args.profile,
+            host=args.host,
+            port=args.port,
+            client_id=args.client_id,
+            account=args.account,
+        )
+    if sub == "account":
+        return cmd_connector_account(
+            args.profile,
+            host=args.host,
+            port=args.port,
+            client_id=args.client_id,
+            account=args.account,
+        )
+    if sub == "positions":
+        return cmd_connector_positions(
+            args.profile,
+            host=args.host,
+            port=args.port,
+            client_id=args.client_id,
+            account=args.account,
+        )
+    if sub == "orders":
+        return cmd_connector_orders(
+            args.profile,
+            host=args.host,
+            port=args.port,
+            client_id=args.client_id,
+            account=args.account,
+            include_executions=args.include_executions,
+        )
+    if sub == "quote":
+        return cmd_connector_quote(
+            args.symbol,
+            args.profile,
+            host=args.host,
+            port=args.port,
+            client_id=args.client_id,
+            account=args.account,
+            exchange=args.exchange,
+            currency=args.currency,
+            sec_type=args.sec_type,
+        )
+    if sub == "history":
+        return cmd_connector_history(
+            args.symbol,
+            args.profile,
+            host=args.host,
+            port=args.port,
+            client_id=args.client_id,
+            account=args.account,
+            exchange=args.exchange,
+            currency=args.currency,
+            sec_type=args.sec_type,
+            duration=args.duration,
+            bar_size=args.bar_size,
+            what_to_show=args.what_to_show,
+            use_rth=not args.no_rth,
+            period=args.period,
+            limit=args.bar_limit,
+        )
+    if sub == "authorize":
+        return cmd_connector_authorize(args.profile)
+    if sub == "status":
+        return cmd_connector_status(args.profile)
+    if sub == "start":
+        return cmd_connector_start(args.profile)
+    if sub == "stop":
+        return cmd_connector_stop(args.profile)
+    if sub == "halt":
+        return cmd_connector_halt(args.profile)
+    if sub == "resume":
+        return cmd_connector_resume(args.profile)
+    if sub == "revoke":
+        return cmd_connector_revoke(args.profile)
+    console.print("[red]connector requires a subcommand.[/red] Try: vibe-trading connector list")
     return EXIT_USAGE_ERROR
 
 
@@ -3345,6 +4251,30 @@ def _build_parser() -> argparse.ArgumentParser:
     provider_subparsers = provider_parser.add_subparsers(dest="provider_command")
     login_parser = provider_subparsers.add_parser("login", help="Authenticate with an OAuth provider")
     login_parser.add_argument("provider", help="OAuth provider name, e.g. openai-codex")
+    provider_subparsers.add_parser("doctor", help="Print redacted provider diagnostics")
+
+    channels_parser = subparsers.add_parser("channels", help="Manage IM channel adapters")
+    channels_subparsers = channels_parser.add_subparsers(dest="channels_command")
+    channels_status = channels_subparsers.add_parser("status", help="Show IM channel status")
+    channels_status.add_argument("--json", dest="channels_json", action="store_true", help="Print JSON")
+    channels_status.add_argument("--local", action="store_true", help="Inspect local config without contacting the API")
+    channels_start = channels_subparsers.add_parser("start", help="Start configured IM channels through the API")
+    channels_start.add_argument("--json", dest="channels_json", action="store_true", help="Print JSON")
+    channels_stop = channels_subparsers.add_parser("stop", help="Stop configured IM channels through the API")
+    channels_stop.add_argument("--json", dest="channels_json", action="store_true", help="Print JSON")
+    channels_login = channels_subparsers.add_parser("login", help="Run a channel adapter login hook")
+    channels_login.add_argument("channel_name", help="Channel name, e.g. weixin, feishu, whatsapp")
+    channels_login.add_argument("--force", action="store_true", help="Ignore existing credentials where supported")
+    channels_pairing = channels_subparsers.add_parser("pairing", help="Manage IM sender pairing")
+    channels_pairing.add_argument("--channel", default="telegram", help="Channel context for list/revoke commands")
+    channels_pairing.add_argument(
+        "pairing_command",
+        nargs="?",
+        default="list",
+        choices=["list", "approve", "deny", "revoke"],
+        help="Pairing command",
+    )
+    channels_pairing.add_argument("pairing_args", nargs="*", help="Pairing command arguments")
 
     list_parser = subparsers.add_parser("list", help="List runs")
     list_parser.add_argument("--limit", dest="list_limit", type=int, default=20, help="Maximum number of runs")
@@ -3356,6 +4286,40 @@ def _build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--max-iter", dest="chat_max_iter", type=int, default=50, help="Maximum agent iterations")
 
     subparsers.add_parser("init", help="Interactive setup: create ~/.vibe-trading/.env")
+
+    # Cross-platform frontend setup. See cmd_setup() for details.
+    setup_parser = subparsers.add_parser(
+        "setup",
+        help="Install frontend dependencies and build the production bundle",
+    )
+    setup_parser.add_argument(
+        "--frontend-dir",
+        default=str(AGENT_DIR.parent / "frontend"),
+        help="Path to the frontend directory (default: <repo>/frontend)",
+    )
+
+    # Cross-platform dev mode. See cmd_dev() for details.
+    dev_parser = subparsers.add_parser(
+        "dev",
+        help="Start backend + frontend dev servers in one process",
+    )
+    dev_parser.add_argument(
+        "--port",
+        type=int,
+        default=8899,
+        help="Backend port (default: 8899)",
+    )
+    dev_parser.add_argument(
+        "--frontend-port",
+        type=int,
+        default=5899,
+        help="Vite dev server port, must match vite.config.ts (default: 5899)",
+    )
+    dev_parser.add_argument(
+        "--frontend-dir",
+        default=str(AGENT_DIR.parent / "frontend"),
+        help="Path to the frontend directory (default: <repo>/frontend)",
+    )
 
     memory_parser = subparsers.add_parser("memory", help="Inspect persistent memory")
     memory_subparsers = memory_parser.add_subparsers(dest="memory_command")
@@ -3381,69 +4345,89 @@ def _build_parser() -> argparse.ArgumentParser:
     memory_forget_parser.add_argument("name", help="Memory title or filename stem")
     memory_forget_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
-    # Live trading channel (SPEC.md §9 Decision 1). Every verb is a privileged
-    # user-side action; there is intentionally NO `live commit` verb.
-    live_parser = subparsers.add_parser("live", help="Manage the live trading channel")
-    live_subparsers = live_parser.add_subparsers(dest="live_command")
+    connector_parser = subparsers.add_parser("connector", help="Manage trading connector profiles")
+    connector_subparsers = connector_parser.add_subparsers(dest="connector_command")
 
-    live_authorize = live_subparsers.add_parser(
-        "authorize", help="Desktop OAuth bootstrap — opens browser, turns the channel on"
-    )
-    live_authorize.add_argument("live_broker", metavar="broker", help="Broker key, e.g. robinhood")
+    connector_subparsers.add_parser("list", help="List selectable connector profiles")
 
-    live_run = live_subparsers.add_parser(
-        "run", help="Run the persistent runner in the foreground (Ctrl+C to stop)"
-    )
-    live_run.add_argument(
-        "live_broker", metavar="broker", nargs="?", default=None, help="Broker key (default: robinhood)"
-    )
+    connector_use = connector_subparsers.add_parser("use", help="Select the default connector profile")
+    connector_use.add_argument("profile", help="Profile id, e.g. ibkr-paper-local")
 
-    live_start = live_subparsers.add_parser(
-        "start", help="Start the persistent runner in the background"
-    )
-    live_start.add_argument(
-        "live_broker", metavar="broker", nargs="?", default=None, help="Broker key (default: robinhood)"
-    )
+    def _add_connector_profile_arg(p: argparse.ArgumentParser, *, required: bool = False) -> None:
+        if required:
+            p.add_argument("profile", help="Connector profile id")
+        else:
+            p.add_argument("profile", nargs="?", default=None, help="Connector profile id (default: selected)")
 
-    live_stop = live_subparsers.add_parser(
-        "stop", help="Stop the persistent runner"
-    )
-    live_stop.add_argument(
-        "live_broker", metavar="broker", nargs="?", default=None, help="Broker key (default: robinhood)"
-    )
+    def _add_connector_local(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--host", default=None)
+        p.add_argument("--port", type=int, default=None)
+        p.add_argument("--client-id", dest="client_id", type=int, default=None)
+        p.add_argument("--account", default=None, help="Optional account code")
 
-    live_status = live_subparsers.add_parser(
-        "status", help="Show auth state, active mandate, and halt state (read-only)"
-    )
-    live_status.add_argument(
-        "live_broker", metavar="broker", nargs="?", default=None, help="Broker key (default: robinhood)"
-    )
+    def _add_connector_contract(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--exchange", default="SMART")
+        p.add_argument("--currency", default="USD")
+        p.add_argument("--sec-type", dest="sec_type", default="STK")
 
-    live_mandate = live_subparsers.add_parser(
-        "mandate", help="Print the committed mandate (read-only)"
-    )
-    live_mandate.add_argument(
-        "live_broker", metavar="broker", nargs="?", default=None, help="Broker key (default: robinhood)"
-    )
+    connector_configure = connector_subparsers.add_parser("configure", help="Configure a local connector profile")
+    _add_connector_profile_arg(connector_configure, required=True)
+    connector_configure.add_argument("--host", default="127.0.0.1")
+    connector_configure.add_argument("--port", type=int, default=None)
+    connector_configure.add_argument("--client-id", dest="client_id", type=int, default=77)
+    connector_configure.add_argument("--account", default=None)
+    connector_configure.add_argument("-y", "--yes", action="store_true", help="Overwrite without prompting")
 
-    live_halt = live_subparsers.add_parser(
-        "halt", help="Trip the kill switch (writes the HALT sentinel)"
-    )
-    live_halt.add_argument(
-        "live_broker", metavar="broker", nargs="?", default=None, help="Broker key (default: global)"
-    )
+    connector_check = connector_subparsers.add_parser("check", help="Check selected connector readiness")
+    _add_connector_profile_arg(connector_check)
+    _add_connector_local(connector_check)
 
-    live_resume = live_subparsers.add_parser(
-        "resume", help="Clear the halt (explicit privileged re-enable)"
-    )
-    live_resume.add_argument(
-        "live_broker", metavar="broker", nargs="?", default=None, help="Broker key (default: global)"
-    )
+    connector_status = connector_subparsers.add_parser("status", help="Show selected connector status")
+    _add_connector_profile_arg(connector_status)
 
-    live_revoke = live_subparsers.add_parser(
-        "revoke", help="Revoke OAuth token + delete mandate (full off)"
-    )
-    live_revoke.add_argument("live_broker", metavar="broker", help="Broker key, e.g. robinhood")
+    connector_authorize = connector_subparsers.add_parser("authorize", help="Authorize a remote MCP connector profile")
+    _add_connector_profile_arg(connector_authorize)
+
+    connector_account = connector_subparsers.add_parser("account", help="Read account summary")
+    _add_connector_profile_arg(connector_account)
+    _add_connector_local(connector_account)
+
+    connector_positions = connector_subparsers.add_parser("positions", help="Read current positions")
+    _add_connector_profile_arg(connector_positions)
+    _add_connector_local(connector_positions)
+
+    connector_orders = connector_subparsers.add_parser("orders", help="Read open orders")
+    _add_connector_profile_arg(connector_orders)
+    _add_connector_local(connector_orders)
+    connector_orders.add_argument("--include-executions", action="store_true")
+
+    connector_quote = connector_subparsers.add_parser("quote", help="Read a quote snapshot")
+    connector_quote.add_argument("symbol")
+    _add_connector_profile_arg(connector_quote)
+    _add_connector_local(connector_quote)
+    _add_connector_contract(connector_quote)
+
+    connector_history = connector_subparsers.add_parser("history", help="Read historical bars")
+    connector_history.add_argument("symbol")
+    _add_connector_profile_arg(connector_history)
+    _add_connector_local(connector_history)
+    _add_connector_contract(connector_history)
+    connector_history.add_argument("--duration", default="30 D", help="IBKR (local_tws) duration string")
+    connector_history.add_argument("--bar-size", dest="bar_size", default="1 day", help="IBKR (local_tws) bar size")
+    connector_history.add_argument("--what-to-show", dest="what_to_show", default="TRADES")
+    connector_history.add_argument("--no-rth", action="store_true", help="Include outside-regular-hours data when available")
+    connector_history.add_argument("--period", default="1d", help="Bar interval for SDK connectors: 1m/5m/15m/30m/1h/4h/1d/1w/1M")
+    connector_history.add_argument("--limit", dest="bar_limit", type=int, default=90, help="Number of bars for SDK connectors")
+
+    for name, help_text in (
+        ("start", "Start the selected live connector runner"),
+        ("stop", "Stop the selected live connector runner"),
+        ("halt", "Trip the selected live connector kill switch"),
+        ("resume", "Clear the selected live connector kill switch"),
+        ("revoke", "Revoke the selected live connector OAuth token and mandate"),
+    ):
+        p = connector_subparsers.add_parser(name, help=help_text)
+        _add_connector_profile_arg(p)
 
     # Alpha Zoo subcommands (registered via cli_handlers.add_subparser)
     from src.factors.cli_handlers import add_subparser as _add_alpha_subparser
@@ -3511,7 +4495,7 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "key_env": "OPENAI_API_KEY",
         "base_env": "OPENAI_BASE_URL",
         "base_url": "https://api.openai.com/v1",
-        "model": "gpt-5.5-instant",
+        "model": "gpt-5.5",
         "key_prefix": "sk-",
         "key_placeholder": "sk-...",
     },
@@ -3571,7 +4555,7 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "key_env": "MINIMAX_API_KEY",
         "base_env": "MINIMAX_BASE_URL",
         "base_url": "https://api.minimax.io/v1",
-        "model": "MiniMax-M2.7",
+        "model": "MiniMax-M3",
         "key_prefix": None,
         "key_placeholder": "api-key...",
     },
@@ -3906,6 +4890,273 @@ def cmd_init() -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Cross-platform frontend setup / dev commands.
+#
+# These exist to bridge a real Windows footgun: the package's frontend uses
+# TypeScript, but `npx tsc` on Windows does NOT resolve the locally-installed
+# TypeScript binary. Instead, npx hits the npm registry and downloads an
+# abandoned 10-year-old package called `tsc@2.0.4` that prints
+# "This is not the tsc command you are looking for". The fix is to always
+# invoke TypeScript via `npm exec --package=typescript tsc ...` (or
+# `npx --package=typescript tsc ...`) on Windows; on POSIX, `npm run build`
+# already works because npm prepends ./node_modules/.bin to PATH for local
+# scripts.
+# ---------------------------------------------------------------------------
+
+
+def _is_windows() -> bool:
+    """True when running on a Windows-like platform (win32, including Cygwin/MSYS)."""
+    return sys.platform == "win32"
+
+
+def _resolve_node_and_npm() -> tuple[Optional[str], Optional[str]]:
+    """Return ``(node_path, npm_path)`` if both are on PATH, else ``(None, None)``.
+
+    Used by ``cmd_setup`` to fail fast with a clear message instead of
+    surfacing a cryptic ENOENT from npm itself.
+    """
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    return node, npm
+
+
+def _build_frontend_cmd(frontend_dir: Path) -> list[list[str]]:
+    """Return the ordered list of subprocess invocations needed to build the frontend.
+
+    On Windows we explicitly pin ``--package=typescript`` / ``--package=vite``
+    so npm cannot accidentally fetch the abandoned ``tsc`` package from the
+    registry. On POSIX systems, ``npm run build`` is sufficient because npm
+    prepends ``./node_modules/.bin`` to ``PATH`` for local scripts.
+
+    Each inner list is a single ``subprocess.run`` invocation. Returned as a
+    list of steps so the caller can stream progress.
+    """
+    is_win = _is_windows()
+    if is_win:
+        # `npm exec --package=typescript tsc -b` is the safe form on Windows;
+        # plain `npx tsc` will fetch the abandoned `tsc@2.0.4` package.
+        return [
+            ["npm", "install", "--no-audit", "--no-fund"],
+            ["npm", "exec", "--package=typescript", "--", "tsc", "-b"],
+            ["npm", "exec", "--package=vite", "--", "vite", "build"],
+        ]
+    return [
+        ["npm", "install", "--no-audit", "--no-fund"],
+        ["npm", "run", "build"],
+    ]
+
+
+def _run_step(
+    description: str,
+    cmd: list[str],
+    cwd: Path,
+) -> bool:
+    """Run one subprocess step, returning True on success.
+
+    Decodes subprocess output as UTF-8 with ``errors="replace"`` so that
+    non-ASCII bytes emitted by tools like Vite do not raise
+    ``UnicodeDecodeError`` on platforms whose default codec is GBK/CP936
+    (notably Windows). The captured text is only used to surface a
+    friendly error message; lossy decoding is acceptable here.
+    """
+    console.print(f"[dim]  {description} …[/dim]")
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]  failed:[/red] {exc}")
+        return False
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        # Show the last 20 lines to keep noise manageable.
+        tail = "\n".join(err.splitlines()[-20:]) if err else "(no output)"
+        console.print(f"[red]  {description} failed:[/red]\n{tail}")
+        return False
+    return True
+
+
+def cmd_setup(frontend_dir: Path) -> int:
+    """Install frontend dependencies and build the production bundle.
+
+    Cross-platform wrapper that hides the ``npx tsc`` / ``npm exec tsc``
+    Windows footgun. Equivalent to running ``cd frontend && npm install
+    && npm run build`` from a POSIX shell, but works on Windows without
+    the user having to know about the abandoned ``tsc`` package on the
+    npm registry.
+    """
+    console.print(
+        Panel(
+            f"[bold cyan]Vibe-Trading frontend setup[/bold cyan]\n"
+            f"[dim]{frontend_dir}[/dim]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+
+    if not frontend_dir.exists():
+        console.print(
+            f"[red]Frontend directory not found:[/red] {frontend_dir}\n"
+            "[dim]Pass --frontend-dir to point at a different location.[/dim]"
+        )
+        return EXIT_USAGE_ERROR
+
+    node, npm = _resolve_node_and_npm()
+    if not node or not npm:
+        missing = [name for name, path_ in (("node", node), ("npm", npm)) if not path_]
+        console.print(
+            f"[red]Required tool not on PATH:[/red] {', '.join(missing)}\n"
+            "[dim]Install Node.js (>= 18) from https://nodejs.org and retry.[/dim]"
+        )
+        return EXIT_USAGE_ERROR
+
+    # On Windows, ``npm`` is shipped as ``npm.cmd``; ``subprocess.run`` does
+    # not consult ``PATHEXT`` for bare command names, so it would raise
+    # ``FileNotFoundError`` even though ``shutil.which("npm")`` returned a
+    # valid path. Resolve to the full path before invoking.
+    npm_path = npm
+    if _is_windows():
+        steps = [
+            [npm_path, *step[1:]] if step and step[0] == "npm" else step
+            for step in _build_frontend_cmd(frontend_dir)
+        ]
+    else:
+        steps = _build_frontend_cmd(frontend_dir)
+    for step in steps:
+        description = " ".join(step[:3])  # e.g. "npm install --no-audit"
+        if not _run_step(description, step, frontend_dir):
+            return EXIT_RUN_FAILED
+
+    console.print(
+        Panel(
+            "[green]Frontend built.[/green]\n"
+            f"  Artifacts: [cyan]{frontend_dir / 'dist'}[/cyan]\n"
+            "[dim]Run [bold]vibe-trading serve[/bold] to serve everything on one port.[/dim]",
+            border_style="green",
+            padding=(0, 1),
+        )
+    )
+    return EXIT_SUCCESS
+
+
+def cmd_dev(
+    backend_port: int = 8899,
+    frontend_port: int = 5899,
+    frontend_dir: Optional[Path] = None,
+) -> int:
+    """Start backend + Vite dev server in one foreground process.
+
+    Spawns two child processes:
+
+    * The FastAPI backend, launched from ``AGENT_DIR`` so that
+      ``python -m cli._legacy serve`` resolves the in-repo ``cli`` package
+      (launching it from the repo root would fail with
+      ``ModuleNotFoundError: No module named 'cli'``).
+    * The Vite dev server, launched from ``frontend_dir`` with the port
+      from ``vite.config.ts`` (currently 5899). We do NOT hardcode
+      ``5173`` — that would be wrong for this project.
+
+    Both children inherit stdout/stderr so their logs are interleaved
+    with the dev banner. ``Ctrl+C`` (SIGINT) and ``SIGTERM`` cleanly
+    terminate both children.
+    """
+    frontend_dir = frontend_dir or (AGENT_DIR.parent / "frontend")
+    if not frontend_dir.exists():
+        console.print(
+            f"[red]Frontend directory not found:[/red] {frontend_dir}\n"
+            "[dim]Pass --frontend-dir to point at a different location.[/dim]"
+        )
+        return EXIT_USAGE_ERROR
+
+    node, npm = _resolve_node_and_npm()
+    if not node or not npm:
+        missing = [name for name, path_ in (("node", node), ("npm", npm)) if not path_]
+        console.print(
+            f"[red]Required tool not on PATH:[/red] {', '.join(missing)}\n"
+            "[dim]Install Node.js (>= 18) from https://nodejs.org and retry.[/dim]"
+        )
+        return EXIT_USAGE_ERROR
+
+    backend_cmd = [sys.executable, "-m", "cli._legacy", "serve", "--port", str(backend_port)]
+    # On Windows, ``npm`` is typically ``npm.cmd``. ``subprocess.Popen`` does
+    # not consult ``PATHEXT`` for bare command names, so the call would fail
+    # with ``FileNotFoundError`` even though ``shutil.which("npm")`` returned
+    # a path. Use the resolved executable path directly.
+    npm_executable = npm if _is_windows() else "npm"
+    frontend_cmd = [npm_executable, "run", "dev", "--", "--port", str(frontend_port)]
+
+    console.print(
+        Panel(
+            f"[bold cyan]Vibe-Trading dev[/bold cyan]\n"
+            f"  Backend  → [cyan]http://127.0.0.1:{backend_port}[/cyan]  "
+            f"(cwd: {AGENT_DIR})\n"
+            f"  Frontend → [cyan]http://localhost:{frontend_port}[/cyan]  "
+            f"(cwd: {frontend_dir})",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    console.print("[dim]Press Ctrl+C to stop both servers.[/dim]\n")
+
+    backend = subprocess.Popen(backend_cmd, cwd=str(AGENT_DIR))
+    frontend = subprocess.Popen(frontend_cmd, cwd=str(frontend_dir))
+    children = [backend, frontend]
+
+    def _terminate_all() -> None:
+        for child in children:
+            if child.poll() is None:
+                try:
+                    child.terminate()
+                except OSError:
+                    pass
+
+    # Wire signal handlers. On Windows, SIGTERM does not exist and signal
+    # handlers must be installed from the main thread; KeyboardInterrupt is
+    # the cross-platform path for Ctrl+C.
+    if threading.current_thread() is threading.main_thread():
+        try:
+            signal.signal(signal.SIGINT, lambda *_: _terminate_all())
+        except (ValueError, OSError):
+            pass
+        try:
+            signal.signal(signal.SIGTERM, lambda *_: _terminate_all())
+        except (AttributeError, ValueError, OSError):
+            pass
+
+    try:
+        # Wait for whichever process exits first; if it's the backend we
+        # bring the frontend down too, and vice versa.
+        while True:
+            time.sleep(0.5)
+            if backend.poll() is not None or frontend.poll() is not None:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _terminate_all()
+        # Give the children a brief grace period, then force-kill.
+        deadline = time.time() + 5
+        for child in children:
+            remaining = max(0.0, deadline - time.time())
+            try:
+                child.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                try:
+                    child.kill()
+                except OSError:
+                    pass
+
+    return EXIT_SUCCESS
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint returning a process exit code."""
     raw_argv = list(sys.argv[1:] if argv is None else argv)
@@ -3921,13 +5172,29 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init":
         return cmd_init()
+    if args.command == "setup":
+        return _coerce_exit_code(
+            cmd_setup(frontend_dir=Path(args.frontend_dir))
+        )
+    if args.command == "dev":
+        return _coerce_exit_code(
+            cmd_dev(
+                backend_port=args.port,
+                frontend_port=args.frontend_port,
+                frontend_dir=Path(args.frontend_dir),
+            )
+        )
     if args.command == "serve":
         return serve_main(raw_argv[1:])
     if args.command == "provider":
         if args.provider_command == "login":
             return cmd_provider_login(args.provider)
-        console.print("[red]provider requires a subcommand.[/red] Try: vibe-trading provider login openai-codex")
+        if args.provider_command == "doctor":
+            return cmd_provider_doctor()
+        console.print("[red]provider requires a subcommand.[/red] Try: vibe-trading provider doctor")
         return EXIT_USAGE_ERROR
+    if args.command == "channels":
+        return _coerce_exit_code(_dispatch_channels(args))
     if args.command == "run":
         return _handle_prompt_command(
             args.run_prompt,
@@ -3948,8 +5215,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "hypothesis":
         from src.hypotheses.cli_handlers import dispatch as _hyp_dispatch
         return _coerce_exit_code(_hyp_dispatch(args))
-    if args.command == "live":
-        return _coerce_exit_code(_dispatch_live(args))
+    if args.command == "connector":
+        return _coerce_exit_code(_dispatch_connector(args))
     if args.command == "memory":
         if args.memory_command == "list":
             return _coerce_exit_code(cmd_memory_list(args.memory_type))

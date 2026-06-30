@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastmcp.client.client import CallToolResult
@@ -39,7 +38,7 @@ from src.config.schema import (
 from src.live.mandate.model import MANDATE_SCHEMA_VERSION
 from src.live.order_guard import LiveOrderGuardTool
 from src.live.registry import is_live_broker, wrap_live_broker_tools
-from src.live.robinhood_classification import ROBINHOOD_TOOL_CLASS
+from src.trading.connectors.robinhood.classification import ROBINHOOD_TOOL_CLASS
 from src.live.classification import ToolClass
 from src.tools.mcp import MCPRemoteTool, build_mcp_tool_wrappers
 
@@ -295,14 +294,14 @@ def test_should_register_live_channel_headless_with_cached_token(live_runtime: P
     cache = str(live_runtime / "live" / "robinhood" / "oauth")
     url = "https://agent.robinhood.com/mcp/trading"
 
-    # Seed a token entry the way FastMCP's FileTreeStore lays one out: a file
-    # under the <cache>/mcp-oauth-token/ collection directory. (A slash-free key
-    # is used because that is how an entry actually materializes on disk.)
+    # Seed a token entry using FastMCP's URL-derived token key. The key contains
+    # slashes/colon in the logical store API, but the FileTreeStore backend must
+    # persist it as a filesystem-safe cache-local filename.
     async def _seed_token() -> None:
         store = _build_token_store(cache)
         await store.put(
             collection="mcp-oauth-token",
-            key="cached_tokens",
+            key=f"{url}/tokens",
             value={"access_token": "cached"},
         )
 

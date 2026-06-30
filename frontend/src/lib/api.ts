@@ -73,8 +73,14 @@ function appendQueryParam(url: string, key: string, value: string): string {
 
 export const api = {
   uploadFile,
-  listRuns: () => request<RunListItem[]>("/runs"),
-  getRun: (id: string) => request<RunData>(`/runs/${id}`),
+  listRuns: (limit?: number) => request<RunListItem[]>(`/runs${limit ? `?limit=${encodeURIComponent(String(limit))}` : ""}`),
+  getRun: (id: string, params: RunDetailParams = {}) => {
+    const q = new URLSearchParams();
+    if (params.chart_payload) q.set("chart_payload", params.chart_payload);
+    if (params.chart_symbol) q.set("chart_symbol", params.chart_symbol);
+    const qs = q.toString();
+    return request<RunData>(`/runs/${id}${qs ? `?${qs}` : ""}`);
+  },
   getRunCode: (id: string) => request<Record<string, string>>(`/runs/${id}/code`),
   getRunPine: (id: string) => request<PineScriptResult>(`/runs/${id}/pine`),
   listSessions: () => request<SessionItem[]>("/sessions"),
@@ -123,6 +129,8 @@ export const api = {
   swarmSseUrl: (id: string) => withAuthQuery(`${BASE}/swarm/runs/${id}/events`),
   cancelSwarmRun: (id: string) =>
     request<{ status: string }>(`/swarm/runs/${id}/cancel`, { method: "POST" }),
+  retrySwarmRun: (id: string) =>
+    request<{ id: string; status: string; preset_name: string }>(`/swarm/runs/${id}/retry`, { method: "POST" }),
   getLLMSettings: () => request<LLMSettings>("/settings/llm"),
   updateLLMSettings: (settings: UpdateLLMSettingsRequest) =>
     request<LLMSettings>("/settings/llm", {
@@ -134,6 +142,14 @@ export const api = {
     request<DataSourceSettings>("/settings/data-sources", {
       method: "PUT",
       body: JSON.stringify(settings),
+    }),
+  getChannelStatus: () => request<ChannelRuntimeStatus>("/channels/status"),
+  startChannels: () => request<ChannelRuntimeActionResponse>("/channels/start", { method: "POST" }),
+  stopChannels: () => request<ChannelRuntimeActionResponse>("/channels/stop", { method: "POST" }),
+  runChannelPairingCommand: (body: ChannelPairingCommandRequest) =>
+    request<ChannelPairingCommandResponse>("/channels/pairing/command", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
 
   // Alpha Zoo API
@@ -155,32 +171,44 @@ export const api = {
     }),
   alphaBenchStreamUrl: (jobId: string) =>
     withAuthQuery(`${BASE}/alpha/bench/${encodeURIComponent(jobId)}/stream`),
+  createAlphaCompare: (body: AlphaCompareRequest) =>
+    request<{ status: string; job_id: string }>("/alpha/compare", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  alphaCompareStreamUrl: (jobId: string) =>
+    withAuthQuery(`${BASE}/alpha/compare/${encodeURIComponent(jobId)}/stream`),
 
-  // Live trading channel — privileged surface actions (NOT agent tools).
+  // Connector runtime channel — privileged surface actions (NOT agent tools).
   // commit is the ONLY action that writes a mandate; halt trips the kill switch.
   commitMandate: (body: CommitMandateRequest) =>
     request<CommitMandateResponse>("/mandate/commit", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  haltLive: (session_id: string) =>
+  haltLive: (session_id?: string, broker?: string, reason?: string) =>
     request<HaltLiveResponse>("/live/halt", {
       method: "POST",
-      body: JSON.stringify({ session_id }),
+      body: JSON.stringify({ session_id, broker, reason }),
     }),
   // Read the persistent runtime status across all authorized brokers (SPEC §7.5).
   // Polled by the RunnerStatus panel; a plain authenticated GET, never a chat message.
-  getLiveStatus: () => request<LiveStatus>("/live/status"),
+  getLiveStatus: (signal?: AbortSignal) => request<LiveStatus>("/live/status", { signal }),
+  authorizeLive: (broker: string) =>
+    request<LiveAuthorizeResponse>("/live/authorize", {
+      method: "POST",
+      body: JSON.stringify({ broker }),
+    }),
   // Start/stop the persistent runner (SPEC §7.5). Privileged surface actions, not agent tools.
-  startLiveRunner: (broker?: string) =>
+  startLiveRunner: (broker: string) =>
     request<LiveRunnerResponse>("/live/runner/start", {
       method: "POST",
-      body: JSON.stringify(broker ? { broker } : {}),
+      body: JSON.stringify({ broker }),
     }),
-  stopLiveRunner: (broker?: string) =>
+  stopLiveRunner: (broker: string) =>
     request<LiveRunnerResponse>("/live/runner/stop", {
       method: "POST",
-      body: JSON.stringify(broker ? { broker } : {}),
+      body: JSON.stringify({ broker }),
     }),
 };
 
@@ -227,6 +255,7 @@ export interface LLMSettings {
   timeout_seconds: number;
   max_retries: number;
   reasoning_effort: string;
+  sse_timeout_seconds: number;
   env_path: string;
   providers: LLMProviderOption[];
 }
@@ -257,6 +286,40 @@ export interface UpdateDataSourceSettingsRequest {
   clear_tushare_token?: boolean;
 }
 
+export interface ChannelAdapterStatus {
+  name: string;
+  display_name: string;
+  configured: boolean;
+  enabled: boolean;
+  available: boolean;
+  loaded: boolean;
+  running: boolean;
+  error?: string;
+  install_hint?: string;
+}
+
+export interface ChannelRuntimeStatus {
+  running: boolean;
+  inbound_queue: number;
+  outbound_queue: number;
+  session_count: number;
+  channels: Record<string, ChannelAdapterStatus>;
+}
+
+export interface ChannelRuntimeActionResponse extends ChannelRuntimeStatus {
+  status: string;
+}
+
+export interface ChannelPairingCommandRequest {
+  channel: string;
+  command: string;
+}
+
+export interface ChannelPairingCommandResponse {
+  channel: string;
+  reply: string;
+}
+
 // --- Types matching backend API contracts ---
 
 export interface RunListItem {
@@ -269,6 +332,11 @@ export interface RunListItem {
   codes?: string[];
   start_date?: string;
   end_date?: string;
+}
+
+export interface RunDetailParams {
+  chart_payload?: "summary";
+  chart_symbol?: string;
 }
 
 export interface PriceBar {
@@ -359,6 +427,7 @@ export interface RunData {
   run_card?: RunCard;
   validation?: ValidationData;
 
+  chart_symbols?: string[];
   price_series?: Record<string, PriceBar[]>;
   indicator_series?: Record<string, Record<string, IndicatorPoint[]>>;
   trade_markers?: TradeMarker[];
@@ -671,7 +740,44 @@ export interface AlphaBenchResult {
   by_theme: Record<string, { alive: number; reversed: number; dead: number }>;
 }
 
-// --- Live trading channel types ---
+export interface AlphaCompareRequest {
+  alpha_ids: string[];
+  universe: string;
+  period: string;
+  /** One of: ir | ic_mean | ic_positive_ratio | ic_count (default ir). */
+  sort?: string;
+}
+
+export interface AlphaCompareRow {
+  rank: number;
+  id: string;
+  zoo: string;
+  ic_mean: number;
+  ic_std: number;
+  ir: number;
+  ic_positive_ratio: number;
+  ic_count: number;
+  /** `delta_<sort>_vs_best` — gap to the top-ranked alpha on the active metric. */
+  [deltaKey: string]: number | string;
+}
+
+export interface AlphaCompareSkip {
+  id: string;
+  reason: string;
+}
+
+export interface AlphaCompareResult {
+  universe: string;
+  period: string;
+  sort: string;
+  n_compared: number;
+  n_skipped: number;
+  winner: string;
+  ranking: AlphaCompareRow[];
+  skipped: AlphaCompareSkip[];
+}
+
+// --- Connector runtime channel types ---
 
 /** One mandate profile inside a `mandate.proposal` event (SPEC Consent §1). */
 export interface MandateProfile {
@@ -724,7 +830,7 @@ export interface MandateCommitted {
 
 /** Payload of the `live.halted` SSE event (SPEC Consent §4). */
 export interface LiveHalted {
-  broker?: string;
+  broker?: string | null;
   tripped_at?: string;
   by?: string;
   reason?: string;
@@ -743,6 +849,7 @@ export interface LiveAction {
 }
 
 export interface CommitMandateRequest {
+  broker: string;
   proposal_id: string;
   selected_ordinal: number;
   /** Present only on the adjust path (SPEC Consent §3); null otherwise. */
@@ -750,6 +857,8 @@ export interface CommitMandateRequest {
   /** Explicit affirmative consent; the surface sets it on the user's click. */
   consent_ack: boolean;
   session_id?: string;
+  account_ref?: string;
+  lifetime_days?: number;
 }
 
 export interface CommitMandateResponse {
@@ -763,54 +872,84 @@ export interface CommitMandateResponse {
 }
 
 export interface HaltLiveResponse {
-  status: string;
-  tripped_at?: string;
+  halted: boolean;
+  broker?: string | null;
+  reason: string;
+  sentinel: string;
+}
+
+export interface LiveAuthorizeRequest {
+  broker: string;
+}
+
+export interface LiveAuthorizeResponse {
+  broker: string;
+  connector_profile: string;
+  oauth_token_present: boolean;
+  instruction: string;
+  note?: string;
 }
 
 /** Mandate limits surfaced inside a `GET /live/status` broker entry (SPEC §7.5). */
 export interface LiveMandateLimits {
-  max_order_usd?: number;
-  daily_trade_cap?: number;
-  leverage?: string | number;
-  instruments?: string[];
-  universe?: string[] | string;
+  max_order_notional_usd?: number;
+  max_total_exposure_usd?: number;
+  max_leverage?: number;
+  max_trades_per_day?: number;
+  allowed_instruments?: string[];
+  account_funding_usd?: number;
   [key: string]: unknown;
 }
 
 /** Active mandate block of a `GET /live/status` broker entry. */
 export interface LiveMandateStatus {
+  broker?: string;
   mandate_id?: string;
+  account_ref?: string;
+  created_at?: string;
   limits?: LiveMandateLimits;
   /** ISO timestamp the mandate auto-expires (SPEC §7.5 #7 proactive expiry). */
   expires_at?: string;
+  expires_in_seconds?: number | null;
+  expired?: boolean;
 }
 
 /** Runner liveness block of a `GET /live/status` broker entry (SPEC §7.5 #3). */
 export interface LiveRunnerLiveness {
+  broker?: string;
   alive: boolean;
-  /** ISO timestamp of the last heartbeat tick; null if the runner never started. */
-  last_tick?: string | null;
+  /** Unix epoch seconds of the last heartbeat tick; null if the runner never started. */
+  last_tick?: number | string | null;
+  last_tick_age_seconds?: number | null;
+}
+
+export interface LiveBrokerAuthStatus {
+  broker: string;
+  oauth_token_present: boolean;
+  is_live_broker: boolean;
 }
 
 /** One broker entry in the `GET /live/status` response. */
 export interface LiveBrokerStatus {
-  broker: string;
-  authorized: boolean;
+  auth: LiveBrokerAuthStatus;
   mandate?: LiveMandateStatus | null;
   runner: LiveRunnerLiveness;
+  halted: boolean;
 }
 
 /** Response of `GET /live/status` (SPEC §7.5 runner status panel + C2). */
 export interface LiveStatus {
   brokers: LiveBrokerStatus[];
-  halted: boolean;
+  global_halted: boolean;
 }
 
 /** Response of `POST /live/runner/start|stop`. */
 export interface LiveRunnerResponse {
-  status: string;
-  broker?: string;
-  alive?: boolean;
+  broker: string;
+  started?: boolean;
+  already_running?: boolean;
+  stopped?: boolean;
+  was_running?: boolean;
 }
 
 export interface MessageItem {

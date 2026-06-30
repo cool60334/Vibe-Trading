@@ -34,17 +34,17 @@ from cli.theme import Theme, get_console
 
 
 def _register_live_slash_commands() -> None:
-    """Surface the live-trading slash commands in the shared registry.
+    """Surface connector live-trading slash commands in the shared registry.
 
-    Discoverability fix (SPEC.md Consent §4 + §9 audit): ``/live``, ``/halt`` and
-    ``/resume`` are privileged kill-switch / runner surface actions intercepted
+    Discoverability fix (SPEC.md Consent §4 + §9 audit): ``/connector``,
+    ``/halt`` and ``/resume`` are privileged kill-switch / runner surface actions intercepted
     in the REPL input path (never dispatched to the model), so they were absent
     from the slash registry — meaning ``/help``, the typeahead completer, and the
     fuzzy matcher never listed them. We append them here, at this module's import
     time, which runs on every interactive startup *before* the lazily-imported
     ``cli.commands.help`` / ``cli.completer`` first read the registry. Both of
     those read ``slash_router.SLASH_COMMANDS`` (help) / call ``match_commands``
-    (completer) which resolve the live module attribute, so the single
+    (completer) which resolve the connector module attribute, so the single
     reassignment here surfaces the commands in all three places.
 
     The registry is a tuple of frozen dataclasses, so we build a NEW tuple rather
@@ -56,7 +56,7 @@ def _register_live_slash_commands() -> None:
     existing = {cmd.name for cmd in slash_router.SLASH_COMMANDS}
     additions = (
         slash_router.Command(
-            "live", "Live trading channel (status / run / halt)", "cli.main"
+            "connector", "Trading connector profiles (status / start / halt)", "cli.main"
         ),
         slash_router.Command(
             "halt", "Kill switch — halt ALL live trading now", "cli.main"
@@ -68,7 +68,7 @@ def _register_live_slash_commands() -> None:
     new = tuple(cmd for cmd in additions if cmd.name not in existing)
     if not new:
         return
-    # Insert the live group just before ``quit`` (the conventional last row) so
+    # Insert the connector group just before ``quit`` (the conventional last row) so
     # the kill switch sits with the other safety-relevant commands.
     commands = list(slash_router.SLASH_COMMANDS)
     quit_idx = next(
@@ -272,12 +272,12 @@ def _show_banner() -> None:
     console = get_console()
     print_banner(console, **stats)
     # Discoverability one-liner (SPEC.md §9 audit): point users at the
-    # live-trading channel + its CLI surface. Live is opt-in and read-only by
+    # connector channel + its CLI surface. Live profiles are opt-in and read-only by
     # default, so this is a pointer, not an enablement.
     console.print(
         "  [dim]Live trading (opt-in, read-only by default): "
-        "[/dim][bold]/live[/bold][dim] in chat · "
-        "[/dim][bold]vibe-trading live --help[/bold][dim] · "
+        "[/dim][bold]/connector[/bold][dim] in chat · "
+        "[/dim][bold]vibe-trading connector --help[/bold][dim] · "
         "[/dim][bold]/halt[/bold][dim] = kill switch.[/dim]"
     )
     console.print()
@@ -339,6 +339,24 @@ def _session_store() -> Any:
 
         _SESSION_STORE_CACHE = SessionStore(base_dir=SESSIONS_DIR)
     return _SESSION_STORE_CACHE
+
+
+def _build_session_history(store: Any, session_id: str) -> list[dict]:
+    """Load and filter recent message history for a session.
+
+    Returns up to ``_HISTORY_RETAINED_TURNS`` user/assistant messages
+    with non-empty content.
+    """
+    try:
+        messages = store.get_messages(session_id, limit=_HISTORY_RETAINED_TURNS * 2)
+    except Exception:  # noqa: BLE001 — persistence error → empty history
+        return []
+    history = [
+        {"role": m.role, "content": m.content}
+        for m in messages
+        if m.role in {"user", "assistant"} and m.content.strip()
+    ]
+    return history[-_HISTORY_RETAINED_TURNS:]
 
 
 def _new_session(prompt_preview: str) -> Optional[str]:
@@ -441,18 +459,9 @@ def _maybe_resume_last_session(console: Any) -> Optional[Dict[str, Any]]:
     if choice not in {"r", "resume", "y", "yes"}:
         return None
 
-    try:
-        messages = store.get_messages(last.session_id, limit=_HISTORY_RETAINED_TURNS * 2)
-    except Exception:  # noqa: BLE001
-        messages = []
-    history = [
-        {"role": m.role, "content": m.content}
-        for m in messages
-        if m.role in {"user", "assistant"} and m.content.strip()
-    ]
     return {
         "session_id": last.session_id,
-        "history": history[-_HISTORY_RETAINED_TURNS:],
+        "history": _build_session_history(store, last.session_id),
         "title": title,
     }
 
@@ -811,7 +820,7 @@ def _trip_halt_from_repl(console: Any, *, reason: str) -> None:
         return
     console.print(
         "[bold red]Live trading halted[/bold red] — all live order tools are now "
-        "disabled until you run [bold]/resume[/bold] or [bold]vibe-trading live resume[/bold]."
+        "disabled until you run [bold]/resume[/bold] or [bold]vibe-trading connector resume[/bold]."
     )
     console.print(f"[dim]HALT sentinel: {path}[/dim]")
 
@@ -821,7 +830,7 @@ def _clear_halt_from_repl(console: Any) -> None:
 
     Clearing the halt is a privileged surface action — an explicit re-enable,
     never an agent tool (SPEC.md Consent §4). It is intercepted in the input
-    path so the model never performs it. Mirrors ``vibe-trading live resume``
+    path so the model never performs it. Mirrors ``vibe-trading connector resume``
     with no broker (the global scope).
 
     Args:
@@ -842,35 +851,35 @@ def _clear_halt_from_repl(console: Any) -> None:
         console.print("[dim]No active global halt to clear.[/dim]")
 
 
-def _run_live_command_from_repl(console: Any, args: list[str]) -> None:
-    """Run a ``/live ...`` subcommand from the REPL via the legacy dispatcher.
+def _run_connector_command_from_repl(console: Any, args: list[str]) -> None:
+    """Run a ``/connector ...`` subcommand from the REPL via the dispatcher.
 
-    ``/live`` is a thin in-REPL bridge to the ``vibe-trading live`` subcommand
-    group (SPEC.md §9 Decision 1): ``/live status``, ``/live run``,
-    ``/live start``, ``/live stop``, ``/live mandate``, etc. It parses the
+    ``/connector`` is a thin in-REPL bridge to the ``vibe-trading connector``
+    subcommand group (SPEC.md §9 Decision 1): ``/connector status``,
+    ``/connector start``, ``/connector stop``, ``/connector halt``, etc. It parses the
     arguments through the same argparse surface as the non-interactive CLI and
     dispatches to the same privileged handlers — none of which is an agent tool.
-    A bare ``/live`` defaults to ``status`` so the most common read is one
+    A bare ``/connector`` defaults to ``status`` so the most common read is one
     keystroke away.
 
     Args:
         console: Rich console for error messages.
-        args: Tokens following ``/live`` (e.g. ``["status", "robinhood"]``).
+        args: Tokens following ``/connector`` (e.g. ``["status", "robinhood-live-mcp"]``).
     """
-    from cli._legacy import _build_parser, _dispatch_live
+    from cli._legacy import _build_parser, _dispatch_connector
 
-    argv = ["live", *(args or ["status"])]
+    argv = ["connector", *(args or ["status"])]
     parser = _build_parser()
     try:
         parsed = parser.parse_args(argv)
     except SystemExit:
         # argparse already printed usage to stderr; keep the REPL alive.
-        console.print("[dim]Usage: /live [status|run|start|stop|mandate|halt|resume|revoke][/dim]")
+        console.print("[dim]Usage: /connector [list|status|start|stop|halt|resume|revoke][/dim]")
         return
     try:
-        _dispatch_live(parsed)
-    except Exception as exc:  # noqa: BLE001 — never let a live command kill the loop
-        console.print(f"[bold red]/live failed:[/bold red] {exc}")
+        _dispatch_connector(parsed)
+    except Exception as exc:  # noqa: BLE001 — never let a connector command kill the loop
+        console.print(f"[bold red]/connector failed:[/bold red] {exc}")
 
 
 def _is_numeric_pick(text: str) -> Optional[int]:
@@ -1047,8 +1056,13 @@ def _handle_proposal_reply(text: str, ctx: InteractiveContext) -> bool:
     return True
 
 
-def _interactive_loop(max_iter: int) -> int:
+def _interactive_loop(max_iter: int, resume_session_id: Optional[str] = None) -> int:
     """Drive the new interactive REPL.
+
+    Args:
+        max_iter: Maximum ReAct iterations per turn.
+        resume_session_id: If set, load this specific session instead of
+            prompting to resume the most recent one.
 
     Returns:
         Process exit code (always ``0`` on a clean exit).
@@ -1061,14 +1075,31 @@ def _interactive_loop(max_iter: int) -> int:
 
     ctx = InteractiveContext(max_iter=max_iter)
 
-    # Offer to resume the most recent session. Audit item 8.
-    resume = _maybe_resume_last_session(console)
-    if resume is not None:
-        ctx.session_id = resume["session_id"]
-        ctx.history = list(resume["history"])
+    if resume_session_id:
+        # Resume a specific session by ID (``vibe-trading resume <session-id>``).
+        try:
+            store = _session_store()
+            session = store.get_session(resume_session_id)
+        except Exception:  # noqa: BLE001
+            session = None
+        if session is None:
+            console.print(f"[red]Session {resume_session_id} not found[/red]")
+            return 1
+        ctx.session_id = resume_session_id
+        ctx.history = _build_session_history(store, resume_session_id)
         console.print(
-            f"[dim]Resumed session: {resume['title']} ({len(ctx.history)} prior turns)[/dim]"
+            f"[dim]Resumed session: {session.title or session.session_id} "
+            f"({len(ctx.history)} prior turns)[/dim]"
         )
+    else:
+        # Offer to resume the most recent session. Audit item 8.
+        resume = _maybe_resume_last_session(console)
+        if resume is not None:
+            ctx.session_id = resume["session_id"]
+            ctx.history = list(resume["history"])
+            console.print(
+                f"[dim]Resumed session: {resume['title']} ({len(ctx.history)} prior turns)[/dim]"
+            )
 
     # Build the prompt session once so history + completer persist.
     try:
@@ -1130,7 +1161,7 @@ def _interactive_loop(max_iter: int) -> int:
 
         # Slash command path.
         if text.startswith("/"):
-            # /halt /stop /resume /live are privileged live-trading surface
+            # /halt /stop /resume /connector are privileged live-trading surface
             # actions handled in the input path, never dispatched to the model
             # (SPEC.md Consent §4 / §9 Decision 1).
             slash_tokens = text.lstrip("/").split()
@@ -1142,8 +1173,8 @@ def _interactive_loop(max_iter: int) -> int:
             if slash_name == "resume":
                 _clear_halt_from_repl(console)
                 continue
-            if slash_name == "live":
-                _run_live_command_from_repl(console, slash_tokens[1:])
+            if slash_name == "connector":
+                _run_connector_command_from_repl(console, slash_tokens[1:])
                 continue
             rc = _dispatch_slash(text, ctx)
             if rc == 2:
@@ -1161,6 +1192,10 @@ def _interactive_loop(max_iter: int) -> int:
         _run_one_turn(text, ctx)
 
     console.print("[dim]Goodbye[/dim]")
+    if ctx.session_id:
+        console.print(
+            f"[dim]To resume this session:[/dim] [bold]vibe-trading resume {ctx.session_id}[/bold]"
+        )
     return 0
 
 
@@ -1199,6 +1234,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         # the new loop can read them directly without re-parsing argv.
         max_iter = _extract_max_iter(raw_argv, default=50)
         return _interactive_loop(max_iter)
+
+    # Handle ``vibe-trading resume <session-id>`` — enter the interactive
+    # loop with a specific session loaded, bypassing the legacy dispatcher.
+    if len(raw_argv) == 2 and raw_argv[0] == "resume":
+        max_iter = _extract_max_iter(raw_argv, default=50)
+        return _interactive_loop(max_iter=max_iter, resume_session_id=raw_argv[1])
 
     # Delegate every other path to the legacy dispatcher.
     try:
@@ -1293,6 +1334,40 @@ def _build_typer_app():  # type: ignore[no-untyped-def]
     @app.command("init", help="Re-run the interactive setup wizard.")
     def _init() -> None:
         run_onboarding(console=get_console())
+
+    @app.command("setup", help="Install frontend deps and build the production bundle (cross-platform).")
+    def _setup(
+        frontend_dir: str = typer.Option(
+            "frontend",
+            "--frontend-dir",
+            help="Path to the frontend directory (relative to repo root or absolute).",
+        ),
+    ) -> None:
+        sys.exit(main(["setup", "--frontend-dir", frontend_dir]))
+
+    @app.command("dev", help="Start backend + Vite dev server in one process.")
+    def _dev(
+        port: int = typer.Option(8899, "--port", help="Backend port."),
+        frontend_port: int = typer.Option(
+            5899,
+            "--frontend-port",
+            help="Vite dev server port (must match vite.config.ts).",
+        ),
+        frontend_dir: str = typer.Option("frontend", "--frontend-dir"),
+    ) -> None:
+        sys.exit(
+            main(
+                [
+                    "dev",
+                    "--port",
+                    str(port),
+                    "--frontend-port",
+                    str(frontend_port),
+                    "--frontend-dir",
+                    frontend_dir,
+                ]
+            )
+        )
 
     return app
 

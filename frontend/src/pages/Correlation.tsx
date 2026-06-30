@@ -1,3 +1,4 @@
+import i18n from '@/i18n';
 import { useState } from "react";
 import { BarChart3 } from "lucide-react";
 import { CorrelationMatrix } from "@/components/charts/CorrelationMatrix";
@@ -5,7 +6,7 @@ import { CorrelationMatrix } from "@/components/charts/CorrelationMatrix";
 const WINDOWS = [30, 60, 90, 180, 365] as const;
 
 export function Correlation() {
-  const [codes, setCodes] = useState("BTC-USDT,ETH-USDT,SPY,AAPL");
+  const [codes, setCodes] = useState("000001.SZ,600519.SH,000858.SZ,601318.SH");
   const [days, setDays] = useState<number>(90);
   const [method, setMethod] = useState<"pearson" | "spearman">("pearson");
   const [loading, setLoading] = useState(false);
@@ -24,7 +25,7 @@ export function Correlation() {
       setLabels(result.labels);
       setMatrix(result.matrix);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to compute correlation");
+      setError(e instanceof Error ? e.message : i18n.t("correlation.failedToCompute"));
     } finally {
       setLoading(false);
     }
@@ -35,28 +36,28 @@ export function Correlation() {
       {/* Header */}
       <div className="flex items-center gap-3">
         <BarChart3 className="h-6 w-6 text-primary" />
-        <h1 className="text-2xl font-bold">Correlation Matrix</h1>
+        <h1 className="text-2xl font-bold">{i18n.t("correlation.title")}</h1>
       </div>
 
       {/* Controls */}
       <div className="flex flex-col gap-4 border rounded-lg p-4">
         <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium">Asset codes</label>
+          <label className="text-sm font-medium">{i18n.t("correlation.assetCodes")}</label>
           <input
             type="text"
             value={codes}
             onChange={(e) => setCodes(e.target.value)}
-            placeholder="BTC-USDT,ETH-USDT,SPY"
+            placeholder="000001.SZ,600519.SH,000858.SZ"
             className="w-full px-3 py-2 rounded-md border bg-background text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Comma-separated ticker symbols, e.g. BTC-USDT,ETH-USDT,AAPL,SPY
+            {i18n.t("correlation.assetCodesHint")}
           </p>
         </div>
 
         <div className="flex flex-wrap gap-4">
           <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Window (days)</label>
+            <label className="text-sm font-medium">{i18n.t("correlation.windowDays")}</label>
             <div className="flex gap-1.5">
               {WINDOWS.map((w) => (
                 <button
@@ -75,7 +76,7 @@ export function Correlation() {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Method</label>
+            <label className="text-sm font-medium">{i18n.t("correlation.method")}</label>
             <div className="flex gap-1.5">
               {(["pearson", "spearman"] as const).map((m) => (
                 <button
@@ -87,7 +88,7 @@ export function Correlation() {
                       : "border-muted-foreground/30 hover:border-primary"
                   }`}
                 >
-                  {m}
+                  {i18n.t(`correlation.method_${m}`)}
                 </button>
               ))}
             </div>
@@ -99,7 +100,7 @@ export function Correlation() {
           disabled={loading}
           className="self-start px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
         >
-          {loading ? "Loading..." : "Compute"}
+          {loading ? i18n.t("correlation.loading") : i18n.t("correlation.compute")}
         </button>
       </div>
 

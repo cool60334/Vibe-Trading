@@ -12,7 +12,7 @@ never a mandate. Persisting a proposal grants zero trading authority — only th
 surface-side :func:`src.live.mandate.commit.commit_mandate` (unreachable from the
 agent loop) writes a mandate, and only after re-validating the selected profile
 still fits the ceilings the user saw. This is the structural "agent proposes,
-user disposes" guarantee (``docs/live-trading/SPEC.md`` §3, Consent §1).
+user disposes" guarantee (live-trading SPEC §3, Consent §1).
 """
 
 from __future__ import annotations

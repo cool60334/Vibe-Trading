@@ -4,7 +4,7 @@ All live-channel state is rooted at ``<runtime_root>/live`` (where
 ``runtime_root`` defaults to ``~/.vibe-trading``, the same root the swarm
 config and persistent memory resolve, via :func:`src.config.paths.get_runtime_root`).
 
-Layout (see ``docs/live-trading/SPEC.md`` §2)::
+Layout (see the live-trading SPEC §2)::
 
     <runtime_root>/live/robinhood/oauth/        # OAuth token cache (0700/0600)
     <runtime_root>/live/robinhood/mandate.json  # committed mandate (0600)

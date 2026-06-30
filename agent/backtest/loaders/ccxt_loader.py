@@ -15,7 +15,10 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from backtest.loaders.base import (
+    cached_loader_fetch,
     check_budget,
+    positive_env_float,
+    positive_env_int,
     retry_with_budget,
     validate_date_range,
 )
@@ -33,8 +36,8 @@ _INTERVAL_MAP = {
 # minutes. Cap each HTTP call, bound transient retries, and enforce a hard
 # wall-clock budget so the fetch fails fast instead of hanging. Retry
 # scheduling is delegated to :mod:`backtest.loaders.base`.
-_CCXT_TIMEOUT_MS = int(os.getenv("CCXT_TIMEOUT_MS", "15000"))
-_CCXT_FETCH_BUDGET_S = float(os.getenv("CCXT_FETCH_BUDGET_S", "60"))
+_CCXT_TIMEOUT_MS = positive_env_int("CCXT_TIMEOUT_MS", 15_000)
+_CCXT_FETCH_BUDGET_S = positive_env_float("CCXT_FETCH_BUDGET_S", 60.0)
 
 
 def _first_proxy_env(*names: str) -> str:
@@ -116,16 +119,34 @@ class DataLoader:
         """
         validate_date_range(start_date, end_date)
 
-        exchange = self._get_exchange()
         timeframe = _INTERVAL_MAP.get(interval, "1d")
         since_ms = int(pd.Timestamp(start_date).timestamp() * 1000)
         end_ms = int((pd.Timestamp(end_date) + pd.Timedelta(days=1)).timestamp() * 1000)
+
+        # Build the exchange lazily so a full cache hit never imports ccxt or
+        # opens an exchange object.
+        exchange_holder: Dict[str, object] = {}
+
+        def get_exchange():
+            if "exchange" not in exchange_holder:
+                exchange_holder["exchange"] = self._get_exchange()
+            return exchange_holder["exchange"]
 
         result: Dict[str, pd.DataFrame] = {}
         for code in codes:
             try:
                 ccxt_symbol = code.replace("-", "/").upper()
-                df = self._fetch_one(exchange, ccxt_symbol, timeframe, since_ms, end_ms)
+                df = cached_loader_fetch(
+                    source=self.name,
+                    symbol=code,
+                    timeframe=interval,
+                    start_date=start_date,
+                    end_date=end_date,
+                    fields=None,
+                    fetch=lambda ccxt_symbol=ccxt_symbol: self._fetch_one(
+                        get_exchange(), ccxt_symbol, timeframe, since_ms, end_ms
+                    ),
+                )
                 if df is not None and not df.empty:
                     result[code] = df
             except Exception as exc:

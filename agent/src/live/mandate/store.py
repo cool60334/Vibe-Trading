@@ -8,7 +8,7 @@ separate parcel), which is not reachable from ``loop.py`` / ``worker.py`` /
 any ``BaseTool.execute()``. This mirrors the #142 swarm-config trust template:
 the protected file is resolved at boot from a fixed user-side path, never from
 caller input, agent tool args, or session ``variables`` (see
-``docs/live-trading/SPEC.md`` §3 trust invariant, Mandate §2).
+the live-trading SPEC §3 trust invariant, Mandate §2).
 
 Loading is fail-closed: a missing file, malformed JSON, or a structurally
 invalid record yields ``None`` so the enforcement gate (P5) denies all orders

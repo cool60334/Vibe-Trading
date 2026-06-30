@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
-"""Vibe-Trading MCP Server — expose 22 finance research tools to any MCP client.
+"""Vibe-Trading MCP Server — expose finance research tools to any MCP client.
 
 Works with OpenClaw, Claude Desktop, Cursor, and any MCP-compatible client.
-Zero API key required for HK/US/crypto markets (yfinance, OKX, AKShare are free).
+Zero API key required for HK/US/crypto research markets (yfinance, OKX,
+AKShare are free). Trading connector tools are profile-scoped and require the
+selected connector's own local app or OAuth setup.
+
+Surfaces 54 tools: skills, research goals, backtest/factor/options/pattern
+analysis, market data, fundamentals & capital-flow & news & discovery
+(get_fund_flow / get_dragon_tiger / get_northbound_flow / get_margin_trading /
+get_block_trades / get_shareholder_count / get_lockup_expiry / get_sector_info /
+get_research_reports / get_stock_news / get_sec_filings /
+get_financial_statements / get_options_chain / get_stock_profile /
+screen_market / search_symbol / get_macro_series / iwencai_search), read-only
+trading-connector reads, swarm orchestration, trade-journal and shadow-account
+analysis. Every exposed tool is read-only or research-only; no order-placing or
+order-cancelling tool is ever surfaced via MCP.
 
 Usage:
     python mcp_server.py                    # stdio transport (default)
@@ -26,11 +39,11 @@ Claude Desktop config:
 
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import json
 import logging
-import math
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -41,8 +54,16 @@ if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
 from fastmcp import Context, FastMCP
+from cli._version import __version__ as APP_VERSION
+from src.market_data import (
+    DEFAULT_MAX_ROWS,
+    cap_rows,
+    detect_source,
+    fetch_market_data_json,
+    get_loader,
+)
 
-mcp = FastMCP("Vibe-Trading")
+mcp = FastMCP("Vibe-Trading", version=APP_VERSION)
 
 logger = logging.getLogger(__name__)
 
@@ -622,6 +643,240 @@ def read_file(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Trading connector tools
+# ---------------------------------------------------------------------------
+
+
+def _trading_common_args(
+    *,
+    connection: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Build shared optional trading connector arguments."""
+    payload: dict[str, Any] = {}
+    if connection:
+        payload["connection"] = connection
+    if host:
+        payload["host"] = host
+    if port is not None:
+        payload["port"] = port
+    if client_id is not None:
+        payload["client_id"] = client_id
+    if account:
+        payload["account"] = account
+    return payload
+
+
+@mcp.tool
+def trading_connections() -> str:
+    """List selectable trading connector profiles.
+
+    The connector is the first-level choice. Paper/live is an attribute of each
+    profile under that connector.
+    """
+    registry = _get_registry()
+    return registry.execute("trading_connections", {})
+
+
+@mcp.tool
+def trading_select_connection(connection: str) -> str:
+    """Select the default trading connector profile for later trading_* calls.
+
+    Args:
+        connection: Profile id, e.g. ``ibkr-paper-local`` or ``robinhood-live-mcp``.
+    """
+    registry = _get_registry()
+    return registry.execute("trading_select_connection", {"connection": connection})
+
+
+@mcp.tool
+def trading_check(
+    connection: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+) -> str:
+    """Check whether a trading connector profile is configured and reachable.
+
+    This never places orders. For local profiles, it checks the user's local
+    app/socket. For remote MCP profiles, it reports config and OAuth-token
+    presence without returning secrets.
+
+    Args:
+        connection: Optional profile id. Defaults to the selected profile.
+        host: Optional local host override.
+        port: Optional local socket port override.
+        client_id: Optional local client id override.
+        account: Optional account code filter.
+    """
+    registry = _get_registry()
+    return registry.execute(
+        "trading_check",
+        _trading_common_args(connection=connection, host=host, port=port, client_id=client_id, account=account),
+    )
+
+
+@mcp.tool
+def trading_account(
+    connection: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+) -> str:
+    """Read account data from the selected trading connector profile.
+
+    Args:
+        connection: Optional profile id. Defaults to the selected profile.
+        host: Optional local host override.
+        port: Optional local socket port override.
+        client_id: Optional local client id override.
+        account: Optional account code filter.
+    """
+    registry = _get_registry()
+    return registry.execute(
+        "trading_account",
+        _trading_common_args(connection=connection, host=host, port=port, client_id=client_id, account=account),
+    )
+
+
+@mcp.tool
+def trading_positions(
+    connection: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+) -> str:
+    """Read positions from the selected trading connector profile.
+
+    Args:
+        connection: Optional profile id. Defaults to the selected profile.
+        host: Optional local host override.
+        port: Optional local socket port override.
+        client_id: Optional local client id override.
+        account: Optional account code filter.
+    """
+    registry = _get_registry()
+    return registry.execute(
+        "trading_positions",
+        _trading_common_args(connection=connection, host=host, port=port, client_id=client_id, account=account),
+    )
+
+
+@mcp.tool
+def trading_orders(
+    connection: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+    include_executions: bool = False,
+) -> str:
+    """Read open orders from the selected trading connector profile.
+
+    Read-only: this tool does not place, cancel, modify, or replace orders.
+
+    Args:
+        connection: Optional profile id. Defaults to the selected profile.
+        host: Optional local host override.
+        port: Optional local socket port override.
+        client_id: Optional local client id override.
+        account: Optional account code filter.
+        include_executions: Include recent executions when available.
+    """
+    params = _trading_common_args(connection=connection, host=host, port=port, client_id=client_id, account=account)
+    params["include_executions"] = include_executions
+    registry = _get_registry()
+    return registry.execute("trading_orders", params)
+
+
+@mcp.tool
+def trading_quote(
+    symbol: str,
+    connection: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    sec_type: str = "STK",
+) -> str:
+    """Read a quote snapshot from the selected trading connector profile.
+
+    Args:
+        symbol: Symbol such as AAPL.
+        connection: Optional profile id. Defaults to the selected profile.
+        host: Optional local host override.
+        port: Optional local socket port override.
+        client_id: Optional local client id override.
+        account: Optional account code filter.
+        exchange: Exchange routing, default SMART.
+        currency: Contract currency, default USD.
+        sec_type: Security type, default STK.
+    """
+    params = _trading_common_args(connection=connection, host=host, port=port, client_id=client_id, account=account)
+    params.update({"symbol": symbol, "exchange": exchange, "currency": currency, "sec_type": sec_type})
+    registry = _get_registry()
+    return registry.execute("trading_quote", params)
+
+
+@mcp.tool
+def trading_history(
+    symbol: str,
+    connection: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int | None = None,
+    account: str | None = None,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    sec_type: str = "STK",
+    duration: str = "30 D",
+    bar_size: str = "1 day",
+    what_to_show: str = "TRADES",
+    use_rth: bool = True,
+) -> str:
+    """Read historical bars from the selected trading connector profile.
+
+    Args:
+        symbol: Symbol such as AAPL.
+        connection: Optional profile id. Defaults to the selected profile.
+        host: Optional local host override.
+        port: Optional local socket port override.
+        client_id: Optional local client id override.
+        account: Optional account code filter.
+        exchange: Exchange routing, default SMART.
+        currency: Contract currency, default USD.
+        sec_type: Security type, default STK.
+        duration: IBKR duration string, default 30 D.
+        bar_size: IBKR bar size, default 1 day.
+        what_to_show: Data type, default TRADES.
+        use_rth: Use regular trading hours.
+    """
+    params = _trading_common_args(connection=connection, host=host, port=port, client_id=client_id, account=account)
+    params.update(
+        {
+            "symbol": symbol,
+            "exchange": exchange,
+            "currency": currency,
+            "sec_type": sec_type,
+            "duration": duration,
+            "bar_size": bar_size,
+            "what_to_show": what_to_show,
+            "use_rth": use_rth,
+        }
+    )
+    registry = _get_registry()
+    return registry.execute("trading_history", params)
+
+
+# ---------------------------------------------------------------------------
 # Swarm team tool
 # ---------------------------------------------------------------------------
 
@@ -756,29 +1011,13 @@ async def run_swarm(
 # Market data tool
 # ---------------------------------------------------------------------------
 
-DEFAULT_MAX_ROWS = 250
-
-_SOURCE_PATTERNS = [
-    (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "tushare"),
-    (re.compile(r"^[A-Z]+\.US$", re.I), "yfinance"),
-    (re.compile(r"^\d{3,5}\.HK$", re.I), "yfinance"),
-    (re.compile(r"^[A-Z]+-USDT$", re.I), "okx"),
-    (re.compile(r"^[A-Z]+/USDT$", re.I), "ccxt"),
-]
-
-
 def _detect_source(code: str) -> str:
-    for pattern, source in _SOURCE_PATTERNS:
-        if pattern.match(code):
-            return source
-    return "tushare"
+    return detect_source(code)
 
 
 def _get_loader(source: str):
     """Get loader class via registry with fallback support."""
-    from backtest.loaders.registry import get_loader_cls_with_fallback
-
-    return get_loader_cls_with_fallback(source)
+    return get_loader(source)
 
 
 def _cap_rows(records: list, max_rows: int) -> list | dict[str, object]:
@@ -792,23 +1031,7 @@ def _cap_rows(records: list, max_rows: int) -> list | dict[str, object]:
     cap are returned unchanged (plain list) — small queries are
     byte-identical.
     """
-    n = len(records)
-    if max_rows < 0:
-        max_rows = DEFAULT_MAX_ROWS  # negative invalid -> enforce cap, never unbounded
-    if max_rows == 0 or n <= max_rows:
-        return records
-    step = math.ceil(n / max_rows)
-    sampled = records[::step]
-    if sampled[-1] is not records[-1]:
-        sampled = sampled + [records[-1]]
-    return {
-        "rows": n,
-        "returned": len(sampled),
-        "truncated": True,
-        "policy": f"every-{step}th-row (even stride; last bar pinned)",
-        "hint": "narrow the date range, coarsen interval, or set max_rows=0 for all rows",
-        "data": sampled,
-    }
+    return cap_rows(records, max_rows)
 
 
 @mcp.tool
@@ -826,6 +1049,8 @@ def get_market_data(
     - "yfinance": HK/US equities (free, e.g. AAPL.US, 700.HK)
     - "okx": cryptocurrency (free, e.g. BTC-USDT, ETH-USDT)
     - "tushare": China A-shares (requires TUSHARE_TOKEN, e.g. 000001.SZ)
+    - "baostock": China A-shares via TCP protocol, bypasses HTTP CDN blocks (e.g. 000001.SZ, 601595.SH)
+    - "tencent": China A-shares via Tencent Finance API (e.g. 000001.SZ, 601595.SH)
     - "akshare": A-shares, US, HK, futures, forex (free, e.g. 000001.SZ, AAPL.US)
     - "ccxt": crypto from 100+ exchanges (free, e.g. BTC/USDT)
     - "auto": auto-detect based on symbol format (with fallback)
@@ -834,7 +1059,7 @@ def get_market_data(
         codes: List of symbols (e.g. ["AAPL.US", "BTC-USDT", "000001.SZ"]).
         start_date: Start date (YYYY-MM-DD).
         end_date: End date (YYYY-MM-DD).
-        source: Data source ("auto", "yfinance", "okx", "tushare", "akshare", "ccxt").
+        source: Data source ("auto", "yfinance", "okx", "tushare", "baostock", "tencent", "akshare", "ccxt").
         interval: Bar size (1m/5m/15m/30m/1H/4H/1D, default "1D").
         max_rows: Per-symbol row cap (default 250) so the response stays
             within the MCP token budget. A symbol exceeding it returns an
@@ -842,47 +1067,436 @@ def get_market_data(
             plus truncation metadata. Set max_rows=0 for all rows
             (unbounded, legacy behavior).
     """
-    results = {}
+    return fetch_market_data_json(
+        codes=codes,
+        start_date=start_date,
+        end_date=end_date,
+        source=source,
+        interval=interval,
+        max_rows=max_rows,
+        loader_resolver=_get_loader,
+    )
 
-    if source == "auto":
-        groups: dict[str, list[str]] = {}
-        for code in codes:
-            src = _detect_source(code)
-            groups.setdefault(src, []).append(code)
-    else:
-        groups = {source: list(codes)}
 
-    for src, src_codes in groups.items():
-        loader_cls = _get_loader(src)
-        loader = loader_cls()
-        try:
-            data_map = loader.fetch(src_codes, start_date, end_date, interval=interval)
-        except Exception:
-            # A loader blow-up for one group must not lose already-resolved
-            # symbols or surface as an opaque MCP error; those codes fall
-            # through to _unresolved below (P05).
-            logger.exception("market-data loader %r failed for %s; codes fall through to _unresolved", src, src_codes)
-            data_map = {}
-        for symbol, df in data_map.items():
-            records = df.reset_index().to_dict(orient="records")
-            for r in records:
-                for k, v in r.items():
-                    if hasattr(v, "isoformat"):
-                        r[k] = v.isoformat()
-                    elif hasattr(v, "item"):
-                        r[k] = v.item()
-            results[symbol] = _cap_rows(records, max_rows)
+# ---------------------------------------------------------------------------
+# Read-only fundamentals, flow, news & discovery tools
+#
+# Each wrapper delegates to the auto-discovered local registry, exactly like
+# factor_analysis / pattern_recognition above. The registry returns a clean
+# JSON error envelope when a key-gated tool (get_macro_series needs
+# FRED_API_KEY, iwencai_search needs VIBE_TRADING_IWENCAI_KEY) is absent — see
+# ``_execute_key_gated`` below, which honours that contract even though the
+# tool is excluded from the registry by ``check_available()``. Every tool below
+# is strictly read-only data — no order/trading tool is ever surfaced via MCP.
+# ---------------------------------------------------------------------------
 
-    # P05: a typo / wrong-suffix / delisted / no-data symbol used to vanish
-    # silently (the dict only held winners), indistinguishable from "no data".
-    # Surface every requested code that produced nothing under a reserved key.
-    # Additive: omitted entirely when all codes resolved, so the happy-path
-    # payload is byte-identical to before.
-    unresolved = [c for c in codes if c not in results]
-    if unresolved:
-        results["_unresolved"] = unresolved
 
-    return json.dumps(results, ensure_ascii=False, indent=2)
+# Map of key-gated MCP tools to their concrete tool class. When the required
+# API key is unset the class' ``check_available()`` returns False, so the tool
+# is excluded from the auto-discovered registry and ``registry.execute`` would
+# answer with a generic "Tool not found". That contradicts the documented
+# contract above (a clean, env-var-named error). For these tools we therefore
+# fall through to the tool's own ``execute()`` — whose missing-key envelope
+# names the exact env var (``FRED_API_KEY`` / ``VIBE_TRADING_IWENCAI_KEY``).
+def _key_gated_tool_classes() -> dict[str, Any]:
+    """Return the {tool_name: tool_class} map for key-gated MCP tools.
+
+    Imported lazily so a missing optional dependency in either module degrades
+    to the registry path rather than breaking module import.
+
+    Returns:
+        Mapping of MCP tool name to its ``BaseTool`` subclass.
+    """
+    from src.tools.fred_macro_tool import FredMacroTool
+    from src.tools.iwencai_tool import IWenCaiSearchTool
+
+    return {
+        "get_macro_series": FredMacroTool,
+        "iwencai_search": IWenCaiSearchTool,
+    }
+
+
+def _execute_key_gated(name: str, params: dict[str, Any]) -> str:
+    """Run a key-gated read-only tool, preserving its env-var-named error.
+
+    Prefers the auto-discovered registry (present when the API key is set). When
+    the key is absent the tool is excluded from the registry, so we invoke its
+    concrete ``execute()`` directly to surface the documented missing-key error
+    that names the exact env var — never a generic "Tool not found".
+
+    Args:
+        name: MCP tool name (``get_macro_series`` or ``iwencai_search``).
+        params: Keyword arguments forwarded to the tool.
+
+    Returns:
+        The tool's JSON envelope as a string.
+    """
+    registry = _get_registry()
+    if registry.get(name) is not None:
+        return registry.execute(name, params)
+    tool_cls = _key_gated_tool_classes().get(name)
+    if tool_cls is None:
+        return registry.execute(name, params)
+    return tool_cls().execute(**params)
+
+
+@mcp.tool
+def get_fund_flow(codes: list[str], period: str = "daily", days: int = 30) -> str:
+    """Fetch order-bucket net capital inflow (main/super-large/large/medium/small).
+
+    Markets: A-share (.SH/.SZ/.BJ), Hong Kong (.HK) and US (.US). Use this to
+    gauge whether large/main-force money is flowing in or out, as daily history
+    or the current session's per-minute line. One unresolvable symbol is
+    reported per-symbol and does not abort the batch.
+
+    Args:
+        codes: Symbols with market suffix, e.g. ["600519.SH", "00700.HK"].
+        period: "daily" (daily net-inflow history) or "min" (per-minute line).
+        days: For period="daily", number of most-recent daily bars to keep.
+    """
+    registry = _get_registry()
+    return registry.execute("get_fund_flow", {"codes": codes, "period": period, "days": days})
+
+
+@mcp.tool
+def get_dragon_tiger(date: str, code: str | None = None) -> str:
+    """Fetch the A-share dragon-tiger board (龙虎榜) for a trade date (Eastmoney).
+
+    Markets: China A-share (SH/SZ). Omit ``code`` for the full-market list of
+    every security on the board that day; supply ``code`` to also get that
+    security's ranked top buy/sell brokerage seats. Read-only, no auth.
+
+    Args:
+        date: Trade date in YYYY-MM-DD format (e.g. 2024-01-02).
+        code: Optional A-share symbol or bare code (e.g. "600519.SH" or "600519").
+    """
+    params: dict[str, Any] = {"date": date}
+    if code:
+        params["code"] = code
+    registry = _get_registry()
+    return registry.execute("get_dragon_tiger", params)
+
+
+@mcp.tool
+def get_northbound_flow(lookback_days: int = 30) -> str:
+    """Fetch Northbound (Stock-Connect) net capital flow for China A-shares.
+
+    Returns the latest realtime net inflow plus recent daily history, split into
+    Shanghai-Connect (沪股通) and Shenzhen-Connect (深股通) channels (units: 10k
+    CNY) from Eastmoney. Read-only; China A-share market only.
+
+    Args:
+        lookback_days: Trailing trading days of daily net-inflow history to return.
+    """
+    registry = _get_registry()
+    return registry.execute("get_northbound_flow", {"lookback_days": lookback_days})
+
+
+@mcp.tool
+def get_margin_trading(code: str, days: int = 30) -> str:
+    """Fetch an A-share stock's daily margin-trading (融资融券) balances (Eastmoney).
+
+    Returns outstanding financing balance, financing buy amount,
+    securities-lending balance, and combined RZRQ balance, one row per trading
+    day (most recent first). Read-only, no credentials, A-shares only (SH/SZ).
+
+    Args:
+        code: A-share code: bare ("600519"), suffixed ("600519.SH"), or
+            exchange-prefixed ("sh600519").
+        days: Number of most-recent trading days to return.
+    """
+    registry = _get_registry()
+    return registry.execute("get_margin_trading", {"code": code, "days": days})
+
+
+@mcp.tool
+def get_block_trades(code: str, days: int = 30) -> str:
+    """Fetch recent A-share block trades (大宗交易) for one symbol (Eastmoney).
+
+    Returns per-deal price, volume, amount, the premium/discount versus that
+    day's close, and the buyer/seller broker seats (营业部). Markets: China
+    A-share only (.SH/.SZ/.BJ). Read-only.
+
+    Args:
+        code: A-share symbol with exchange suffix, e.g. "600519.SH", "830799.BJ".
+        days: Lookback window in calendar days ending today.
+    """
+    registry = _get_registry()
+    return registry.execute("get_block_trades", {"code": code, "days": days})
+
+
+@mcp.tool
+def get_shareholder_count(code: str, max_periods: int = 24) -> str:
+    """Fetch mainland A-share quarterly shareholder count (股东户数) (Eastmoney).
+
+    Returns holder count per report period, quarter-over-quarter change
+    (absolute and percent), and average holding (shares and market value) per
+    account. Markets: China A-shares only (.SH/.SZ/.BJ).
+
+    Args:
+        code: A-share symbol in <code>.<exchange> form (SH/SZ/BJ).
+        max_periods: Maximum number of most-recent report periods to return.
+    """
+    registry = _get_registry()
+    return registry.execute("get_shareholder_count", {"code": code, "max_periods": max_periods})
+
+
+@mcp.tool
+def get_lockup_expiry(code: str | None = None, horizon_days: int = 90) -> str:
+    """Fetch Chinese A-share lockup-expiry (restricted-share unlock, 限售解禁) data.
+
+    Pass an A-share ``code`` to get that stock's full historical unlock
+    schedule, or omit it for a market-wide calendar of upcoming unlocks within
+    the next ``horizon_days`` (Eastmoney). A large near-term unlock adds
+    tradable supply and often pressures the stock. Read-only.
+
+    Args:
+        code: A-share symbol (e.g. "600519", "600519.SH"). Omit for a
+            market-wide upcoming-unlock calendar.
+        horizon_days: Upcoming-unlock window in days for the market-wide
+            calendar; ignored when ``code`` is given (full history is returned).
+    """
+    params: dict[str, Any] = {"horizon_days": horizon_days}
+    if code:
+        params["code"] = code
+    registry = _get_registry()
+    return registry.execute("get_lockup_expiry", params)
+
+
+@mcp.tool
+def get_sector_info(code: str | None = None, mode: str = "membership", limit: int = 30) -> str:
+    """Look up Chinese A-share sector / concept board info (Eastmoney, no auth).
+
+    Two modes: (1) membership — given a stock ``code``, list the industry and
+    concept boards it belongs to; (2) ranking — set ``mode="ranking"`` to rank
+    industry boards by today's percent change (with up/down constituent counts
+    and the leading stock). Market: A-share stocks.
+
+    Args:
+        code: A-share stock symbol with market suffix. Required when
+            mode="membership"; ignored when mode="ranking".
+        mode: "membership" (default) or "ranking".
+        limit: For mode="ranking", number of top boards to return.
+    """
+    params: dict[str, Any] = {"mode": mode, "limit": limit}
+    if code:
+        params["code"] = code
+    registry = _get_registry()
+    return registry.execute("get_sector_info", params)
+
+
+@mcp.tool
+def get_research_reports(code: str, limit: int = 20) -> str:
+    """Fetch mainland A-share sell-side research coverage and consensus forecasts.
+
+    Returns recent broker research reports (title, brokerage, analyst, publish
+    date, rating) with each broker's per-year EPS and PE forecasts from
+    Eastmoney, plus the market consensus (mean) EPS forecast per forward fiscal
+    year from THS (同花顺). Markets: China A-shares only (.SH/.SZ/.BJ).
+
+    Args:
+        code: A-share symbol in <code>.<exchange> form (SH/SZ/BJ).
+        limit: Maximum number of most-recent research reports to return.
+    """
+    registry = _get_registry()
+    return registry.execute("get_research_reports", {"code": code, "limit": limit})
+
+
+@mcp.tool
+def get_stock_news(code: str | None = None, scope: str = "stock", limit: int = 20) -> str:
+    """Fetch recent financial news headlines, read-only and no auth.
+
+    Markets: China A-share (SH/SZ/BJ) headlines from Eastmoney; US (.US) and
+    Hong Kong (.HK) related-instrument matches from Yahoo Finance. Use scope
+    "stock" with a ``code`` for one security's headlines, or scope "global"
+    (no code) for broad China-market finance news.
+
+    Args:
+        code: Symbol whose news to fetch (e.g. "600519.SH", "AAPL.US").
+            Required when scope="stock"; ignored when scope="global".
+        scope: "stock" (default) or "global".
+        limit: Maximum number of headlines to return.
+    """
+    params: dict[str, Any] = {"scope": scope, "limit": limit}
+    if code:
+        params["code"] = code
+    registry = _get_registry()
+    return registry.execute("get_stock_news", params)
+
+
+@mcp.tool
+def get_sec_filings(
+    ticker: str,
+    form: str | None = None,
+    metric: str | None = None,
+    limit: int = 20,
+) -> str:
+    """Fetch U.S. SEC EDGAR filings or reported XBRL financials for a company.
+
+    Returns a list of recent filings (10-K / 10-Q / 8-K, etc.) with accession
+    number, filing and report dates, and the primary-document URL; or, when
+    ``metric`` is given, the reported XBRL us-gaap financial series for that
+    concept (e.g. Revenues, NetIncomeLoss, Assets). Markets: United States only.
+
+    Args:
+        ticker: U.S. equity ticker, case-insensitive (e.g. "AAPL").
+        form: Optional SEC form type filter (e.g. "10-K", "10-Q", "8-K").
+        metric: Optional XBRL us-gaap concept name (e.g. "Revenues").
+        limit: Maximum number of most-recent filings and metric points to return.
+    """
+    params: dict[str, Any] = {"ticker": ticker, "limit": limit}
+    if form:
+        params["form"] = form
+    if metric:
+        params["metric"] = metric
+    registry = _get_registry()
+    return registry.execute("get_sec_filings", params)
+
+
+@mcp.tool
+def get_financial_statements(code: str, statement: str = "indicators", period: str = "annual") -> str:
+    """Fetch a stock's financial statements or key per-period indicators.
+
+    Markets: A-share (.SH/.SZ/.BJ, via Sina), US (.US) and Hong Kong (.HK, via
+    Eastmoney). Reports come back newest-first as flat per-period rows. Use this
+    to read fundamentals before building a valuation or screen.
+
+    Args:
+        code: Single symbol with a market suffix (e.g. "600519.SH", "AAPL.US").
+        statement: "balance", "income", "cashflow", or "indicators".
+        period: "annual" or "quarter".
+    """
+    registry = _get_registry()
+    return registry.execute(
+        "get_financial_statements",
+        {"code": code, "statement": statement, "period": period},
+    )
+
+
+@mcp.tool
+def get_options_chain(ticker: str, expiration: int | None = None) -> str:
+    """Fetch the US-listed options chain (calls and puts) for one expiration.
+
+    Returns per-contract strike, bid/ask, last price, volume, open interest,
+    implied volatility, and in-the-money flag, plus the list of available
+    expirations (epoch seconds) via Yahoo Finance. Read-only US options data.
+
+    Args:
+        ticker: US underlying symbol (e.g. "AAPL" or "AAPL.US").
+        expiration: Optional expiration as Unix epoch seconds (one of the
+            returned expirations). Omit for the nearest expiration.
+    """
+    params: dict[str, Any] = {"ticker": ticker}
+    if expiration is not None:
+        params["expiration"] = expiration
+    registry = _get_registry()
+    return registry.execute("get_options_chain", params)
+
+
+@mcp.tool
+def get_stock_profile(ticker: str, sections: list[str] | None = None) -> str:
+    """Fetch a read-only company profile for a US or HK listing (Yahoo Finance).
+
+    Returns valuation key statistics, analyst price targets and
+    earnings/revenue estimates, institutional and insider ownership, and the
+    analyst recommendation trend. Use this for fundamentals and consensus
+    context, not for OHLCV price bars (use get_market_data).
+
+    Args:
+        ticker: US (bare or .US suffix) or HK (zero-padded .HK code) symbol.
+        sections: Profile sections to return, any of: key_stats, financials,
+            earnings_trend, institution_ownership, insider_holders,
+            recommendation_trend. Defaults to all sections.
+    """
+    params: dict[str, Any] = {"ticker": ticker}
+    clean_sections = _clean_list(sections)
+    if clean_sections:
+        params["sections"] = clean_sections
+    registry = _get_registry()
+    return registry.execute("get_stock_profile", params)
+
+
+@mcp.tool
+def screen_market(market: str, sort_by: str = "change_pct", top_n: int = 30) -> str:
+    """Screen a market's listed instruments and rank the top names by a metric.
+
+    Use this to find today's biggest movers or most-actively-traded names
+    without fetching every symbol. Markets: A-share ("a"), US ("us"), Hong
+    Kong ("hk").
+
+    Args:
+        market: Market universe: "a", "us", or "hk".
+        sort_by: Ranking metric (descending): "change_pct", "volume",
+            "amount", or "turnover".
+        top_n: Number of top-ranked instruments to return.
+    """
+    registry = _get_registry()
+    return registry.execute("screen_market", {"market": market, "sort_by": sort_by, "top_n": top_n})
+
+
+@mcp.tool
+def search_symbol(query: str, limit: int = 10) -> str:
+    """Resolve a company name or ticker fragment to candidate trading symbols.
+
+    Returns candidates with their market in the project's symbol convention
+    (A-shares 600519.SH, Hong Kong 00700.HK, U.S. AAPL.US, plus crypto/index/FX
+    from Yahoo). Searches Eastmoney and Yahoo and, for U.S. equities, attaches
+    the SEC CIK. Use this to turn an ambiguous name into a concrete symbol
+    before calling get_market_data or get_sec_filings.
+
+    Args:
+        query: Free-text company name or ticker fragment (Chinese or English).
+        limit: Maximum number of merged candidates to return.
+    """
+    registry = _get_registry()
+    return registry.execute("search_symbol", {"query": query, "limit": limit})
+
+
+@mcp.tool
+def get_macro_series(
+    series_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 2000,
+) -> str:
+    """Fetch a FRED macroeconomic time series from the St. Louis Fed.
+
+    Returns dated observations of indicators such as CPI (CPIAUCSL),
+    unemployment (UNRATE), real GDP (GDPC1), the federal funds rate (FEDFUNDS),
+    or the 10-year Treasury yield (DGS10). Markets: US / global macro data.
+    Requires a free FRED API key (FRED_API_KEY); without it the tool returns a
+    not-available error.
+
+    Args:
+        series_id: FRED series identifier (e.g. "CPIAUCSL", "UNRATE").
+        start_date: Inclusive window start, YYYY-MM-DD. Omit for full history.
+        end_date: Inclusive window end, YYYY-MM-DD. Omit for the latest date.
+        limit: Maximum number of most-recent observations to return.
+    """
+    params: dict[str, Any] = {"series_id": series_id, "limit": limit}
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    return _execute_key_gated("get_macro_series", params)
+
+
+@mcp.tool
+def iwencai_search(query: str, limit: int = 20) -> str:
+    """Run a natural-language A-share research query against iWenCai (问财).
+
+    iWenCai is a Chinese-market semantic stock screener. Phrase the question in
+    plain language (Chinese works best) and get back the matching China A-share
+    (SH/SZ) securities with the metric columns iWenCai parsed from the question.
+    Read-only; requires the VIBE_TRADING_IWENCAI_KEY access key (without it the
+    tool returns a not-available error).
+
+    Args:
+        query: Natural-language research question (Chinese phrasing yields the
+            best parse, e.g. "市盈率低于15的银行股").
+        limit: Maximum securities to return.
+    """
+    return _execute_key_gated("iwencai_search", {"query": query, "limit": limit})
 
 
 # ---------------------------------------------------------------------------
@@ -960,7 +1574,10 @@ def get_swarm_status(run_id: str) -> str:
         run_id: The run ID returned by run_swarm.
     """
     store = _get_swarm_store()
-    run = store.load_run(run_id)
+    try:
+        run = store.load_run(run_id)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
     if run is None:
         return json.dumps({"status": "error", "error": f"Run {run_id} not found"}, ensure_ascii=False)
     reconciled = store.reconcile_run(run, write=True)
@@ -984,7 +1601,10 @@ def get_run_result(run_id: str) -> str:
         run_id: The run ID returned by run_swarm.
     """
     store = _get_swarm_store()
-    run = store.load_run(run_id)
+    try:
+        run = store.load_run(run_id)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
     if run is None:
         return json.dumps({"status": "error", "error": f"Run {run_id} not found"}, ensure_ascii=False)
     reconciled = store.reconcile_run(run, write=True)
@@ -1045,6 +1665,63 @@ def reap_stale_runs() -> str:
     store = _get_swarm_store()
     reaped = store.reap_stale_running_runs()
     return json.dumps({"reaped": reaped}, ensure_ascii=False, indent=2)
+
+
+@mcp.tool
+def retry_run(run_id: str) -> str:
+    """Retry a failed, stale, or cancelled swarm run.
+
+    Re-launches a brand-new run with the same preset and variables as the
+    original; the original run is left untouched as a record. Use this after
+    spotting a ``failed`` or stale run via ``list_runs``. A still-``running``
+    run cannot be retried — cancel or reap it first.
+
+    Args:
+        run_id: ID of the run to retry (from ``list_runs`` / ``get_swarm_status``).
+
+    Returns:
+        JSON payload for the newly created run (``run_id`` / ``status`` /
+        ``preset`` …), or an ``error`` object if the run is missing or active.
+    """
+    from src.config import load_swarm_agent_config
+    from src.swarm.models import RunStatus
+    from src.swarm.runtime import SwarmRuntime
+
+    store = _get_swarm_store()
+    try:
+        loaded = store.load_run(run_id)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+    if loaded is None:
+        return json.dumps({"status": "error", "error": f"Run {run_id} not found"}, ensure_ascii=False)
+
+    # Reconcile first so a zombie "running" run whose host died is demoted
+    # before we gate on status; only a genuinely active run blocks retry.
+    reconciled = store.reconcile_run(loaded, write=True)
+    if reconciled.status == RunStatus.running:
+        return json.dumps(
+            {"status": "error", "error": "Cannot retry a running run. Cancel or reap it first."},
+            ensure_ascii=False,
+        )
+
+    agent_config = load_swarm_agent_config()
+    runtime = SwarmRuntime(store=store, agent_config=agent_config)
+    try:
+        new_run = runtime.start_run(
+            reconciled.preset_name,
+            reconciled.user_vars or {},
+            include_shell_tools=_include_shell_tools,
+        )
+    except FileNotFoundError as exc:
+        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": f"DAG validation failed: {exc}"}, ensure_ascii=False)
+
+    return json.dumps(
+        _build_run_payload(store, new_run.id, new_run.preset_name, timed_out=False),
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -119,6 +119,7 @@ def build_registry(
         StartResearchGoalTool,
         UpdateResearchGoalStatusTool,
     )
+    from src.tools.autopilot_tool import RunResearchAutopilotTool
     from src.tools.remember_tool import RememberTool
     from src.tools.swarm_tool import SwarmTool
 
@@ -128,6 +129,9 @@ def build_registry(
         AddGoalEvidenceTool,
         UpdateResearchGoalStatusTool,
     }
+    # Tools that need the host session id injected: they create or mutate the
+    # session's research goal, and the LLM never knows the session id.
+    session_injected_classes = goal_tool_classes | {RunResearchAutopilotTool}
     registry = ToolRegistry()
     for cls in _discover_subclasses():
         try:
@@ -139,10 +143,10 @@ def build_registry(
                 continue
             if cls is RememberTool and persistent_memory is not None:
                 registry.register(cls(memory=persistent_memory))
-            elif cls in goal_tool_classes:
+            elif cls in session_injected_classes:
                 registry.register(cls(default_session_id=session_id, event_callback=event_callback))
             elif cls is SwarmTool:
-                registry.register(cls(include_shell_tools=include_shell_tools))
+                registry.register(cls(include_shell_tools=include_shell_tools, event_callback=event_callback))
             else:
                 registry.register(cls())
         except Exception as exc:
@@ -193,15 +197,28 @@ def build_registry(
                     if not should_register_live_channel(
                         interactive=interactive, url=server_url, cache_dir=cache_dir
                     ):
+                        profile_hint = (
+                            "ibkr-live-official-mcp-readonly"
+                            if server_name.strip().lower() == "ibkr"
+                            else f"{server_name}-live-mcp"
+                        )
                         skip_msg = (
-                            f"Robinhood live channel configured but not authorized — "
-                            f"run `vibe-trading live authorize {server_name}` on a "
-                            f"desktop session"
+                            f"{server_name} live connector configured but not authorized — "
+                            f"run `vibe-trading connector authorize {profile_hint}` "
+                            f"on a desktop session"
                         )
                         logger.warning(skip_msg)
                         if warn_callback is not None:
                             warn_callback(skip_msg)
                         continue
+                    info_msg = (
+                        f"{server_name} live connector is available through trading_* tools; "
+                        "broker-specific MCP wrappers are hidden from the agent registry"
+                    )
+                    logger.info(info_msg)
+                    if warn_callback is not None:
+                        warn_callback(info_msg)
+                    continue
 
                 wrappers = build_mcp_tool_wrappers(
                     server_name,

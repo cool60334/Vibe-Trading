@@ -38,9 +38,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
+from src.live.advisory import (
+    AdvisoryContext,
+    AdvisoryOrchestrator,
+    Verdict,
+    get_advisory_providers,
+)
 from src.live.audit import LiveActionEvent, write_live_action
 from src.live.enforcement import (
     BREACH_KIND_INSTRUMENT,
@@ -55,20 +62,17 @@ from src.live.extractors import get_extractor
 from src.live.halt import halt_flag_set
 from src.live.mandate.model import MANDATE_SCHEMA_VERSION, Mandate
 from src.live.mandate.store import load_mandate
-from src.live.paths import broker_dir
+from src.live.daily_count import increment_daily_count, read_daily_count
 from src.tools.mcp import MCPRemoteTool, MCPRemoteToolSpec, MCPServerAdapter
 
 logger = logging.getLogger(__name__)
-
-_COUNTER_FILENAME = "trade_counter.json"
 
 #: Frozen marker key the api_server SSE relay reads off the returned tool_result
 #: to emit a ``live.action`` event without touching the agent loop.
 LIVE_ACTION_RESULT_KEY = "live_action"
 
-#: Canonical Robinhood READ tools the gate uses to snapshot positions/balance
-#: and (for quantity orders) a live quote. Pinned to the frozen catalog: READ =
-#: {get_account, get_positions, get_quotes, list_orders}.
+#: Fallback READ tools the gate uses to snapshot positions/balance and live
+#: quotes. Connector mappings in ``src.trading`` override these when available.
 _POSITIONS_TOOLS = ("get_positions",)
 _BALANCE_TOOLS = ("get_account",)
 _QUOTE_TOOLS = ("get_quotes",)
@@ -76,6 +80,12 @@ _QUOTE_TOOLS = ("get_quotes",)
 _DECISION_ALLOW = "allow"
 _DECISION_DENY = "deny"
 _DECISION_PAUSE = "pause_for_reauth"
+
+#: Environment variable controlling advisory review activation.
+#: Truthy values (case-insensitive): ``"1"``, ``"true"``, ``"yes"``.
+#: Default: off (advisory layer is purely observational and opt-in).
+_ADVISORY_ENABLED_ENV = "VIBE_TRADING_ENABLE_ADVISORY"
+_ADVISORY_TRUTHY = frozenset({"1", "true", "yes"})
 
 
 class LiveOrderGuardTool(MCPRemoteTool):
@@ -165,8 +175,8 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 mandate=mandate,
             )
 
-        positions = self._read_first(_POSITIONS_TOOLS)
-        balance = self._read_first(_BALANCE_TOOLS)
+        positions = self._read_first(self._read_tools("positions", _POSITIONS_TOOLS))
+        balance = self._read_first(self._read_tools("account", _BALANCE_TOOLS))
         daily_count = self._read_daily_count()
 
         breach = check_mandate(
@@ -180,7 +190,10 @@ class LiveOrderGuardTool(MCPRemoteTool):
         )
 
         if breach is None:
-            return self._allow(mandate=mandate, intent=intent, kwargs=kwargs)
+            return self._allow(
+                mandate=mandate, intent=intent, kwargs=kwargs,
+                positions=positions, balance=balance,
+            )
 
         if breach.kind in (BREACH_KIND_UNIVERSE, BREACH_KIND_INSTRUMENT):
             return self._deny_breach(breach, mandate=mandate, intent=intent, reauth=False)
@@ -274,7 +287,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
         Returns:
             A positive USD price, or ``None``.
         """
-        for remote in _QUOTE_TOOLS:
+        for remote in self._read_tools("quote", _QUOTE_TOOLS):
             try:
                 result = self._adapter.call_tool(
                     remote, {"symbol": symbol}, local_name=remote
@@ -291,7 +304,15 @@ class LiveOrderGuardTool(MCPRemoteTool):
 
     # -- decision helpers ---------------------------------------------------
 
-    def _allow(self, *, mandate: Mandate, intent: OrderIntent, kwargs: dict) -> str:
+    def _allow(
+        self,
+        *,
+        mandate: Mandate,
+        intent: OrderIntent,
+        kwargs: dict,
+        positions: object = None,
+        balance: object = None,
+    ) -> str:
         """Forward the order unchanged; consume a count + audit only on success.
 
         ``MCPServerAdapter.call_tool`` does NOT raise on broker/network failure —
@@ -308,6 +329,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
         under :data:`LIVE_ACTION_RESULT_KEY` so the api_server SSE relay can emit
         a ``live.action`` event without touching the agent loop (H5).
         """
+        advisory = self._advisory_review(intent, positions, balance, mandate)
         forwarded = super().execute(**kwargs)
         broker_response = self._safe_json(forwarded)
         is_error = self._is_error_envelope(broker_response)
@@ -319,6 +341,14 @@ class LiveOrderGuardTool(MCPRemoteTool):
             "max_leverage", "max_trades_per_day", "account_funding_usd",
             "universe_floors",
         ]
+        if advisory is not None:
+            checked.append("advisory")
+        gate_decision: dict[str, Any] = {
+            "allowed": True,
+            "decision": _DECISION_ALLOW,
+            "checked_limits": checked,
+            "advisory": advisory,
+        }
         if is_error:
             record = self._audit(
                 kind="order_rejected",
@@ -327,7 +357,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 intent=intent,
                 broker_request=dict(kwargs),
                 broker_response=broker_response,
-                gate_decision={"allowed": True, "decision": _DECISION_ALLOW, "checked_limits": checked},
+                gate_decision=gate_decision,
                 error=self._error_message(broker_response),
             )
         else:
@@ -340,9 +370,90 @@ class LiveOrderGuardTool(MCPRemoteTool):
                 intent=intent,
                 broker_request=dict(kwargs),
                 broker_response=broker_response,
-                gate_decision={"allowed": True, "decision": _DECISION_ALLOW, "checked_limits": checked},
+                gate_decision=gate_decision,
             )
         return self._embed_live_action(forwarded, record)
+
+    # -- advisory review (observational, never blocks) ----------------------
+
+    def _advisory_review(
+        self,
+        intent: OrderIntent,
+        positions: object,
+        balance: object,
+        mandate: Mandate,
+    ) -> dict | None:
+        """Run advisory providers if enabled; return verdict dict or None.
+
+        Returns None when advisory is disabled or no providers are configured.
+        Returns a dict with ``verdict``, ``concerns``, ``results`` keys otherwise.
+        Never raises — all exceptions are caught and converted to
+        REVIEW_UNAVAILABLE.
+        """
+        env_val = os.getenv(_ADVISORY_ENABLED_ENV, "").strip().lower()
+        if env_val not in _ADVISORY_TRUTHY:
+            return None
+
+        providers = get_advisory_providers()
+        if not providers:
+            logger.info(
+                "advisory enabled but no providers registered — skipping review"
+            )
+            return None
+
+        try:
+            from src.live.enforcement import (
+                account_balance_market_value,
+                coerce_position_rows,
+                positions_market_value,
+            )
+
+            equity = account_balance_market_value(balance) or 0.0
+            exposure = positions_market_value(positions) or 0.0
+            funding_usd = mandate.hard_caps.account_funding_usd
+
+            if equity > 0 and funding_usd > 0:
+                utilization = max(0.0, 1.0 - equity / funding_usd)
+            else:
+                utilization = 0.0
+
+            pos_rows = coerce_position_rows(positions)
+            open_count = len(pos_rows) if pos_rows is not None else 0
+
+            context = AdvisoryContext(
+                symbol=intent.symbol,
+                side=intent.side,
+                notional_usd=intent.notional_usd or 0.0,
+                account_equity=equity,
+                utilization_ratio=utilization,
+                open_position_count=open_count,
+                total_exposure_usd=exposure,
+                funding_usd=funding_usd,
+            )
+
+            orchestrator = AdvisoryOrchestrator(providers)
+            aggregated = orchestrator.review(context)
+            return {
+                "verdict": aggregated.verdict.value,
+                "concerns": list(aggregated.all_concerns),
+                "results": [
+                    {
+                        "verdict": r.verdict.value,
+                        "summary": r.summary,
+                        "concerns": list(r.concerns),
+                        "provider": r.provider,
+                        "confidence": r.confidence,
+                    }
+                    for r in aggregated.results
+                ],
+            }
+        except Exception as exc:
+            logger.warning("advisory review failed: %s", exc, exc_info=True)
+            return {
+                "verdict": Verdict.REVIEW_UNAVAILABLE.value,
+                "concerns": [],
+                "error": type(exc).__name__,
+            }
 
     def _deny(
         self,
@@ -474,45 +585,25 @@ class LiveOrderGuardTool(MCPRemoteTool):
             return result
         return None
 
+    def _read_tools(self, operation: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
+        """Return connector-specific read tools, falling back to legacy names."""
+        try:
+            from src.trading.service import runner_tool_name
+
+            remote = runner_tool_name(self.broker, operation)
+        except Exception:  # pragma: no cover - guard must fail closed later
+            remote = None
+        return (remote,) if remote else fallback
+
     # -- daily counter ------------------------------------------------------
 
-    def _counter_path(self):
-        """Return the per-broker ``trade_counter.json`` path."""
-        return broker_dir(self.broker) / _COUNTER_FILENAME
-
     def _read_daily_count(self) -> int:
-        """Return today's order count from the persisted counter (UTC rollover).
-
-        A missing/unreadable counter, or one stamped with a previous UTC date,
-        reads as ``0``. Parse failure reads as ``0`` (the count is advisory; the
-        broker enforces the hard ceiling).
-        """
-        path = self._counter_path()
-        if not path.is_file():
-            return 0
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return 0
-        if not isinstance(raw, dict) or raw.get("date") != _utc_today():
-            return 0
-        try:
-            return int(raw.get("count", 0))
-        except (TypeError, ValueError):
-            return 0
+        """Return today's order count via the shared per-broker counter."""
+        return read_daily_count(self.broker)
 
     def _increment_daily_count(self) -> None:
-        """Persist today's incremented order count (UTC rollover, atomic write)."""
-        today = _utc_today()
-        count = self._read_daily_count() + 1
-        path = self._counter_path()
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp = path.with_name(f".{path.name}.tmp")
-        tmp.write_text(
-            json.dumps({"date": today, "count": count}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        tmp.replace(path)
+        """Increment today's order count via the shared per-broker counter."""
+        increment_daily_count(self.broker)
 
     # -- audit + misc -------------------------------------------------------
 
@@ -710,11 +801,6 @@ def _price_from_quote_dict(quote: dict) -> float | None:
             if value == value and value > 0:  # finite + positive
                 return value
     return None
-
-
-def _utc_today() -> str:
-    """Return today's UTC calendar date as ``YYYY-MM-DD``."""
-    return datetime.now(timezone.utc).date().isoformat()
 
 
 def _describe_intent(intent: OrderIntent | None) -> str | None:

@@ -70,6 +70,7 @@ _LEDGER_FILENAME = "audit.jsonl"
 #: Canonical live-action kinds (SPEC §5).
 LiveActionKind = Literal[
     "order_placed",
+    "order_cancelled",
     "order_rejected",
     "mandate_committed",
     "breach",

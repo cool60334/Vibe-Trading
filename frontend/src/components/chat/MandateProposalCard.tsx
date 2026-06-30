@@ -1,3 +1,4 @@
+import i18n from '@/i18n';
 import { memo, useCallback, useState } from "react";
 import { ShieldCheck, ShieldAlert, Wallet, OctagonX, SlidersHorizontal, Check, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -89,32 +90,32 @@ function ProfileTile({
           onClick={onAdjustToggle}
           disabled={disabled}
           className="inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
-          title="Adjust this mandate"
+          title={i18n.t("mandate.adjustTitle")}
         >
           <SlidersHorizontal className="h-3 w-3" />
-          Adjust
+          {i18n.t("mandate.adjust")}
         </button>
       </div>
 
       <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
         <div className="col-span-2">
-          <dt className="text-muted-foreground">Universe</dt>
+          <dt className="text-muted-foreground">{i18n.t("mandate.universe")}</dt>
           <dd className="font-medium text-foreground">{formatUniverse(profile.universe)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">Max order</dt>
+          <dt className="text-muted-foreground">{i18n.t("mandate.maxOrder")}</dt>
           <dd className="font-mono font-medium text-foreground">{formatUsd(profile.max_order_usd)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">Daily cap</dt>
+          <dt className="text-muted-foreground">{i18n.t("mandate.dailyCap")}</dt>
           <dd className="font-mono font-medium text-foreground">{profile.daily_trade_cap} trades/day</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">Leverage</dt>
+          <dt className="text-muted-foreground">{i18n.t("mandate.leverage")}</dt>
           <dd className="font-medium text-foreground">{formatLeverage(profile.leverage)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">Instruments</dt>
+          <dt className="text-muted-foreground">{i18n.t("mandate.instruments")}</dt>
           <dd className="font-medium text-foreground">{profile.instruments.join(", ") || "—"}</dd>
         </div>
       </dl>
@@ -138,7 +139,7 @@ function ProfileTile({
                 onAdjustCancel();
               }
             }}
-            placeholder="e.g. keep this but raise the daily cap to 10"
+            placeholder={i18n.t("mandate.adjustPlaceholder")}
             className="w-full rounded-lg border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:ring-2 focus:ring-primary/30"
           />
           <div className="flex justify-end gap-2">
@@ -177,7 +178,7 @@ function ProfileTile({
 }
 
 /**
- * Renders a live-trading mandate proposal (SPEC Consent §1/§2).
+ * Renders a connector-runtime mandate proposal (SPEC Consent §1/§2).
  *
  * Each profile tile shows concrete numbers (universe, max order, daily cap, leverage,
  * instruments). Committing calls `api.commitMandate` — a privileged surface action,
@@ -191,9 +192,15 @@ export const MandateProposalCard = memo(function MandateProposalCard({ proposal,
   const handleCommit = useCallback(
     async (ordinal: number) => {
       if (busyOrdinal != null) return;
+      const broker = proposal.account?.broker?.trim().toLowerCase();
+      if (!broker) {
+        toast.error("Cannot commit mandate: connector broker is missing. Ask the agent to regenerate the proposal.");
+        return;
+      }
       setBusyOrdinal(ordinal);
       try {
         await api.commitMandate({
+          broker,
           proposal_id: proposal.proposal_id,
           selected_ordinal: ordinal,
           adjustments: null,
@@ -207,7 +214,7 @@ export const MandateProposalCard = memo(function MandateProposalCard({ proposal,
         toast.error(error instanceof Error ? error.message : "Failed to commit mandate.");
       }
     },
-    [busyOrdinal, proposal.proposal_id, proposal.session_id],
+    [busyOrdinal, proposal.account?.broker, proposal.proposal_id, proposal.session_id],
   );
 
   // Collapsed state: a compact active-mandate badge (same visual family as the goal badge).
@@ -254,7 +261,7 @@ export const MandateProposalCard = memo(function MandateProposalCard({ proposal,
           )}
           <div className="min-w-0">
             <p className="text-sm font-semibold text-foreground">
-              {isReauth ? "Re-authorize live mandate" : "Live trading mandate"}
+              {isReauth ? i18n.t("mandate.reauthMandate") : i18n.t("mandate.runtimeMandate")}
             </p>
             {proposal.intent_normalized && (
               <p className="text-xs text-muted-foreground">{proposal.intent_normalized}</p>

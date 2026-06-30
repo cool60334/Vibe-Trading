@@ -5,7 +5,7 @@ runtime from a server we do not control and are invite-gated, so classification
 must be driven by discovery data plus a maintainer-curated map, never a blind
 hardcoded name match that silently lets an unrecognized tool through. Every
 discovered tool resolves to exactly one of three classes via a strict
-precedence ladder (see ``docs/live-trading/SPEC.md`` §7.2):
+precedence ladder (see the live-trading SPEC §7.2):
 
 Tier 1 — MCP tool ``annotations`` (advisory, server-asserted):
     * ``readOnlyHint is True``  → READ
