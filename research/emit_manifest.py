@@ -57,6 +57,7 @@ from schemas import (  # noqa: E402
     DiagnosisBlock,
     FATAL_GATE_CHECKS,
     GATE_MAX_DRAWDOWN,
+    GATE_MIN_DEFLATED_SHARPE,
     GATE_MIN_PROFIT_FACTOR,
     GATE_MIN_SHARPE,
     GATE_MIN_TRADES,
@@ -176,7 +177,10 @@ def metrics_csv_to_backtest_metrics(
     )
 
 
-def compute_gate(backtest: BacktestBlock) -> GateBlock:
+def compute_gate(
+    backtest: BacktestBlock,
+    optimization: "OptimizationBlock | None" = None,
+) -> GateBlock:
     """Compute GateBlock from a BacktestBlock.
 
     When OOS metrics are present, evaluates thresholds against OOS (held-out)
@@ -184,7 +188,10 @@ def compute_gate(backtest: BacktestBlock) -> GateBlock:
     metrics and original thresholds unchanged.
 
     Args:
-        backtest: Assembled BacktestBlock (must have in_sample populated).
+        backtest:     Assembled BacktestBlock (must have in_sample populated).
+        optimization: Optional OptimizationBlock; when present and
+                      deflated_sharpe is not None, a non-fatal DSR threshold
+                      is appended.
 
     Returns:
         GateBlock with thresholds, overall_pass, fatal_fail, red_flags.
@@ -271,6 +278,17 @@ def compute_gate(backtest: BacktestBlock) -> GateBlock:
         passed=afi_passed,
         fatal=has_stress,
     ))
+
+    # ── deflated_sharpe (multiple-testing haircut; non-fatal) ───────────────────
+    if optimization is not None and optimization.deflated_sharpe is not None:
+        dsr_actual = optimization.deflated_sharpe
+        thresholds.append(GateThreshold(
+            name="deflated_sharpe",
+            threshold=GATE_MIN_DEFLATED_SHARPE,
+            actual=dsr_actual,
+            passed=dsr_actual >= GATE_MIN_DEFLATED_SHARPE,
+            fatal=False,
+        ))
 
     overall_pass = all(t.passed for t in thresholds)
     fatal_fail = any(t.fatal and not t.passed for t in thresholds)
@@ -685,7 +703,7 @@ def build_strategy_manifest(
     # ── GateBlock ───────────────────────────────────────────────────────────────
     gate: GateBlock | None = None
     if backtest is not None:
-        gate = compute_gate(backtest)
+        gate = compute_gate(backtest, optimization)
 
     # ── pipeline_stage ──────────────────────────────────────────────────────────
     pipeline_stage = _determine_pipeline_stage(strategy_id, manifests_dir)

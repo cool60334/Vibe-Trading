@@ -1289,3 +1289,38 @@ class TestEmitManifestForStrategy:
         # Sub-directory and manifest.json must now exist.
         assert strat_dir.exists()
         assert (strat_dir / "manifest.json").exists()
+
+
+# ─── (l) TestDeflatedSharpeGate ───────────────────────────────────────────────
+
+
+class TestDeflatedSharpeGate:
+    def _opt(self, dsr):
+        from schemas import OptimizationBlock
+        return OptimizationBlock(deflated_sharpe=dsr, n_trials=50)
+
+    def test_threshold_present_and_non_fatal_when_passing(self):
+        gate = compute_gate(_make_good_backtest(), self._opt(0.96))
+        dsr_t = [t for t in gate.thresholds if t.name == "deflated_sharpe"]
+        assert len(dsr_t) == 1
+        assert dsr_t[0].fatal is False
+        assert dsr_t[0].passed is True
+
+    def test_fails_below_threshold_but_not_fatal(self):
+        gate = compute_gate(_make_good_backtest(), self._opt(0.80))
+        dsr_t = [t for t in gate.thresholds if t.name == "deflated_sharpe"][0]
+        assert dsr_t.passed is False
+        assert gate.fatal_fail is False  # non-fatal: does not hard-block
+
+    def test_boundary_inclusive(self):
+        gate = compute_gate(_make_good_backtest(), self._opt(0.95))
+        dsr_t = [t for t in gate.thresholds if t.name == "deflated_sharpe"][0]
+        assert dsr_t.passed is True
+
+    def test_absent_when_optimization_none(self):
+        gate = compute_gate(_make_good_backtest())  # one-arg, backward compat
+        assert not any(t.name == "deflated_sharpe" for t in gate.thresholds)
+
+    def test_absent_when_dsr_none(self):
+        gate = compute_gate(_make_good_backtest(), self._opt(None))
+        assert not any(t.name == "deflated_sharpe" for t in gate.thresholds)
