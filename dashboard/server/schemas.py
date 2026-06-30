@@ -43,6 +43,7 @@ GATE_MAX_DRAWDOWN: float = 0.10  # 10% — drawdown expressed as a positive frac
 GATE_MIN_TRADES: int = 100
 GATE_MIN_PROFIT_FACTOR: float = 1.5
 GATE_MIN_WALK_FORWARD_SHARPE: float = 1.0  # each walk-forward window
+GATE_MIN_DEFLATED_SHARPE: float = 0.95  # multiple-testing haircut (Bailey-LdP DSR)
 # Monte-Carlo: 95% CI of the return distribution must NOT cross zero.
 
 #: Names of the two FATAL gate checks. Failing either is a hard block that
@@ -387,6 +388,13 @@ class OptimizationBlock(_Manifest):
     swept_params: List[str] = Field(default_factory=list)
     best_params: Dict[str, float] = Field(default_factory=dict)
     improvement_summary: Optional[str] = None
+    deflated_sharpe: Optional[float] = Field(
+        default=None,
+        description="Deflated Sharpe Ratio in [0,1]; null for runs without a sweep.",
+    )
+    n_trials: Optional[int] = Field(
+        default=None, description="Number of valid combos evaluated in the sweep."
+    )
 
 
 class DiagnosisBlock(_Manifest):

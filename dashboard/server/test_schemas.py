@@ -22,6 +22,7 @@ from datetime import datetime
 from schemas import (
     FATAL_GATE_CHECKS,
     GATE_MAX_DRAWDOWN,
+    GATE_MIN_DEFLATED_SHARPE,
     GATE_MIN_PROFIT_FACTOR,
     GATE_MIN_SHARPE,
     GATE_MIN_TRADES,
@@ -376,6 +377,7 @@ def test_canonical_gate_constants():
     assert GATE_MIN_TRADES == 100
     assert GATE_MIN_PROFIT_FACTOR == 1.5
     assert GATE_MIN_WALK_FORWARD_SHARPE == 1.0
+    assert GATE_MIN_DEFLATED_SHARPE == 0.95
 
 
 def test_fatal_gate_checks_are_the_two_canonical_ones():
@@ -702,3 +704,18 @@ def test_backtest_max_drawdown_below_zero_raises():
     bad = {"source_run": "r1", "max_drawdown": -0.05}
     with pytest.raises(ValidationError, match="max_drawdown"):
         StrategyManifest.model_validate(_make_strategy_with_in_sample(bad))
+
+
+# ---------------------------------------------------------------------------
+# DSR fields on OptimizationBlock
+# ---------------------------------------------------------------------------
+
+
+def test_optimization_block_dsr_fields_default_none():
+    from schemas import OptimizationBlock
+    blk = OptimizationBlock()
+    assert blk.deflated_sharpe is None
+    assert blk.n_trials is None
+    blk2 = OptimizationBlock(deflated_sharpe=0.97, n_trials=50)
+    assert blk2.deflated_sharpe == 0.97
+    assert blk2.n_trials == 50
