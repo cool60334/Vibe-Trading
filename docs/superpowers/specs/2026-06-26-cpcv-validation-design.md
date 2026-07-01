@@ -101,7 +101,16 @@ def cpcv_distribution(
     then score that combo's pooled TEST Sharpe. Returns
     {n_paths, path_sharpes: [...], cpcv_mean_sharpe, cpcv_p05_sharpe,
      pct_paths_positive}. Assumes a complete NxK matrix (see the completeness
-     filter in the orchestration) so every combo has every block."""
+     filter in the orchestration) so every combo has every block.
+
+    Two correctness rules (agy re-review):
+    - **Deterministic tie-break (R3):** select best by
+      `key=(train_sharpe, -combo_id)` so ties (rule grids often produce identical
+      Sharpes) are broken reproducibly, not by dict/hash order.
+    - **No NaN survivorship (R1):** a TEST pool that is nan (best combo made no
+      trades → flat → zero std) counts as Sharpe **0.0**, NOT dropped — dropping
+      failed paths would inflate the mean. A path is skipped only when its TRAIN
+      pool is empty (cannot select), which the block sizing makes rare."""
 ```
 
 All pure, no IO — fully unit-testable.
@@ -126,7 +135,11 @@ Steps per strategy:
    over `[block_start − WARMUP_HOURS, block_end]`, backtest, read
    `artifacts/equity.csv`, convert to per-bar returns, **drop the warm-up
    prefix**, cache as `combo_block_returns[combo_id][block_id]`.
-   `combo_id` = the sweep index (`0..max-1`).
+   `combo_id` = the sweep index (`0..max-1`). **Each block is an independent
+   backtest starting from the same fixed `initial_cash`** (`build_run_config`
+   default), so the per-bar `pct_change` returns share one scale across blocks —
+   this is what makes pooling valid and closes the compounding / denominator
+   distortion that a single carried-capital run would introduce (agy P4).
 4. **Combo completeness filter (agy P5):** drop any combo that is missing a valid
    backtest for **any** block from the entire pool, so the matrix is a perfect
    NxK. This prevents one broken combo from either wrecking every split that
@@ -191,8 +204,11 @@ is the only new (bounded) compute cost.
   (nothing to validate).
 - `--k >= --blocks` or `n_paths == 0` → error out (bad config).
 - Purge/embargo removing all of a (short) train block → that block contributes no
-  train bars; `pooled_sharpe` returns nan on an empty pool and that split is
-  skipped (with a warning). Blocks are sized so `WARMUP_HOURS`/purge ≪ block.
+  train bars; a split is skipped (with a warning) only when its whole **train**
+  pool is empty. Blocks are sized so `WARMUP_HOURS`/purge ≪ block.
+- Best combo makes no trades in the **test** pool → flat equity → `pooled_sharpe`
+  is nan → scored as **0.0** (not dropped), so failed OOS paths honestly drag the
+  mean down (agy R1, no survivorship).
 - Strategy with no `parameter_search_ranges` → nothing to sweep; skip (like
   Stage 4).
 - `cpcv.json` absent (CPCV never run) → no CPCV gate; manifest unaffected.
@@ -206,8 +222,11 @@ is the only new (bounded) compute cost.
    test block loses its TAIL `purge_bars`; train block that *follows* a test block
    loses its HEAD `embargo_bars`; sandwiched loses both; non-adjacent untouched.
 4. `pooled_sharpe` = annualised mean/std of concatenated returns; nan on <2 bars / zero std.
-5. `cpcv_distribution`: a combo that is best on some splits' train wins those paths; `cpcv_mean_sharpe`/`cpcv_p05_sharpe`/`pct_paths_positive` computed correctly on a hand-built returns matrix; a split with an empty train/test pool is skipped.
-6. **Completeness filter**: a combo missing any block is removed from the pool; a pool that empties out raises.
+5. `cpcv_distribution`: a combo that is best on some splits' train wins those paths; `cpcv_mean_sharpe`/`cpcv_p05_sharpe`/`pct_paths_positive` computed correctly on a hand-built returns matrix.
+6. **No NaN survivorship (R1)**: a split whose selected combo is flat in test scores 0.0 (kept), and this drags the mean down vs a version that dropped it.
+7. **Deterministic tie-break (R3)**: two combos with identical train Sharpe → the lower `combo_id` is selected, every run (reproducible).
+8. **Empty train pool** → that split is skipped (not scored 0.0).
+9. **Completeness filter**: a combo missing any block is removed from the pool; a pool that empties out raises.
 
 **schema (`dashboard/server/test_schemas.py`):** `CPCVBlock` defaults; `StrategyManifest.cpcv` optional; new constants' values.
 
@@ -224,6 +243,12 @@ is the only new (bounded) compute cost.
 - **Parallelise** the combo×block matrix (currently serial subprocess backtests).
 - **Global feature caching (agy P7):** compute indicators once over the full
   history and slice per block, so warm-up prefixes are not recomputed 400×.
-  Biggest lever against the warm-up compute multiplier.
+  Biggest lever against the warm-up compute multiplier. **Caveat (agy R2):** IIR
+  indicators (EMA and friends) carry recursive state — a global cache must NOT
+  let a test block's prices leak backward into an earlier train block through the
+  recursion. Reset/segment IIR state at block boundaries, or this optimisation
+  reintroduces look-ahead.
+- **Log returns** instead of simple `pct_change` — capital-independent, a cleaner
+  guard against any residual compounding-scale drift when pooling.
 - **Distinct embargo > purge** (López de Prado): tune `EMBARGO_BARS` above
   `PURGE_BARS` if post-test serial correlation proves material.
