@@ -1324,3 +1324,40 @@ class TestDeflatedSharpeGate:
     def test_absent_when_dsr_none(self):
         gate = compute_gate(_make_good_backtest(), self._opt(None))
         assert not any(t.name == "deflated_sharpe" for t in gate.thresholds)
+
+
+# ─── (m) TestCPCVGate ──────────────────────────────────────────────────────────
+
+
+class TestCPCVGate:
+    """Tests for CPCV mean + p05 gates in compute_gate."""
+
+    def _cpcv(self, mean, p05):
+        from schemas import CPCVBlock
+        return CPCVBlock(
+            n_paths=120,
+            cpcv_mean_sharpe=mean,
+            cpcv_p05_sharpe=p05,
+            pct_paths_positive=0.9,
+            n_blocks=10,
+            k_test=3,
+        )
+
+    def test_two_non_fatal_thresholds_when_present(self):
+        gate = compute_gate(_make_good_backtest(), cpcv=self._cpcv(1.3, 0.2))
+        names = {t.name for t in gate.thresholds}
+        assert {"cpcv_mean_sharpe", "cpcv_p05_sharpe"} <= names
+        for t in gate.thresholds:
+            if t.name.startswith("cpcv_"):
+                assert t.fatal is False
+
+    def test_pass_fail_at_thresholds(self):
+        gate = compute_gate(_make_good_backtest(), cpcv=self._cpcv(0.8, -0.1))
+        by = {t.name: t for t in gate.thresholds}
+        assert by["cpcv_mean_sharpe"].passed is False  # 0.8 < 1.0
+        assert by["cpcv_p05_sharpe"].passed is False   # -0.1 <= 0.0
+        assert gate.fatal_fail is False                # non-fatal
+
+    def test_absent_when_no_cpcv(self):
+        gate = compute_gate(_make_good_backtest())
+        assert not any(t.name.startswith("cpcv_") for t in gate.thresholds)

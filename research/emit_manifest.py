@@ -54,9 +54,12 @@ from schemas import (  # noqa: E402
     BenchmarkBlock,
     CostStressBlock,
     CostStressLevel,
+    CPCVBlock,
     DiagnosisBlock,
     FATAL_GATE_CHECKS,
     GATE_MAX_DRAWDOWN,
+    GATE_MIN_CPCV_MEAN_SHARPE,
+    GATE_MIN_CPCV_P05_SHARPE,
     GATE_MIN_DEFLATED_SHARPE,
     GATE_MIN_PROFIT_FACTOR,
     GATE_MIN_SHARPE,
@@ -180,6 +183,7 @@ def metrics_csv_to_backtest_metrics(
 def compute_gate(
     backtest: BacktestBlock,
     optimization: "OptimizationBlock | None" = None,
+    cpcv: "CPCVBlock | None" = None,
 ) -> GateBlock:
     """Compute GateBlock from a BacktestBlock.
 
@@ -192,6 +196,8 @@ def compute_gate(
         optimization: Optional OptimizationBlock; when present and
                       deflated_sharpe is not None, a non-fatal DSR threshold
                       is appended.
+        cpcv:         Optional CPCVBlock; when present, non-fatal CPCV
+                      mean + p05 thresholds are appended.
 
     Returns:
         GateBlock with thresholds, overall_pass, fatal_fail, red_flags.
@@ -289,6 +295,25 @@ def compute_gate(
             passed=dsr_actual >= GATE_MIN_DEFLATED_SHARPE,
             fatal=False,
         ))
+
+    # ── CPCV distribution gates (non-fatal) ─────────────────────────────────────
+    if cpcv is not None:
+        if cpcv.cpcv_mean_sharpe is not None:
+            thresholds.append(GateThreshold(
+                name="cpcv_mean_sharpe",
+                threshold=GATE_MIN_CPCV_MEAN_SHARPE,
+                actual=cpcv.cpcv_mean_sharpe,
+                passed=cpcv.cpcv_mean_sharpe >= GATE_MIN_CPCV_MEAN_SHARPE,
+                fatal=False,
+            ))
+        if cpcv.cpcv_p05_sharpe is not None:
+            thresholds.append(GateThreshold(
+                name="cpcv_p05_sharpe",
+                threshold=GATE_MIN_CPCV_P05_SHARPE,
+                actual=cpcv.cpcv_p05_sharpe,
+                passed=cpcv.cpcv_p05_sharpe > GATE_MIN_CPCV_P05_SHARPE,
+                fatal=False,
+            ))
 
     overall_pass = all(t.passed for t in thresholds)
     fatal_fail = any(t.fatal and not t.passed for t in thresholds)
@@ -697,13 +722,21 @@ def build_strategy_manifest(
         except Exception:  # noqa: BLE001
             optimization = None
 
+    cpcv_raw = _load_json_block(strategy_dir / "cpcv.json")
+    cpcv: CPCVBlock | None = None
+    if cpcv_raw is not None:
+        try:
+            cpcv = CPCVBlock.model_validate(cpcv_raw)
+        except Exception:  # noqa: BLE001
+            cpcv = None
+
     # ── BacktestBlock ───────────────────────────────────────────────────────────
     backtest = build_backtest_block(entry, runs_root)
 
     # ── GateBlock ───────────────────────────────────────────────────────────────
     gate: GateBlock | None = None
     if backtest is not None:
-        gate = compute_gate(backtest, optimization)
+        gate = compute_gate(backtest, optimization, cpcv)
 
     # ── pipeline_stage ──────────────────────────────────────────────────────────
     pipeline_stage = _determine_pipeline_stage(strategy_id, manifests_dir)
@@ -719,6 +752,7 @@ def build_strategy_manifest(
         reproducibility=reproducibility,
         backtest=backtest,
         optimization=optimization,
+        cpcv=cpcv,
         diagnosis=diagnosis,
         gate=gate,
     )
