@@ -39,16 +39,27 @@ paper-forward. Gate on `cpcv_mean_sharpe` (main) and `cpcv_p05_sharpe`
 
 ## Key correctness requirements (agy review)
 
-1. **Warm-up (fixes fatal boundary bias).** Backtesting a block in isolation
-   starts flat — it misses the position carried in from the previous block and
-   force-settles at the block end, corrupting the pooled returns. Every block
-   backtest must run over `[block_start − max_hold_hours, block_end]` and the
-   warm-up prefix (`max_hold_hours`) is **dropped** before returns are cached.
-2. **Sample-level purge, not block-level.** Blocks are ~5 months; dropping a
-   whole adjacent train block to prevent 7-day leakage would discard months of
-   training data. Instead, when a train block is adjacent to a test block, drop
-   only the `PURGE_BARS` (= max forward horizon, 168h = 168 bars at 1H) at the
-   touching boundary before pooling.
+1. **Warm-up (fixes fatal boundary bias) — covers BOTH position state AND
+   feature lookback.** Backtesting a block in isolation starts flat (misses the
+   position carried in) AND with cold indicators (long rolling features like a
+   `lookback_days=90` percentile are NaN/wrong for the block's early bars →
+   wrong signals). Every block backtest must run over
+   `[block_start − WARMUP_HOURS, block_end]` where
+   `WARMUP_HOURS = max(max_hold_hours, max_indicator_lookback_hours)`, and the
+   warm-up prefix is **dropped** before returns are cached.
+   `max_indicator_lookback_hours` = the largest `lookback_days` in the expanded
+   sweep grid × 24 (fallback: `max(horizons_h)`). (agy P1)
+2. **Sample-level purge + embargo, not block-level.** Blocks are ~5 months;
+   dropping a whole adjacent train block to prevent 7-day leakage would discard
+   months of training data. Instead, when a train block is **adjacent** to a
+   test block, drop only a boundary slice before pooling — and the **direction
+   matters** (agy P2):
+   - train block **precedes** a test block → its **tail** leaks (its labels span
+     `PURGE_BARS = max(horizons_h)` bars into the test) → drop the **tail**.
+   - train block **follows** a test block → its **head** is serially correlated
+     with the just-ended test → drop the **head** by `EMBARGO_BARS`
+     (`EMBARGO_BARS >= PURGE_BARS`; default `EMBARGO_BARS = PURGE_BARS` initially).
+   - sandwiched → drop both.
 3. **Resolution N=10, k=3 → 120 paths.** (N=6,k=2 gives only 15 — too few for a
    stable distribution.)
 4. **Pooled Sharpe** is order-independent (Sharpe = mean/std of per-bar returns);
@@ -66,11 +77,17 @@ def combinatorial_splits(n_blocks, k_test) -> list[tuple[tuple[int, ...], tuple[
     """All C(n_blocks, k_test) (train_block_ids, test_block_ids) index tuples."""
 
 def purge_boundary_bars(
-    block_returns: dict[int, pd.Series], train_ids, test_ids, purge_bars
+    block_returns: dict[int, pd.Series], train_ids, test_ids,
+    purge_bars, embargo_bars,
 ) -> dict[int, pd.Series]:
-    """Return a copy of the train blocks' per-bar returns with `purge_bars` rows
-    dropped at any boundary touching a test block (head if the block precedes a
-    test block, tail if it follows one — both if sandwiched)."""
+    """Return a copy of the train blocks' per-bar returns with boundary rows
+    dropped where a train block is adjacent to a test block (block ids are
+    consecutive integers so adjacency = id±1):
+      - train id precedes a test id (train_id+1 in test_ids) → drop TAIL
+        `purge_bars` (its labels leak forward into the test).
+      - train id follows a test id (train_id-1 in test_ids) → drop HEAD
+        `embargo_bars` (serially correlated with the just-ended test).
+      - both → drop both ends. Non-adjacent train blocks are untouched."""
 
 def pooled_sharpe(block_returns, block_ids, bars_per_year) -> float:
     """Concatenate the per-bar returns of `block_ids`, return annualised Sharpe
@@ -78,12 +95,13 @@ def pooled_sharpe(block_returns, block_ids, bars_per_year) -> float:
 
 def cpcv_distribution(
     combo_block_returns: dict[str, dict[int, pd.Series]],  # combo_id -> {block_id: returns}
-    splits, purge_bars, bars_per_year,
+    splits, purge_bars, embargo_bars, bars_per_year,
 ) -> dict:
-    """For each split: pick the best combo by purged pooled TRAIN Sharpe, then
-    score that combo's pooled TEST Sharpe. Returns
+    """For each split: pick the best combo by purge+embargo pooled TRAIN Sharpe,
+    then score that combo's pooled TEST Sharpe. Returns
     {n_paths, path_sharpes: [...], cpcv_mean_sharpe, cpcv_p05_sharpe,
-     pct_paths_positive}."""
+     pct_paths_positive}. Assumes a complete NxK matrix (see the completeness
+     filter in the orchestration) so every combo has every block."""
 ```
 
 All pure, no IO — fully unit-testable.
@@ -105,16 +123,33 @@ Steps per strategy:
 2. `blocks = make_blocks(period_start, oos_end, --blocks, interval)` over the
    **full** history (train+OOS), since CPCV re-splits everything.
 3. **Precompute combo×block matrix:** for each combo × each block, scaffold a run
-   over `[block_start − max_hold_hours, block_end]`, backtest, read
+   over `[block_start − WARMUP_HOURS, block_end]`, backtest, read
    `artifacts/equity.csv`, convert to per-bar returns, **drop the warm-up
    prefix**, cache as `combo_block_returns[combo_id][block_id]`.
-   (10 blocks × ~40 combos ≈ 400 backtests — offline, once per strategy.)
-4. `splits = combinatorial_splits(--blocks, --k)`; `dist =
-   cpcv_distribution(combo_block_returns, splits, PURGE_BARS, ppy)`.
-5. Write `research/manifests/<id>/cpcv.json` (a `CPCVBlock`).
+   `combo_id` = the sweep index (`0..max-1`).
+4. **Combo completeness filter (agy P5):** drop any combo that is missing a valid
+   backtest for **any** block from the entire pool, so the matrix is a perfect
+   NxK. This prevents one broken combo from either wrecking every split that
+   includes its bad block, or being compared on fewer samples than its peers.
+5. `splits = combinatorial_splits(--blocks, --k)`; `dist =
+   cpcv_distribution(surviving_matrix, splits, PURGE_BARS, EMBARGO_BARS, ppy)`.
+6. Write `research/manifests/<id>/cpcv.json` (a `CPCVBlock`).
 
-`PURGE_BARS = max(horizons_h)` bars; `ppy = bars_per_year(interval)` (reuse
-`lib.deflated_sharpe.bars_per_year`).
+`PURGE_BARS = EMBARGO_BARS = max(horizons_h)` bars (initial);
+`WARMUP_HOURS = max(max_hold_hours, max(lookback_days)×24)`;
+`ppy = bars_per_year(interval)` (reuse `lib.deflated_sharpe.bars_per_year`).
+
+**Cost (agy P7):** each block backtest re-runs the WARMUP_HOURS prefix, which is
+discarded. When the max indicator lookback (e.g. 90–150 days) is a large fraction
+of a block (~5 months), well over half the compute goes to warm-up that is thrown
+away, so real cost is materially higher than "400 short backtests" ≈ several long
+backtests' worth. Bounded and offline, but not free; see the feature-caching
+follow-up.
+
+**Boundary bias (agy P3):** independent blocks force-close at each block end
+(warm-up fixes the block *start*). This adds ~`n_blocks−1` artificial round-trips
+per combo — a **conservative** bias (extra costs → slightly *lower* CPCV Sharpe),
+so it cannot pass a bad strategy; acceptable for a gate, noted not fixed.
 
 ### 3. Schema `dashboard/server/schemas.py`
 
@@ -150,12 +185,14 @@ is the only new (bounded) compute cost.
 
 ## Edge cases
 
-- A combo whose block backtest errors / has no equity.csv → that block's returns
-  are absent; `pooled_sharpe` skips missing blocks and returns nan if a split's
-  train or test pool is empty → that path is dropped from the distribution.
+- A combo whose block backtest errors / has no equity.csv → the **completeness
+  filter** removes that whole combo from the pool before any split runs (agy P5),
+  keeping the matrix perfectly NxK. If the filter leaves **0** combos, error out
+  (nothing to validate).
 - `--k >= --blocks` or `n_paths == 0` → error out (bad config).
-- Purge removing all of a train block → that block contributes nothing; if all
-  train pools empty for a split, the split is dropped.
+- Purge/embargo removing all of a (short) train block → that block contributes no
+  train bars; `pooled_sharpe` returns nan on an empty pool and that split is
+  skipped (with a warning). Blocks are sized so `WARMUP_HOURS`/purge ≪ block.
 - Strategy with no `parameter_search_ranges` → nothing to sweep; skip (like
   Stage 4).
 - `cpcv.json` absent (CPCV never run) → no CPCV gate; manifest unaffected.
@@ -165,9 +202,12 @@ is the only new (bounded) compute cost.
 **lib (`research/tests/test_cpcv.py`):**
 1. `make_blocks` → N contiguous, non-overlapping, covering the range.
 2. `combinatorial_splits(10, 3)` → exactly 120 splits; train/test disjoint; union = all blocks.
-3. `purge_boundary_bars` drops exactly `purge_bars` at a train block adjacent to a test block; head vs tail vs sandwiched; non-adjacent blocks untouched.
+3. `purge_boundary_bars` **direction** (agy P2): train block that *precedes* a
+   test block loses its TAIL `purge_bars`; train block that *follows* a test block
+   loses its HEAD `embargo_bars`; sandwiched loses both; non-adjacent untouched.
 4. `pooled_sharpe` = annualised mean/std of concatenated returns; nan on <2 bars / zero std.
-5. `cpcv_distribution`: a combo that is best on some splits' train wins those paths; `cpcv_mean_sharpe`/`cpcv_p05_sharpe`/`pct_paths_positive` computed correctly on a hand-built returns matrix; empty-pool paths dropped.
+5. `cpcv_distribution`: a combo that is best on some splits' train wins those paths; `cpcv_mean_sharpe`/`cpcv_p05_sharpe`/`pct_paths_positive` computed correctly on a hand-built returns matrix; a split with an empty train/test pool is skipped.
+6. **Completeness filter**: a combo missing any block is removed from the pool; a pool that empties out raises.
 
 **schema (`dashboard/server/test_schemas.py`):** `CPCVBlock` defaults; `StrategyManifest.cpcv` optional; new constants' values.
 
@@ -182,3 +222,8 @@ is the only new (bounded) compute cost.
 - **DSR on the CPCV mean Sharpe** (deflate the mean by the 120-path search).
 - **Auto-run in pipeline** for promotion candidates (currently manual command).
 - **Parallelise** the combo×block matrix (currently serial subprocess backtests).
+- **Global feature caching (agy P7):** compute indicators once over the full
+  history and slice per block, so warm-up prefixes are not recomputed 400×.
+  Biggest lever against the warm-up compute multiplier.
+- **Distinct embargo > purge** (López de Prado): tune `EMBARGO_BARS` above
+  `PURGE_BARS` if post-test serial correlation proves material.
