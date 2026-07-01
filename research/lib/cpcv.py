@@ -35,3 +35,38 @@ def combinatorial_splits(n_blocks: int, k_test: int) -> list[tuple[tuple[int, ..
         train = tuple(sorted(all_ids - set(test)))
         out.append((train, tuple(test)))
     return out
+
+
+def pooled_sharpe(block_returns: dict[int, pd.Series], block_ids, bars_per_year: float) -> float:
+    """Annualised Sharpe of the concatenated per-bar returns of `block_ids`.
+    nan when <2 pooled bars or zero std (undefined / flat)."""
+    parts = [block_returns[i] for i in block_ids if i in block_returns and len(block_returns[i])]
+    if not parts:
+        return float("nan")
+    pooled = pd.concat(parts)
+    if len(pooled) < 2:
+        return float("nan")
+    std = float(pooled.std())
+    if std == 0.0:
+        return float("nan")
+    return float(pooled.mean() / std * (bars_per_year ** 0.5))
+
+
+def purge_boundary_bars(
+    block_returns: dict[int, pd.Series], train_ids, test_ids, purge_bars: int, embargo_bars: int
+) -> dict[int, pd.Series]:
+    """Copy of the TRAIN blocks' returns with boundary rows dropped where a train
+    block is adjacent to a test block (ids consecutive => adjacency = id±1):
+      - train id precedes a test id (id+1 in test) -> drop TAIL purge_bars (label leak)
+      - train id follows a test id  (id-1 in test) -> drop HEAD embargo_bars (serial corr)
+      - sandwiched -> both. Non-adjacent train blocks untouched."""
+    test_set = set(test_ids)
+    out: dict[int, pd.Series] = {}
+    for t in train_ids:
+        s = block_returns.get(t)
+        if s is None:
+            continue
+        head = embargo_bars if (t - 1) in test_set else 0
+        tail = purge_bars if (t + 1) in test_set else 0
+        out[t] = s.iloc[head: len(s) - tail] if tail else s.iloc[head:]
+    return out
