@@ -514,6 +514,17 @@ def test_gate_fatal_fail_false_with_failed_fatal_threshold_raises():
         StrategyManifest.model_validate({**_BASE_STRATEGY, "gate": bad_gate})
 
 
+def test_gate_block_not_tested_defaults_empty():
+    from schemas import GateBlock, GateThreshold
+    g = GateBlock(source_run="r", thresholds=[
+        GateThreshold(name="min_sharpe", threshold=1.0, actual=1.2, passed=True, fatal=False)
+    ], overall_pass=True, fatal_fail=False)
+    assert g.not_tested == []
+    g2 = GateBlock(source_run="r", thresholds=[], overall_pass=False, fatal_fail=False,
+                   not_tested=["cpcv", "cost_stress"])
+    assert g2.not_tested == ["cpcv", "cost_stress"]
+
+
 # ---------------------------------------------------------------------------
 # I3 — timestamp fields coerce to datetime
 # ---------------------------------------------------------------------------

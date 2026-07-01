@@ -462,6 +462,10 @@ class GateBlock(_Manifest):
     red_flags: List[RedFlagCode] = Field(
         default_factory=list, description="Auto-derived red-flag codes."
     )
+    not_tested: List[str] = Field(
+        default_factory=list,
+        description="Required validations whose data is absent (e.g. 'cost_stress', 'cpcv'). Empty = all present.",
+    )
 
     @model_validator(mode="after")
     def gate_flags_are_consistent(self):
