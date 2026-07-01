@@ -70,3 +70,38 @@ def purge_boundary_bars(
         tail = purge_bars if (t + 1) in test_set else 0
         out[t] = s.iloc[head: len(s) - tail] if tail else s.iloc[head:]
     return out
+
+
+def cpcv_distribution(combo_block_returns, splits, purge_bars, embargo_bars, bars_per_year) -> dict:
+    """For each split: pick best combo by purge+embargo pooled TRAIN Sharpe
+    (tie-break: lower combo_id, deterministic), then score its pooled TEST Sharpe.
+    Flat/undefined TEST -> 0.0 (kept, no survivorship). Split skipped only when no
+    combo has a defined TRAIN Sharpe. Returns the distribution summary dict."""
+    combo_ids = sorted(combo_block_returns.keys())
+    path_sharpes: list[float] = []
+    for train_ids, test_ids in splits:
+        best_cid = None
+        best_key = None  # (train_sharpe, -combo_id); max wins => lower id breaks ties
+        for cid in combo_ids:
+            purged = purge_boundary_bars(
+                combo_block_returns[cid], train_ids, test_ids, purge_bars, embargo_bars
+            )
+            tr = pooled_sharpe(purged, train_ids, bars_per_year)
+            if np.isnan(tr):
+                continue
+            key = (tr, -cid)
+            if best_key is None or key > best_key:
+                best_key, best_cid = key, cid
+        if best_cid is None:
+            continue  # empty train pool -> skip path
+        te = pooled_sharpe(combo_block_returns[best_cid], test_ids, bars_per_year)
+        path_sharpes.append(0.0 if np.isnan(te) else te)
+
+    arr = np.array(path_sharpes, dtype=float)
+    return {
+        "n_paths": int(arr.size),
+        "path_sharpes": [float(x) for x in path_sharpes],
+        "cpcv_mean_sharpe": float(np.mean(arr)) if arr.size else None,
+        "cpcv_p05_sharpe": float(np.percentile(arr, 5)) if arr.size else None,
+        "pct_paths_positive": float(np.mean(arr > 0)) if arr.size else None,
+    }

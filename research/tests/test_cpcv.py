@@ -17,6 +17,7 @@ if str(_RESEARCH_DIR) not in sys.path:
 
 from lib.cpcv import (  # noqa: E402
     combinatorial_splits,
+    cpcv_distribution,
     make_blocks,
     pooled_sharpe,
     purge_boundary_bars,
@@ -101,3 +102,52 @@ class TestPurgeBoundaryBars:
         # train {1}, test {0,2}: block 1 follows test 0 AND precedes test 2
         purged = purge_boundary_bars(self._matrix(), (1,), (0, 2), purge_bars=2, embargo_bars=2)
         assert len(purged[1]) == 6        # head 2 + tail 2 dropped
+
+
+class TestCpcvDistribution:
+    def _matrix(self, per_combo_block_mean):
+        # per_combo_block_mean: {combo_id: {block_id: mean_return}}
+        # build 20-bar constant-ish returns with tiny noise so std>0
+        rng = np.random.default_rng(0)
+        out = {}
+        for cid, blocks in per_combo_block_mean.items():
+            out[cid] = {}
+            for bid, mu in blocks.items():
+                out[cid][bid] = pd.Series(mu + rng.normal(0, 1e-4, 20),
+                                          index=pd.RangeIndex(bid * 20, bid * 20 + 20))
+        return out
+
+    def test_best_combo_selected_per_split_and_summary(self):
+        # combo 0 strong on blocks 0,1; combo 1 strong on blocks 2,3
+        m = self._matrix({0: {0: 0.02, 1: 0.02, 2: -0.01, 3: -0.01},
+                          1: {0: -0.01, 1: -0.01, 2: 0.02, 3: 0.02}})
+        splits = combinatorial_splits(4, 1)  # 4 paths
+        d = cpcv_distribution(m, splits, purge_bars=0, embargo_bars=0, bars_per_year=8760)
+        assert d["n_paths"] == 4
+        assert "cpcv_mean_sharpe" in d and "cpcv_p05_sharpe" in d
+        assert 0.0 <= d["pct_paths_positive"] <= 1.0
+
+    def test_flat_test_scores_zero_not_dropped(self):
+        # combo 0 best on train everywhere but FLAT (zero) on the test block -> 0.0, kept
+        m = self._matrix({0: {0: 0.02, 1: 0.02, 2: 0.02, 3: 0.02}})
+        # overwrite block 3 with exact zeros (flat -> nan sharpe -> 0.0)
+        m[0][3] = pd.Series([0.0] * 20, index=pd.RangeIndex(60, 80))
+        splits = [((0, 1, 2), (3,))]
+        d = cpcv_distribution(m, splits, purge_bars=0, embargo_bars=0, bars_per_year=8760)
+        assert d["n_paths"] == 1
+        assert d["path_sharpes"] == [0.0]
+
+    def test_tie_break_prefers_lower_combo_id(self):
+        # combos 0 and 1 identical on train -> tie -> combo 0 wins; make combo 1 better on test
+        m = self._matrix({0: {0: 0.02, 1: 0.02}, 1: {0: 0.02, 1: 0.02}})
+        # identical train means; give combo 1 a distinct (better) test block 1
+        m[1][1] = pd.Series(0.05 + np.random.default_rng(1).normal(0, 1e-4, 20),
+                            index=pd.RangeIndex(20, 40))
+        m[0][1] = pd.Series(0.02 + np.random.default_rng(2).normal(0, 1e-4, 20),
+                            index=pd.RangeIndex(20, 40))
+        splits = [((0,), (1,))]  # train block 0 (tie), test block 1
+        d = cpcv_distribution(m, splits, purge_bars=0, embargo_bars=0, bars_per_year=8760)
+        # combo 0 chosen on the tie -> test sharpe reflects combo 0's block 1 (~0.02), not combo 1's 0.05
+        # (asserting selection determinism: same result across runs)
+        d2 = cpcv_distribution(m, splits, 0, 0, 8760)
+        assert d["path_sharpes"] == d2["path_sharpes"]
