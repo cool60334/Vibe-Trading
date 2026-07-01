@@ -110,6 +110,9 @@ def run(strategy_id: str, n_blocks: int, k_test: int, max_combos: int) -> int:
                 r = _block_returns(run_dir, b_start)
                 if r is not None and len(r):
                     matrix[cid][bid] = r
+            else:
+                print(f"  [cpcv] combo {cid:03d} block {bid} failed (exit {proc.returncode}): "
+                      f"{(proc.stderr or '')[:200]}")
 
     # ── completeness filter: keep only combos with all N blocks (agy P5) ────────
     complete = {cid: bl for cid, bl in matrix.items() if len(bl) == n_blocks}
