@@ -45,6 +45,8 @@ GATE_MIN_PROFIT_FACTOR: float = 1.5
 GATE_MIN_WALK_FORWARD_SHARPE: float = 1.0  # each walk-forward window
 GATE_MIN_DEFLATED_SHARPE: float = 0.95  # multiple-testing haircut (Bailey-LdP DSR)
 # Monte-Carlo: 95% CI of the return distribution must NOT cross zero.
+GATE_MIN_CPCV_MEAN_SHARPE: float = 1.0
+GATE_MIN_CPCV_P05_SHARPE: float = 0.0
 
 #: Names of the two FATAL gate checks. Failing either is a hard block that
 #: cannot be overridden in the promotion dialog (design D7).
@@ -397,6 +399,17 @@ class OptimizationBlock(_Manifest):
     )
 
 
+class CPCVBlock(_Manifest):
+    """Combinatorial Purged CV distribution summary (opt-in validation)."""
+
+    n_paths: int
+    cpcv_mean_sharpe: Optional[float] = None
+    cpcv_p05_sharpe: Optional[float] = None
+    pct_paths_positive: Optional[float] = None
+    n_blocks: Optional[int] = None
+    k_test: Optional[int] = None
+
+
 class DiagnosisBlock(_Manifest):
     """Stage 3 diagnosis output — drives the explicit feedback loop.
 
@@ -489,6 +502,7 @@ class StrategyManifest(_Manifest):
     reproducibility: Optional[ReproducibilityBlock] = None
     backtest: Optional[BacktestBlock] = None
     optimization: Optional[OptimizationBlock] = None
+    cpcv: Optional[CPCVBlock] = None
     diagnosis: Optional[DiagnosisBlock] = None
     gate: Optional[GateBlock] = None
 

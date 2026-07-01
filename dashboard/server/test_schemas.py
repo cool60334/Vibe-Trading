@@ -22,6 +22,8 @@ from datetime import datetime
 from schemas import (
     FATAL_GATE_CHECKS,
     GATE_MAX_DRAWDOWN,
+    GATE_MIN_CPCV_MEAN_SHARPE,
+    GATE_MIN_CPCV_P05_SHARPE,
     GATE_MIN_DEFLATED_SHARPE,
     GATE_MIN_PROFIT_FACTOR,
     GATE_MIN_SHARPE,
@@ -378,6 +380,8 @@ def test_canonical_gate_constants():
     assert GATE_MIN_PROFIT_FACTOR == 1.5
     assert GATE_MIN_WALK_FORWARD_SHARPE == 1.0
     assert GATE_MIN_DEFLATED_SHARPE == 0.95
+    assert GATE_MIN_CPCV_MEAN_SHARPE == 1.0
+    assert GATE_MIN_CPCV_P05_SHARPE == 0.0
 
 
 def test_fatal_gate_checks_are_the_two_canonical_ones():
@@ -719,3 +723,11 @@ def test_optimization_block_dsr_fields_default_none():
     blk2 = OptimizationBlock(deflated_sharpe=0.97, n_trials=50)
     assert blk2.deflated_sharpe == 0.97
     assert blk2.n_trials == 50
+
+
+def test_cpcv_block_and_manifest_field():
+    from schemas import CPCVBlock, StrategyManifest
+    blk = CPCVBlock(n_paths=120, cpcv_mean_sharpe=1.3, cpcv_p05_sharpe=0.2,
+                    pct_paths_positive=0.9, n_blocks=10, k_test=3)
+    assert blk.n_paths == 120 and blk.cpcv_mean_sharpe == 1.3
+    assert "cpcv" in StrategyManifest.model_fields  # optional field exists
