@@ -657,6 +657,21 @@ class TestStressRunPlan:
             assert m and float(m.group(1)) == mult
 
 
+def test_lag_stress_run_plan(monkeypatch):
+    from pipeline.stage3_backtest import lag_stress_run_plan
+    from pipeline.config import load_config
+    cfg = load_config()
+    # force a walk-forward split so windows = [train, oos]
+    plan = lag_stress_run_plan("eth_s5_half_size", cfg)
+    # windows (train+oos when oos_start set) x lags
+    lags = cfg.lag_stress_bars
+    assert len(plan) == 2 * len(lags) or len(plan) == 1 * len(lags)  # split vs full
+    names, labels, windows, lag_vals = zip(*plan)
+    assert set(lag_vals) == set(lags)
+    assert all("lagstress" in n for n in names)
+    assert all(w in ("train", "oos", "full") for w in windows)
+
+
 class TestPrintSummarySkippedWindow:
     """A window-skipped run must render [SKIP], not [OK], while ok stays True."""
 

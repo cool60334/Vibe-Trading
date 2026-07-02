@@ -108,6 +108,16 @@ class StrategyRunsEntry:
     means empty tuple.
     """
 
+    lag_stress_runs: Mapping[str, str] = dataclasses.field(
+        default_factory=lambda: types.MappingProxyType({})
+    )
+    """
+    Entry-delay lag-stress run directories keyed by a descriptive label
+    (optional). Example: {"lag1_train": "eth_s5_..._lagstress_train_lag1"}.
+    Populated by stage 3's --lag-stress flag. Backward-compatible: absent
+    from JSON means empty mapping.
+    """
+
 
 @dataclasses.dataclass(frozen=True)
 class StrategyRunsMap:
@@ -288,6 +298,20 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
                     f"'oos_runs[{i}]' must be a string, got {type(v).__name__}."
                 )
 
+        # Optional: entry-delay lag-stress runs (backward-compatible).
+        lag_stress_runs_raw = entry_raw.get("lag_stress_runs", {})
+        if not isinstance(lag_stress_runs_raw, dict):
+            raise TypeError(
+                f"strategy_runs.json: entry for strategy_id '{strategy_id}': "
+                f"'lag_stress_runs' must be a JSON object (dict), got {type(lag_stress_runs_raw).__name__}."
+            )
+        for k, v in lag_stress_runs_raw.items():
+            if not isinstance(v, str):
+                raise TypeError(
+                    f"strategy_runs.json: entry for strategy_id '{strategy_id}': "
+                    f"'lag_stress_runs[{k!r}]' must be a string, got {type(v).__name__}."
+                )
+
         entries[strategy_id] = StrategyRunsEntry(
             symbol=symbol,
             spec_yaml=spec_yaml,
@@ -297,6 +321,7 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
             sweep_run=sweep_run,
             walk_forward_runs=tuple(wf_runs),
             oos_runs=tuple(oos_runs_raw),
+            lag_stress_runs=types.MappingProxyType(dict(lag_stress_runs_raw)),
         )
 
     return StrategyRunsMap(entries=types.MappingProxyType(_filter_entries_by_env(entries)))
@@ -360,6 +385,7 @@ def register_strategy(
         "sweep_run": None,
         "walk_forward_runs": [],
         "oos_runs": [],
+        "lag_stress_runs": {},
     }
 
     payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
@@ -524,5 +550,57 @@ def update_walk_forward_runs(
         raise KeyError(f"strategy_runs.json: strategy_id '{strategy_id}' not present.")
 
     raw[strategy_id]["walk_forward_runs"] = list(walk_forward_runs)
+    payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
+    resolved.write_text(payload, encoding="utf-8")
+
+
+def update_lag_stress_runs(
+    strategy_id: str,
+    mapping: dict,
+    path: Path | str | None = None,
+) -> None:
+    """Set the lag_stress_runs mapping for one strategy and write the file back.
+
+    Called by stage 3 --lag-stress after generating entry-delay backtests, so
+    emit_manifest can assemble the lag_stress block. Same file-preserving
+    semantics as update_stress_runs.
+
+    Raises
+    ------
+    FileNotFoundError
+        If strategy_runs.json does not exist at the resolved path.
+    KeyError
+        If strategy_id is not present.
+    TypeError
+        If mapping is not a dict, or the entry is not a JSON object.
+    """
+    if not isinstance(mapping, dict):
+        raise TypeError(
+            f"update_lag_stress_runs: mapping must be a dict, got {type(mapping).__name__}."
+        )
+
+    resolved = Path(path) if path is not None else _DEFAULT_JSON_PATH
+    if not resolved.exists():
+        raise FileNotFoundError(f"strategy_runs.json not found at: {resolved}")
+
+    with resolved.open("r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+
+    if not isinstance(raw, dict):
+        raise TypeError(
+            f"strategy_runs.json must be a JSON mapping at the top level, "
+            f"got {type(raw).__name__}."
+        )
+    if strategy_id not in raw or strategy_id == "_comment":
+        raise KeyError(f"strategy_runs.json: strategy_id '{strategy_id}' not present.")
+
+    entry = raw[strategy_id]
+    if not isinstance(entry, dict):
+        raise TypeError(
+            f"strategy_runs.json: entry for '{strategy_id}' is not a JSON object."
+        )
+
+    entry["lag_stress_runs"] = dict(mapping)
+
     payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
     resolved.write_text(payload, encoding="utf-8")

@@ -61,12 +61,20 @@ for _p in (_RESEARCH_DIR,):
 
 # ── Internal imports ───────────────────────────────────────────────────────────
 from pipeline.config import _REPO_ROOT, ResearchConfig, SymbolConfig, load_config  # noqa: E402
-from pipeline.strategy_runs import StrategyRunsEntry, StrategyRunsMap, load_strategy_runs, update_stress_runs  # noqa: E402
+from pipeline.strategy_runs import StrategyRunsEntry, StrategyRunsMap, load_strategy_runs, update_stress_runs, update_lag_stress_runs  # noqa: E402
 
 # ── Agent / backtest path ──────────────────────────────────────────────────────
 _REPO_ROOT_STR = str(_REPO_ROOT)
 if _REPO_ROOT_STR not in sys.path:
     sys.path.insert(0, _REPO_ROOT_STR)
+
+# ── Extend sys.path for dashboard/server/ (schemas.StrategySpec) ──────────────
+# Needed by _run_lag_stress_for_strategy, which recompiles a strategy's YAML
+# spec via research/lib/signal_compiler.compile_strategy(). Mirrors the
+# bootstrap in stage2b_compile_signal.py.
+_DASHBOARD_SCHEMAS = _REPO_ROOT / "dashboard" / "server"
+if str(_DASHBOARD_SCHEMAS) not in sys.path:
+    sys.path.insert(0, str(_DASHBOARD_SCHEMAS))
 
 
 # ─── Constants ─────────────────────────────────────────────────────────────────
@@ -286,6 +294,90 @@ def _run_stress_for_strategy(
 
     if registered:
         update_stress_runs(strategy_id, registered)
+    return registered
+
+
+def lag_stress_run_plan(
+    strategy_id: str,
+    cfg: ResearchConfig,
+    today: date | None = None,
+) -> list[tuple[str, str, str, int]]:
+    """Return the lag-stress runs to generate for one strategy.
+
+    Each item is (run_name, label, window, lag_bars). Windows are train+oos
+    when a walk-forward split is configured (oos_start), else a single full
+    window.
+    """
+    if train_window(cfg, today) is not None and oos_window(cfg, today) is not None:
+        windows = ["train", "oos"]
+    else:
+        windows = ["full"]
+
+    plan: list[tuple[str, str, str, int]] = []
+    for window in windows:
+        for lag in cfg.lag_stress_bars:
+            run_name = f"{strategy_id}_lagstress_{window}_lag{int(lag)}"
+            label = f"lag{int(lag)}_{window}"
+            plan.append((run_name, label, window, int(lag)))
+    return plan
+
+
+def _run_lag_stress_for_strategy(
+    strategy_id: str,
+    symbol: str,
+    spec_yaml: str,
+    cfg: ResearchConfig,
+    runs_root: Path,
+    today: date | None = None,
+) -> dict:
+    """Generate + register entry-delay lag-stress backtests for one strategy.
+
+    Recompiles the strategy's signal_engine.py per (window x lag) with the
+    signal shifted lag_bars later (compile-time), then backtests it. Only
+    runs that complete with artifacts are registered.
+    Returns the {label: run_name} mapping that was written.
+    """
+    import yaml as _yaml
+    from schemas import StrategySpec
+    from lib.signal_compiler import compile_strategy
+
+    spec_path = _REPO_ROOT / spec_yaml
+    spec = StrategySpec.model_validate(_yaml.safe_load(spec_path.read_text(encoding="utf-8")))
+
+    registered: dict = {}
+    for run_name, label, window, lag in lag_stress_run_plan(strategy_id, cfg, today):
+        config = build_run_config(symbol, cfg, today)
+        if window == "train":
+            win = train_window(cfg, today)
+            if win:
+                config["start_date"], config["end_date"] = win
+        elif window == "oos":
+            win = oos_window(cfg, today)
+            if win:
+                config["start_date"], config["end_date"] = win
+        # window == "full": keep build_run_config's full-period dates
+
+        run_dir = runs_root / run_name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(run_dir / "artifacts", ignore_errors=True)
+        code_dir = run_dir / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "config.json").write_text(
+            json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        (code_dir / "signal_engine.py").write_text(
+            compile_strategy(spec, lag_bars=lag), encoding="utf-8"
+        )
+
+        print(f"  [lag-stress] {run_name} (lag{lag}, {window})")
+        proc = _run_backtest(run_dir)
+        if proc.returncode == 0 and verify_run_artifacts(run_dir).ok:
+            registered[label] = run_name
+        else:
+            print(f"  [lag-stress] {run_name} FAILED — not registered")
+
+    if registered:
+        update_lag_stress_runs(strategy_id, registered)
     return registered
 
 
@@ -903,6 +995,10 @@ def main() -> None:
         "--stress", action="store_true",
         help="Also generate fee-multiplied (2x/3x) cost-stress runs per strategy.",
     )
+    parser.add_argument(
+        "--lag-stress", action="store_true",
+        help="Also generate entry-delay lag-stress runs (recompiled signal, shifted lag_bars) per strategy.",
+    )
     args = parser.parse_args()
 
     cfg: ResearchConfig = load_config()
@@ -1007,6 +1103,17 @@ def main() -> None:
             print(f"\n[stress] {sid}")
             _run_stress_for_strategy(
                 sid, symbol, cfg, runs_root, strategies_code_dir, manifests_dir,
+            )
+
+    if args.lag_stress and stress_eligible:
+        print("\n" + "=" * 60)
+        print(f"Stage 3 — Lag-stress ({len(stress_eligible)} strategies)")
+        print("=" * 60)
+        for sid, symbol in stress_eligible:
+            entry = runs_map.entries[sid]
+            print(f"\n[lag-stress] {sid}")
+            _run_lag_stress_for_strategy(
+                sid, symbol, entry.spec_yaml, cfg, runs_root,
             )
 
     print_summary(all_results)
