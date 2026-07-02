@@ -359,6 +359,18 @@ def promote_strategy(strategy_id: str, body: PromoteRequest = PromoteRequest()) 
             detail=f"Fatal gate failures cannot be overridden: {fatal_names}",
         )
 
+    # Required validations not run yet — hard block (distinct from FATAL, not overridable)
+    if manifest.gate and manifest.gate.not_tested:
+        missing = manifest.gate.not_tested
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Not testable yet — missing required validation(s): {missing}. "
+                "Run cost-stress" + (" and CPCV" if "cpcv" in missing else "")
+                + " before promoting."
+            ),
+        )
+
     # Non-fatal gate failures require an override reason
     if manifest.gate and not manifest.gate.overall_pass and not body.override_reason:
         raise HTTPException(

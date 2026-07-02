@@ -206,6 +206,66 @@ def test_promote_allowed_when_testnet_stopped(repo_root, tmp_path):
         os.environ.pop("DASHBOARD_DIR", None)
 
 
+def _write_manifest_with_gate(repo_root: Path, strategy_id: str, gate: dict) -> None:
+    """Emit a manifest for *strategy_id* carrying a custom ``gate`` block."""
+    manifests = repo_root / "research" / "manifests" / strategy_id
+    manifests.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "strategy_id": strategy_id,
+        "symbol": "BTC",
+        "generated_at": "2024-01-01T00:00:00Z",
+        "pipeline_stage": 2,
+        "spec": {
+            "strategy_id": strategy_id,
+            "symbol": "BTC",
+            "spec_yaml": f"runs/{strategy_id}/config.yaml",
+        },
+        "gate": gate,
+    }
+    (manifests / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_promote_blocks_on_not_tested(repo_root, tmp_path):
+    """A manifest with gate.not_tested is hard-blocked with a NOT_TESTED message.
+
+    Distinct from the FATAL block: not_tested means "we haven't run the
+    required validation(s) yet" rather than "we ran it and it failed" — and
+    like FATAL, it is not overridable via override_reason.
+    """
+    _write_manifest_with_gate(
+        repo_root, "strat_nt_001",
+        gate={
+            "source_run": "r",
+            "thresholds": [],
+            "overall_pass": False,
+            "fatal_fail": False,
+            "not_tested": ["cost_stress", "cpcv"],
+        },
+    )
+    os.environ["REPO_ROOT"] = str(repo_root)
+    os.environ["DASHBOARD_DIR"] = str(tmp_path / "dash")
+    import importlib, main as main_module
+    importlib.reload(main_module)
+    from main import app
+    try:
+        with TestClient(app) as c:
+            r = c.post("/api/strategies/strat_nt_001/promote", json={})
+            assert r.status_code == 422
+            detail = r.json()["detail"].lower()
+            assert "validation" in detail
+            assert "cost_stress" in detail or "cpcv" in detail
+
+            # Not overridable — override_reason must not bypass the block.
+            r2 = c.post(
+                "/api/strategies/strat_nt_001/promote",
+                json={"override_reason": "yolo"},
+            )
+            assert r2.status_code == 422
+    finally:
+        os.environ.pop("DASHBOARD_DIR", None)
+
+
 # ---------------------------------------------------------------------------
 # GET /api/strategies/{id}
 # ---------------------------------------------------------------------------
