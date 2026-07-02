@@ -290,7 +290,7 @@ def _render_exit_rule_check(
         raise ValueError(f"Unknown exit rule condition: {condition!r}")
 
 
-def _render_exit_state_machine(exit_rules, size_mult: float = 1.0) -> str:
+def _render_exit_state_machine(exit_rules, size_mult: float = 1.0, lag_bars: int = 0) -> str:
     """Render the full exit state machine loop. Indented at 8 spaces (class method body)."""
     # Indentation levels:
     #   8  = method body
@@ -372,6 +372,10 @@ def _render_exit_state_machine(exit_rules, size_mult: float = 1.0) -> str:
         f"{i12}signal.iloc[bar_i] = float(position){'' if size_mult == 1.0 else f' * {size_mult}'}",
     ]
 
+    if lag_bars > 0:
+        lines.append("")
+        lines.append(f"{i8}signal = signal.shift({int(lag_bars)}).fillna(0.0)")
+
     return "\n".join(lines)
 
 
@@ -379,7 +383,7 @@ def _render_exit_state_machine(exit_rules, size_mult: float = 1.0) -> str:
 # 3.7 — Public compile_strategy()
 # ---------------------------------------------------------------------------
 
-def compile_strategy(spec: StrategySpec, yaml_hash: str = "") -> str:
+def compile_strategy(spec: StrategySpec, yaml_hash: str = "", lag_bars: int = 0) -> str:
     """Compile a StrategySpec to signal_engine.py source code string.
 
     Parameters
@@ -389,6 +393,10 @@ def compile_strategy(spec: StrategySpec, yaml_hash: str = "") -> str:
     yaml_hash:
         Optional SHA-256 (or similar) hash of the source YAML, embedded as a
         comment in the generated file for traceability.
+    lag_bars:
+        Optional number of bars to shift the generated position series by
+        (simulating execution lag). Defaults to 0 (no shift, output
+        unchanged from prior behavior).
 
     Returns
     -------
@@ -418,7 +426,9 @@ def compile_strategy(spec: StrategySpec, yaml_hash: str = "") -> str:
     entry_short_code = _render_entry_block("short", spec.entry_short, indicator_var_map)
 
     # 3. Render exit state machine
-    exit_code = _render_exit_state_machine(spec.exit_rules, size_mult=spec.size_mult)
+    exit_code = _render_exit_state_machine(
+        spec.exit_rules, size_mult=spec.size_mult, lag_bars=lag_bars
+    )
 
     # 4. Render template
     template = _jinja_env.get_template("signal_engine.py.j2")

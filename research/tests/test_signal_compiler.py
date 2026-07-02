@@ -679,3 +679,15 @@ def test_regime_missing_json_fail_soft(tmp_path):
         check_names=False,
         obj="regime_filter missing-json fail-soft",
     )
+
+
+# ---------------------------------------------------------------------------
+# lag_bars — optional shift of the position series
+# ---------------------------------------------------------------------------
+
+def test_lag_bars_appends_shift(basic_spec):
+    source_default = compile_strategy(basic_spec)
+    assert ".shift(" not in source_default  # default lag_bars=0 unchanged
+
+    src = compile_strategy(basic_spec, lag_bars=2)
+    assert "signal = signal.shift(2).fillna(0.0)" in src
