@@ -385,6 +385,32 @@ class LagStressBlock(_Manifest):
     levels: List[LagStressLevel] = Field(default_factory=list)
 
 
+class IntrabarAuditLevel(_Manifest):
+    """One window's intrabar stop-loss audit result (diagnostic, non-fatal).
+
+    Counts trades whose bar low/high touched the strategy's stop level intrabar
+    during the hold, before the trade exited elsewhere. All metrics are sign-free
+    (no dollar PnL — a funding-sensitive early stop can flip a dollar's sign).
+    """
+
+    window: str = Field(..., description="'train' | 'oos'.")
+    source_run: str
+    n_trades: Optional[int] = Field(default=None, ge=0)
+    n_breached: Optional[int] = Field(default=None, ge=0)
+    breached_pct: Optional[float] = None
+    n_optimistic: Optional[int] = Field(
+        default=None, ge=0,
+        description="Breaches where the backtest got a better price by ignoring the stop.",
+    )
+    mean_breach_depth_pct: Optional[float] = None
+    max_breach_depth_pct: Optional[float] = None
+
+
+class IntrabarAuditBlock(_Manifest):
+    source_run: Optional[str] = None
+    levels: List[IntrabarAuditLevel] = Field(default_factory=list)
+
+
 class BacktestBlock(_Manifest):
     """All backtest results for a strategy, aggregated across run directories."""
 
@@ -398,6 +424,7 @@ class BacktestBlock(_Manifest):
     by_regime: List[RegimeMetrics] = Field(default_factory=list)
     cost_stress: Optional[CostStressBlock] = None
     lag_stress: Optional[LagStressBlock] = None
+    intrabar_audit: Optional[IntrabarAuditBlock] = None
 
 
 class OptimizationBlock(_Manifest):

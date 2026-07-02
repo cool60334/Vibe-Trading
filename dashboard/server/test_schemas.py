@@ -760,3 +760,31 @@ def test_lag_stress_blocks():
     assert blk.levels[0].lag_bars == 1 and blk.levels[0].window == "train"
     bt = BacktestBlock(in_sample=BacktestMetrics(source_run="b", sharpe=1.0), lag_stress=blk)
     assert bt.lag_stress.levels[0].sharpe == 0.8
+
+
+# ---------------------------------------------------------------------------
+# IntrabarAudit blocks — stop-loss optimism audit (task 1 of 7)
+# ---------------------------------------------------------------------------
+
+
+def test_intrabar_audit_block_round_trips():
+    from schemas import IntrabarAuditBlock, IntrabarAuditLevel, BacktestBlock, BacktestMetrics
+
+    level = IntrabarAuditLevel(
+        window="train",
+        source_run="eth_s5_base",
+        n_trades=40,
+        n_breached=7,
+        breached_pct=17.5,
+        n_optimistic=5,
+        mean_breach_depth_pct=1.8,
+        max_breach_depth_pct=4.2,
+    )
+    block = IntrabarAuditBlock(source_run="eth_s5_base", levels=[level])
+    assert block.levels[0].n_optimistic == 5
+
+    # optional on BacktestBlock, and extra=forbid still holds
+    bt = BacktestBlock(in_sample=BacktestMetrics(source_run="b", sharpe=1.0), intrabar_audit=block)
+    assert bt.intrabar_audit.levels[0].window == "train"
+    dumped = bt.model_dump()
+    assert dumped["intrabar_audit"]["levels"][0]["n_breached"] == 7
