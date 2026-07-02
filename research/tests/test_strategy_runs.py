@@ -26,6 +26,7 @@ from pipeline.strategy_runs import (
     register_strategy,
     update_stress_runs,
     update_sweep_run,
+    update_intrabar_audit_runs,
 )
 
 
@@ -825,3 +826,32 @@ def test_update_stress_runs_unknown_strategy_raises(tmp_path):
     import pytest
     with pytest.raises(KeyError):
         update_stress_runs("missing", {"2x_fees_train": "x"}, path=p)
+
+
+# ─── Unit: update_intrabar_audit_runs writer tests ─────────────────────────────
+
+
+def test_update_intrabar_audit_runs_writes_mapping(tmp_path):
+    from pipeline.strategy_runs import update_intrabar_audit_runs
+
+    payload = {
+        "eth_s5": {
+            "symbol": "ETH-USDT-SWAP",
+            "spec_yaml": "research/strategies/strategy_S1.yaml",
+            "base_run": "eth_s5_base",
+            "regime_runs": {},
+            "stress_runs": {},
+            "sweep_run": None,
+            "walk_forward_runs": [],
+        }
+    }
+    p = tmp_path / "strategy_runs.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+
+    update_intrabar_audit_runs("eth_s5", {"train": "eth_s5_base", "oos": "eth_s5_oos"}, path=p)
+
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    assert raw["eth_s5"]["intrabar_audit_runs"] == {"train": "eth_s5_base", "oos": "eth_s5_oos"}
+    # and it parses back onto the dataclass
+    m = load_strategy_runs(path=p)
+    assert m.entries["eth_s5"].intrabar_audit_runs["oos"] == "eth_s5_oos"

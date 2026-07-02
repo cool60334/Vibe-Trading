@@ -118,6 +118,15 @@ class StrategyRunsEntry:
     from JSON means empty mapping.
     """
 
+    intrabar_audit_runs: Mapping[str, str] = dataclasses.field(
+        default_factory=lambda: types.MappingProxyType({})
+    )
+    """
+    Intrabar stop-audit run directories keyed by window ("train"/"oos").
+    Example: {"train": "eth_s5_base", "oos": "eth_s5_oos"}. Populated by stage 3's
+    --intrabar-audit flag. Backward-compatible: absent from JSON means empty mapping.
+    """
+
 
 @dataclasses.dataclass(frozen=True)
 class StrategyRunsMap:
@@ -312,6 +321,20 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
                     f"'lag_stress_runs[{k!r}]' must be a string, got {type(v).__name__}."
                 )
 
+        # Optional: intrabar stop-audit runs (backward-compatible).
+        intrabar_audit_runs_raw = entry_raw.get("intrabar_audit_runs", {})
+        if not isinstance(intrabar_audit_runs_raw, dict):
+            raise TypeError(
+                f"strategy_runs.json: entry for strategy_id '{strategy_id}': "
+                f"'intrabar_audit_runs' must be a JSON object (dict), got {type(intrabar_audit_runs_raw).__name__}."
+            )
+        for k, v in intrabar_audit_runs_raw.items():
+            if not isinstance(v, str):
+                raise TypeError(
+                    f"strategy_runs.json: entry for strategy_id '{strategy_id}': "
+                    f"'intrabar_audit_runs[{k!r}]' must be a string, got {type(v).__name__}."
+                )
+
         entries[strategy_id] = StrategyRunsEntry(
             symbol=symbol,
             spec_yaml=spec_yaml,
@@ -322,6 +345,7 @@ def load_strategy_runs(path: Path | str | None = None) -> StrategyRunsMap:
             walk_forward_runs=tuple(wf_runs),
             oos_runs=tuple(oos_runs_raw),
             lag_stress_runs=types.MappingProxyType(dict(lag_stress_runs_raw)),
+            intrabar_audit_runs=types.MappingProxyType(dict(intrabar_audit_runs_raw)),
         )
 
     return StrategyRunsMap(entries=types.MappingProxyType(_filter_entries_by_env(entries)))
@@ -386,6 +410,7 @@ def register_strategy(
         "walk_forward_runs": [],
         "oos_runs": [],
         "lag_stress_runs": {},
+        "intrabar_audit_runs": {},
     }
 
     payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
@@ -601,6 +626,58 @@ def update_lag_stress_runs(
         )
 
     entry["lag_stress_runs"] = dict(mapping)
+
+    payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
+    resolved.write_text(payload, encoding="utf-8")
+
+
+def update_intrabar_audit_runs(
+    strategy_id: str,
+    mapping: dict,
+    path: Path | str | None = None,
+) -> None:
+    """Set the intrabar_audit_runs mapping for one strategy and write the file back.
+
+    Called by stage 3 --intrabar-audit after auditing base + OOS run artifacts, so
+    emit_manifest can assemble the intrabar_audit block. Same file-preserving
+    semantics as update_lag_stress_runs.
+
+    Raises
+    ------
+    FileNotFoundError
+        If strategy_runs.json does not exist at the resolved path.
+    KeyError
+        If strategy_id is not present.
+    TypeError
+        If mapping is not a dict, or the entry is not a JSON object.
+    """
+    if not isinstance(mapping, dict):
+        raise TypeError(
+            f"update_intrabar_audit_runs: mapping must be a dict, got {type(mapping).__name__}."
+        )
+
+    resolved = Path(path) if path is not None else _DEFAULT_JSON_PATH
+    if not resolved.exists():
+        raise FileNotFoundError(f"strategy_runs.json not found at: {resolved}")
+
+    with resolved.open("r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+
+    if not isinstance(raw, dict):
+        raise TypeError(
+            f"strategy_runs.json must be a JSON mapping at the top level, "
+            f"got {type(raw).__name__}."
+        )
+    if strategy_id not in raw or strategy_id == "_comment":
+        raise KeyError(f"strategy_runs.json: strategy_id '{strategy_id}' not present.")
+
+    entry = raw[strategy_id]
+    if not isinstance(entry, dict):
+        raise TypeError(
+            f"strategy_runs.json: entry for '{strategy_id}' is not a JSON object."
+        )
+
+    entry["intrabar_audit_runs"] = dict(mapping)
 
     payload = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
     resolved.write_text(payload, encoding="utf-8")
