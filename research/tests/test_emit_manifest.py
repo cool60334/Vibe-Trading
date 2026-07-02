@@ -1555,6 +1555,14 @@ class TestEdgeSurvivesLag:
         bt = self._bt(-0.1, 1.5, [("lag1_train", 1, "train", 0.6)])
         assert self._th(compute_gate(bt)).passed is True
 
+    def test_full_window_uses_in_sample_base(self):
+        # "full" window (no walk-forward split configured) must retain against
+        # in-sample, not OOS. oos_sharpe is a decoy far from is_sharpe: correct
+        # retention = 0.8/1.0 = 0.8 (>=0.6 -> pass); the old train-vs-else split
+        # would have used oos=5.0 -> retention 0.16 (<0.6 -> wrongly fail).
+        bt = self._bt(1.0, 5.0, [("lag1_full", 1, "full", 0.8)])
+        assert self._th(compute_gate(bt)).passed is True
+
     def test_absent_when_no_lag_stress(self):
         from schemas import BacktestBlock, BacktestMetrics
         bt = BacktestBlock(in_sample=BacktestMetrics(source_run="b", sharpe=1.0))

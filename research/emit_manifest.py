@@ -334,7 +334,7 @@ def compute_gate(
         worst_lag = min(lag_sharpes) if lag_sharpes else None
         retentions: list[float] = []
         for l in lvls:
-            base = is_m.sharpe if l.window == "train" else (backtest.oos.sharpe if backtest.oos else None)
+            base = is_m.sharpe if l.window in ("train", "full") else (backtest.oos.sharpe if backtest.oos else None)
             if l.sharpe is not None and base is not None and base > 0:
                 retentions.append(l.sharpe / base)
         worst_ret = min(retentions) if retentions else None
