@@ -47,6 +47,7 @@ if str(_DASHBOARD_SCHEMAS) not in sys.path:
 from pipeline.config import _REPO_ROOT as _CFG_REPO_ROOT, load_config  # noqa: E402
 from pipeline.strategy_runs import StrategyRunsEntry, load_strategy_runs  # noqa: E402
 from pipeline.stage3_diagnose import read_metrics_csv  # noqa: E402
+from pipeline.stage4_optimize import expand_param_ranges  # noqa: E402
 
 from schemas import (  # noqa: E402
     BacktestBlock,
@@ -396,6 +397,47 @@ def derive_red_flags(backtest: BacktestBlock) -> list[RedFlagCode]:
 
     # Sort by value for deterministic output
     return sorted(set(flags), key=lambda x: x.value)
+
+
+def cpcv_required_for(parameter_search_ranges: dict) -> bool:
+    """True when the sweep grid has >1 combo (CPCV can re-select per path).
+    A {} or single-value grid (<=1 combo) is exempt (agy: total_combos <= 1)."""
+    expanded = expand_param_ranges(parameter_search_ranges or {})
+    total = 1
+    for vals in expanded.values():
+        total *= max(len(vals), 1)
+    return len(expanded) > 0 and total > 1
+
+
+def compute_not_tested(gate: GateBlock, cpcv_required: bool) -> list[str]:
+    """Names of required validations whose DATA is absent. Empty = all present."""
+    by = {t.name: t for t in gate.thresholds}
+    afi = by.get("alpha_not_fee_illusion")
+    stress_present = afi is not None and afi.actual is not None
+    cpcv_present = "cpcv_mean_sharpe" in by
+    out: list[str] = []
+    if not stress_present:
+        out.append("cost_stress")
+    if cpcv_required and not cpcv_present:
+        out.append("cpcv")
+    return out
+
+
+def required_validations_ok(gate: GateBlock) -> bool:
+    """True iff no required validation data is missing AND every present
+    cost-stress / CPCV threshold passed. Drives selection + is the promote
+    NOT_TESTED source of truth (via gate.not_tested for the missing case)."""
+    if gate.not_tested:
+        return False
+    by = {t.name: t for t in gate.thresholds}
+    afi = by.get("alpha_not_fee_illusion")
+    if afi is None or not afi.passed:
+        return False
+    for name in ("cpcv_mean_sharpe", "cpcv_p05_sharpe"):
+        t = by.get(name)
+        if t is not None and not t.passed:
+            return False
+    return True
 
 
 def _benchmark_from_row(source_run: str, row: dict) -> BenchmarkBlock | None:

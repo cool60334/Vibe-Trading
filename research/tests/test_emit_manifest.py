@@ -1361,3 +1361,53 @@ class TestCPCVGate:
     def test_absent_when_no_cpcv(self):
         gate = compute_gate(_make_good_backtest())
         assert not any(t.name.startswith("cpcv_") for t in gate.thresholds)
+
+
+# ─── TestValidationHelpers ─────────────────────────────────────────────────────
+
+
+class TestValidationHelpers:
+    def _gate(self, names_actual_passed):
+        from schemas import GateBlock, GateThreshold
+        ts = [GateThreshold(name=n, threshold=0.0, actual=a, passed=p, fatal=False)
+              for (n, a, p) in names_actual_passed]
+        overall = all(p for (_, _, p) in names_actual_passed)
+        return GateBlock(source_run="r", thresholds=ts, overall_pass=overall, fatal_fail=False)
+
+    def test_cpcv_required_for(self):
+        from emit_manifest import cpcv_required_for
+        assert cpcv_required_for({"a": [1, 3, 1]}) is True        # expands to [1,2,3] -> 3 combos
+        assert cpcv_required_for({"a": [20]}) is False             # single value
+        assert cpcv_required_for({}) is False                      # empty
+        assert cpcv_required_for({"a": [1, 2, 1], "b": [3, 4, 1]}) is True  # 2x2 -> 4 combos
+
+    def test_compute_not_tested(self):
+        from emit_manifest import compute_not_tested
+        # stress present (actual not None) + cpcv present -> nothing missing
+        g = self._gate([("alpha_not_fee_illusion", 0.5, True), ("cpcv_mean_sharpe", 1.2, True)])
+        assert compute_not_tested(g, cpcv_required=True) == []
+        # stress absent (actual None) -> cost_stress missing
+        g = self._gate([("alpha_not_fee_illusion", None, False)])
+        assert compute_not_tested(g, cpcv_required=False) == ["cost_stress"]
+        # cpcv required but absent -> cpcv missing
+        g = self._gate([("alpha_not_fee_illusion", 0.5, True)])
+        assert compute_not_tested(g, cpcv_required=True) == ["cpcv"]
+        # cpcv NOT required + absent -> not listed
+        assert compute_not_tested(g, cpcv_required=False) == []
+
+    def test_required_validations_ok(self):
+        from emit_manifest import required_validations_ok, compute_not_tested
+        # all present + passing
+        g = self._gate([("alpha_not_fee_illusion", 0.5, True),
+                        ("cpcv_mean_sharpe", 1.2, True), ("cpcv_p05_sharpe", 0.1, True)])
+        g.not_tested = compute_not_tested(g, cpcv_required=True)
+        assert required_validations_ok(g) is True
+        # cpcv present but failing -> not ok
+        g = self._gate([("alpha_not_fee_illusion", 0.5, True),
+                        ("cpcv_mean_sharpe", 0.8, False), ("cpcv_p05_sharpe", 0.1, True)])
+        g.not_tested = compute_not_tested(g, cpcv_required=True)
+        assert required_validations_ok(g) is False
+        # missing data -> not ok
+        g = self._gate([("alpha_not_fee_illusion", None, False)])
+        g.not_tested = ["cost_stress"]
+        assert required_validations_ok(g) is False
