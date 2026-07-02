@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 # ── Path bootstrap ──────────────────────────────────────────────────────────────
 _THIS_FILE = Path(__file__).resolve()
 _RESEARCH_DIR = _THIS_FILE.parent          # research/
@@ -779,6 +781,12 @@ def build_strategy_manifest(
     gate: GateBlock | None = None
     if backtest is not None:
         gate = compute_gate(backtest, optimization, cpcv)
+        if spec_yaml_path is not None and spec_yaml_path.exists():
+            spec_doc = yaml.safe_load(spec_yaml_path.read_text(encoding="utf-8")) or {}
+            psr = spec_doc.get("parameter_search_ranges", {}) or {}
+        else:
+            psr = {}
+        gate.not_tested = compute_not_tested(gate, cpcv_required_for(psr))
 
     # ── pipeline_stage ──────────────────────────────────────────────────────────
     pipeline_stage = _determine_pipeline_stage(strategy_id, manifests_dir)

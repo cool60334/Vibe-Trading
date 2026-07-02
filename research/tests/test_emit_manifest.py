@@ -1411,3 +1411,18 @@ class TestValidationHelpers:
         g = self._gate([("alpha_not_fee_illusion", None, False)])
         g.not_tested = ["cost_stress"]
         assert required_validations_ok(g) is False
+
+
+def test_emitted_gate_carries_not_tested(tmp_path, monkeypatch):
+    # A gate with no cpcv + no stress, grid >1 combo -> not_tested = [cost_stress, cpcv]
+    from emit_manifest import compute_not_tested, cpcv_required_for
+    from schemas import GateBlock, GateThreshold
+    g = GateBlock(source_run="r", thresholds=[
+        GateThreshold(name="alpha_not_fee_illusion", threshold=0.0, actual=None, passed=False, fatal=False),
+    ], overall_pass=False, fatal_fail=False)
+    # [30, 90, 30] is a [lo, hi, step] spec under expand_param_ranges -> expands to
+    # [30, 60, 90] (3 combos), NOT the literal 3-item discrete list [30, 60, 90]
+    # (which would be parsed as lo=30,hi=60,step=90 -> [30], 1 combo).
+    cpcv_req = cpcv_required_for({"lookback_days": [30, 90, 30]})
+    g.not_tested = compute_not_tested(g, cpcv_req)
+    assert set(g.not_tested) == {"cost_stress", "cpcv"}
