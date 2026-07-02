@@ -786,6 +786,8 @@ def build_strategy_manifest(
             psr = spec_doc.get("parameter_search_ranges", {}) or {}
         else:
             psr = {}
+        if not isinstance(psr, dict):
+            psr = {}
         gate.not_tested = compute_not_tested(gate, cpcv_required_for(psr))
 
     # ── pipeline_stage ──────────────────────────────────────────────────────────

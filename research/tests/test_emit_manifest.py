@@ -1426,3 +1426,93 @@ def test_emitted_gate_carries_not_tested(tmp_path, monkeypatch):
     cpcv_req = cpcv_required_for({"lookback_days": [30, 90, 30]})
     g.not_tested = compute_not_tested(g, cpcv_req)
     assert set(g.not_tested) == {"cost_stress", "cpcv"}
+
+
+def test_build_strategy_manifest_wires_not_tested_from_spec_yaml(tmp_path):
+    """Integration test: build_strategy_manifest reads parameter_search_ranges from
+    the strategy's spec_yaml, computes cpcv_required, and sets gate.not_tested.
+
+    No stress_runs -> cost_stress missing -> alpha_not_fee_illusion.actual is None.
+    No cpcv.json -> cpcv missing.
+    Grid has >1 combo ([30, 90, 30] expands to [30, 60, 90]) -> cpcv required.
+    => not_tested should be {"cost_stress", "cpcv"}.
+    """
+    runs_root = tmp_path / "runs"
+    manifests_dir = tmp_path / "manifests"
+    manifests_dir.mkdir()
+
+    base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
+    _write_metrics_csv(base_csv, _good_metrics_row())
+
+    spec_yaml_path = tmp_path / "strategies" / "strategy_s1.yaml"
+    spec_yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_yaml_path.write_text(
+        "strategy_id: s1\n"
+        "parameter_search_ranges:\n"
+        "  lookback_days: [30, 90, 30]\n",
+        encoding="utf-8",
+    )
+
+    entry = _make_entry(base_run="base", spec_yaml=str(spec_yaml_path))
+    result = build_strategy_manifest("s1", "BTC", entry, runs_root, manifests_dir)
+
+    gate = result.get("gate")
+    assert gate is not None
+    assert set(gate["not_tested"]) == {"cost_stress", "cpcv"}
+
+
+def test_build_strategy_manifest_not_tested_empty_when_grid_single_combo(tmp_path):
+    """Single-value grid -> cpcv not required; only cost_stress missing (no stress_runs)."""
+    runs_root = tmp_path / "runs"
+    manifests_dir = tmp_path / "manifests"
+    manifests_dir.mkdir()
+
+    base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
+    _write_metrics_csv(base_csv, _good_metrics_row())
+
+    spec_yaml_path = tmp_path / "strategies" / "strategy_s1.yaml"
+    spec_yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_yaml_path.write_text(
+        "strategy_id: s1\n"
+        "parameter_search_ranges:\n"
+        "  lookback_days: [30]\n",
+        encoding="utf-8",
+    )
+
+    entry = _make_entry(base_run="base", spec_yaml=str(spec_yaml_path))
+    result = build_strategy_manifest("s1", "BTC", entry, runs_root, manifests_dir)
+
+    gate = result.get("gate")
+    assert gate is not None
+    assert gate["not_tested"] == ["cost_stress"]
+
+
+def test_build_strategy_manifest_not_tested_when_psr_not_a_dict(tmp_path):
+    """Malformed parameter_search_ranges (a YAML list, not a mapping) must not crash
+    build_strategy_manifest -- degrade to psr={} instead of raising deep inside
+    expand_param_ranges."""
+    runs_root = tmp_path / "runs"
+    manifests_dir = tmp_path / "manifests"
+    manifests_dir.mkdir()
+
+    base_csv = runs_root / "base" / "artifacts" / "metrics.csv"
+    _write_metrics_csv(base_csv, _good_metrics_row())
+
+    spec_yaml_path = tmp_path / "strategies" / "strategy_s1.yaml"
+    spec_yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_yaml_path.write_text(
+        "strategy_id: s1\n"
+        "parameter_search_ranges:\n"
+        "  - not\n"
+        "  - a\n"
+        "  - mapping\n",
+        encoding="utf-8",
+    )
+
+    entry = _make_entry(base_run="base", spec_yaml=str(spec_yaml_path))
+    result = build_strategy_manifest("s1", "BTC", entry, runs_root, manifests_dir)
+
+    gate = result.get("gate")
+    assert gate is not None
+    # psr treated as {} -> cpcv not required -> only cost_stress missing
+    assert gate["not_tested"] == ["cost_stress"]
