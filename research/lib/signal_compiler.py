@@ -292,6 +292,9 @@ def _render_exit_rule_check(
 
 def _render_exit_state_machine(exit_rules, size_mult: float = 1.0, lag_bars: int = 0) -> str:
     """Render the full exit state machine loop. Indented at 8 spaces (class method body)."""
+    if lag_bars < 0:
+        raise ValueError(f"lag_bars must be >= 0, got {lag_bars}")
+
     # Indentation levels:
     #   8  = method body
     #  12  = for-loop body

@@ -691,3 +691,8 @@ def test_lag_bars_appends_shift(basic_spec):
 
     src = compile_strategy(basic_spec, lag_bars=2)
     assert "signal = signal.shift(2).fillna(0.0)" in src
+
+
+def test_lag_bars_negative_raises(basic_spec):
+    with pytest.raises(ValueError, match="lag_bars must be >= 0"):
+        compile_strategy(basic_spec, lag_bars=-1)
