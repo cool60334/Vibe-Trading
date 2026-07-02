@@ -25,6 +25,8 @@ from schemas import (
     GATE_MIN_CPCV_MEAN_SHARPE,
     GATE_MIN_CPCV_P05_SHARPE,
     GATE_MIN_DEFLATED_SHARPE,
+    GATE_MIN_LAG_RETENTION,
+    GATE_MIN_LAG_SHARPE,
     GATE_MIN_PROFIT_FACTOR,
     GATE_MIN_SHARPE,
     GATE_MIN_TRADES,
@@ -382,6 +384,8 @@ def test_canonical_gate_constants():
     assert GATE_MIN_DEFLATED_SHARPE == 0.95
     assert GATE_MIN_CPCV_MEAN_SHARPE == 1.0
     assert GATE_MIN_CPCV_P05_SHARPE == 0.0
+    assert GATE_MIN_LAG_SHARPE == 0.5
+    assert GATE_MIN_LAG_RETENTION == 0.6
 
 
 def test_fatal_gate_checks_are_the_two_canonical_ones():
@@ -742,3 +746,17 @@ def test_cpcv_block_and_manifest_field():
                     pct_paths_positive=0.9, n_blocks=10, k_test=3)
     assert blk.n_paths == 120 and blk.cpcv_mean_sharpe == 1.3
     assert "cpcv" in StrategyManifest.model_fields  # optional field exists
+
+
+# ---------------------------------------------------------------------------
+# LagStress blocks — strategy-level entry-delay stress (task 2.13)
+# ---------------------------------------------------------------------------
+
+
+def test_lag_stress_blocks():
+    from schemas import LagStressLevel, LagStressBlock, BacktestBlock, BacktestMetrics
+    lvl = LagStressLevel(label="lag1_train", source_run="r", lag_bars=1, window="train", sharpe=0.8)
+    blk = LagStressBlock(source_run="r", levels=[lvl])
+    assert blk.levels[0].lag_bars == 1 and blk.levels[0].window == "train"
+    bt = BacktestBlock(in_sample=BacktestMetrics(source_run="b", sharpe=1.0), lag_stress=blk)
+    assert bt.lag_stress.levels[0].sharpe == 0.8

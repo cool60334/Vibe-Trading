@@ -47,6 +47,8 @@ GATE_MIN_DEFLATED_SHARPE: float = 0.95  # multiple-testing haircut (Bailey-LdP D
 # Monte-Carlo: 95% CI of the return distribution must NOT cross zero.
 GATE_MIN_CPCV_MEAN_SHARPE: float = 1.0
 GATE_MIN_CPCV_P05_SHARPE: float = 0.0
+GATE_MIN_LAG_SHARPE: float = 0.5       # absolute floor under entry-delay stress
+GATE_MIN_LAG_RETENTION: float = 0.6    # lag_sharpe / base_sharpe must stay above this
 
 #: Names of the two FATAL gate checks. Failing either is a hard block that
 #: cannot be overridden in the promotion dialog (design D7).
@@ -368,6 +370,21 @@ class CostStressBlock(_Manifest):
     levels: List[CostStressLevel] = Field(default_factory=list)
 
 
+class LagStressLevel(_Manifest):
+    """One entry-delay scenario (a shifted-signal backtest on one window)."""
+
+    label: str = Field(..., description="e.g. 'lag1_train', 'lag2_oos'.")
+    source_run: str
+    lag_bars: int = Field(..., ge=1)
+    window: str = Field(..., description="'train' | 'oos' | 'full'.")
+    sharpe: Optional[float] = None
+
+
+class LagStressBlock(_Manifest):
+    source_run: Optional[str] = None
+    levels: List[LagStressLevel] = Field(default_factory=list)
+
+
 class BacktestBlock(_Manifest):
     """All backtest results for a strategy, aggregated across run directories."""
 
@@ -380,6 +397,7 @@ class BacktestBlock(_Manifest):
     benchmark: Optional[BenchmarkBlock] = None
     by_regime: List[RegimeMetrics] = Field(default_factory=list)
     cost_stress: Optional[CostStressBlock] = None
+    lag_stress: Optional[LagStressBlock] = None
 
 
 class OptimizationBlock(_Manifest):
