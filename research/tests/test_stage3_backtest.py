@@ -907,3 +907,35 @@ class TestRunLagStressForStrategy:
         # lag_stress_runs must not have been written
         on_disk = json.loads(runs_json.read_text())["eth_s5"]
         assert "lag_stress_runs" not in on_disk
+
+
+class TestResolveStopPct:
+    def test_resolve_stop_pct_from_yaml(self, tmp_path):
+        from pipeline.stage3_backtest import _resolve_stop_pct
+        y = tmp_path / "s.yaml"
+        y.write_text(
+            "name: s\nexit_rules:\n"
+            "- condition: take_profit_pct\n  value: 8.5\n"
+            "- condition: stop_loss_pct\n  value: 3.0\n",
+            encoding="utf-8",
+        )
+        assert _resolve_stop_pct(y, engine_path=None) == 3.0
+
+    def test_resolve_stop_pct_absent_returns_none(self, tmp_path):
+        from pipeline.stage3_backtest import _resolve_stop_pct
+        y = tmp_path / "s.yaml"
+        y.write_text(
+            "name: s\nexit_rules:\n- condition: time_based\n  max_hold_hours: 168\n",
+            encoding="utf-8",
+        )
+        assert _resolve_stop_pct(y, engine_path=None) is None
+
+    def test_resolve_stop_pct_warns_on_engine_mismatch(self, tmp_path, capsys):
+        from pipeline.stage3_backtest import _resolve_stop_pct
+        y = tmp_path / "s.yaml"
+        y.write_text("name: s\nexit_rules:\n- condition: stop_loss_pct\n  value: 3.0\n", encoding="utf-8")
+        eng = tmp_path / "signal_engine.py"
+        eng.write_text("class SignalEngine:\n    SL_PCT = 5.0\n", encoding="utf-8")
+        val = _resolve_stop_pct(y, engine_path=eng)
+        assert val == 3.0                         # YAML wins
+        assert "mismatch" in capsys.readouterr().out.lower()

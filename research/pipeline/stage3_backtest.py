@@ -61,7 +61,7 @@ for _p in (_RESEARCH_DIR,):
 
 # ── Internal imports ───────────────────────────────────────────────────────────
 from pipeline.config import _REPO_ROOT, ResearchConfig, SymbolConfig, load_config  # noqa: E402
-from pipeline.strategy_runs import StrategyRunsEntry, StrategyRunsMap, load_strategy_runs, update_stress_runs, update_lag_stress_runs  # noqa: E402
+from pipeline.strategy_runs import StrategyRunsEntry, StrategyRunsMap, load_strategy_runs, update_stress_runs, update_lag_stress_runs, update_intrabar_audit_runs  # noqa: E402
 
 # ── Agent / backtest path ──────────────────────────────────────────────────────
 _REPO_ROOT_STR = str(_REPO_ROOT)
@@ -397,6 +397,138 @@ def _run_lag_stress_for_strategy(
 
     if registered:
         update_lag_stress_runs(strategy_id, registered)
+    return registered
+
+
+def _resolve_stop_pct(spec_yaml_path: Path, engine_path: Path | None) -> float | None:
+    """First stop_loss_pct in the strategy YAML exit_rules; None if absent.
+
+    Cross-checks an ``SL_PCT = <n>`` constant in a hand-written signal_engine.py
+    (via text regex, no import) and warns on mismatch; the YAML value is used.
+    """
+    import re
+    import yaml as _yaml
+
+    spec = _yaml.safe_load(Path(spec_yaml_path).read_text(encoding="utf-8"))
+    yaml_val: float | None = None
+    for rule in (spec.get("exit_rules") or []):
+        if isinstance(rule, dict) and rule.get("condition") == "stop_loss_pct":
+            yaml_val = float(rule["value"])
+            break
+    if yaml_val is None:
+        return None
+
+    if engine_path is not None and Path(engine_path).exists():
+        m = re.search(r"SL_PCT\s*=\s*([0-9]+(?:\.[0-9]+)?)", Path(engine_path).read_text(encoding="utf-8"))
+        if m and abs(float(m.group(1)) - yaml_val) > 1e-9:
+            print(
+                f"  [intrabar-audit] WARN stop_pct mismatch: YAML={yaml_val} "
+                f"engine SL_PCT={m.group(1)} — using YAML"
+            )
+    return yaml_val
+
+
+def intrabar_audit_run_plan(entry: StrategyRunsEntry) -> list[tuple[str, str]]:
+    """(window, run_name) pairs to audit: base run + first OOS run, when present."""
+    plan: list[tuple[str, str]] = []
+    if entry.base_run:
+        plan.append(("train", entry.base_run))
+    oos = entry.oos_runs or entry.walk_forward_runs
+    if oos:
+        plan.append(("oos", oos[0]))
+    return plan
+
+
+def _read_slippage(run_dir: Path) -> float:
+    """Read the run's configured slippage rate from config.json (default 0.0005)."""
+    cfg_path = run_dir / "config.json"
+    if cfg_path.exists():
+        try:
+            return float(json.loads(cfg_path.read_text(encoding="utf-8")).get("slippage", 0.0005))
+        except Exception:  # noqa: BLE001
+            pass
+    return 0.0005
+
+
+def _run_intrabar_audit_for_strategy(
+    strategy_id: str,
+    symbol: str,
+    entry: StrategyRunsEntry,
+    runs_root: Path,
+    strategies_code_dir: Path,
+) -> dict:
+    """Audit base + OOS run artifacts for intrabar stop breaches; register results.
+
+    Reads each run's already-completed ``positions.csv`` / ``ohlcv_<symbol>.csv``
+    (+ optional ``trades.csv``) artifacts, reconstructs trade windows, and scans
+    them for stop-loss breaches invisible to the close-only backtest engine.
+    Purely diagnostic: does not re-backtest or mutate any engine artifact.
+
+    Writes ``artifacts/intrabar_audit.json`` per audited run and registers the
+    {window: run_name} mapping via update_intrabar_audit_runs. Strategies with
+    no stop_loss_pct exit rule are skipped (return {}).
+    """
+    import pandas as pd
+    from lib.intrabar_stop_audit import reconstruct_trades, audit_trades
+
+    spec_yaml_path = _REPO_ROOT / entry.spec_yaml
+    engine_path = find_signal_engine(strategies_code_dir, strategy_id)
+    stop_pct = _resolve_stop_pct(spec_yaml_path, engine_path)
+    if stop_pct is None:
+        print(f"  [intrabar-audit] {strategy_id}: no stop_loss_pct — skipping")
+        return {}
+
+    registered: dict = {}
+    for window, run_name in intrabar_audit_run_plan(entry):
+        art = runs_root / run_name / "artifacts"
+        pos_path = art / "positions.csv"
+        ohlcv_path = art / f"ohlcv_{symbol}.csv"
+        trades_path = art / "trades.csv"
+        if not (pos_path.exists() and ohlcv_path.exists()):
+            print(f"  [intrabar-audit] {run_name}: missing artifacts — skipping")
+            continue
+
+        pos_df = pd.read_csv(pos_path, index_col=0, parse_dates=True)
+        ohlcv = pd.read_csv(ohlcv_path, index_col=0, parse_dates=True)
+        if symbol not in pos_df.columns:
+            print(f"  [intrabar-audit] {run_name}: symbol column absent — skipping")
+            continue
+        # Align the position series onto the ohlcv bar index (integer positions match).
+        position = pos_df[symbol].reindex(ohlcv.index).fillna(0.0)
+
+        windows = reconstruct_trades(position)
+
+        # trades.csv (agent/backtest/engines/base.py::_write_artifacts) writes one
+        # entry row then one exit row per trade, in that order; the exit row's
+        # "reason" column holds the real exit_reason (entry rows are always
+        # reason="signal", a placeholder). Odd rows (index 1, 3, 5, ...) are exits.
+        exit_reasons: list[str] = []
+        if trades_path.exists():
+            tdf = pd.read_csv(trades_path)
+            if len(tdf) >= 2:
+                exit_reasons = tdf.iloc[1::2]["reason"].astype(str).tolist()   # exit rows
+            if len(exit_reasons) != len(windows):
+                print(
+                    f"  [intrabar-audit] {run_name}: WARN trade count mismatch "
+                    f"(positions={len(windows)} trades.csv={len(exit_reasons)}) — "
+                    "positions.csv target may differ from executed path"
+                )
+
+        slippage_rate = _read_slippage(runs_root / run_name)
+        result = audit_trades(windows, ohlcv, stop_pct, slippage_rate, exit_reasons)
+
+        payload = {"window": window, "source_run": run_name, **dataclasses.asdict(result)}
+        (art / "intrabar_audit.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        registered[window] = run_name
+        print(
+            f"  [intrabar-audit] {run_name} ({window}): "
+            f"{result.n_breached}/{result.n_trades} breached, {result.n_optimistic} optimistic"
+        )
+
+    if registered:
+        update_intrabar_audit_runs(strategy_id, registered)
     return registered
 
 
@@ -1018,6 +1150,10 @@ def main() -> None:
         "--lag-stress", action="store_true",
         help="Also generate entry-delay lag-stress runs (recompiled signal, shifted lag_bars) per strategy.",
     )
+    parser.add_argument(
+        "--intrabar-audit", action="store_true",
+        help="Audit each strategy's base + OOS run for intrabar stop-loss breaches (diagnostic).",
+    )
     args = parser.parse_args()
 
     cfg: ResearchConfig = load_config()
@@ -1137,6 +1273,21 @@ def main() -> None:
                 )
             except Exception as exc:  # noqa: BLE001
                 print(f"  [lag-stress] {sid}: ERROR — {exc}")
+                continue
+
+    if args.intrabar_audit and stress_eligible:
+        print("\n" + "=" * 60)
+        print(f"Stage 3 — Intrabar stop-audit ({len(stress_eligible)} strategies)")
+        print("=" * 60)
+        for sid, symbol in stress_eligible:
+            entry = runs_map.entries[sid]
+            print(f"\n[intrabar-audit] {sid}")
+            try:
+                _run_intrabar_audit_for_strategy(
+                    sid, symbol, entry, runs_root, strategies_code_dir,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [intrabar-audit] {sid}: ERROR — {exc}")
                 continue
 
     print_summary(all_results)
