@@ -425,7 +425,7 @@ python -m research.pipeline.stage4_optimize --strategy <id> --train-start 2022-0
 純 Python 加權算分（無 LLM），挑出可進 testnet 的策略，寫 `selection.json`；完成後自動 emit per-strategy `manifest.json`。
 
 - **資格**：要有 diagnosis + optimization + metrics，且 `recommended_action != back_to_stage_2`。
-- **selected**：`recommended_action == proceed` **且** gate `fatal_fail == False` → `selected=True`；`back_to_stage_4`、或 `proceed` 但 `fatal_fail==True`（如 fee-illusion／無 OOS holdout）→ 入榜但 `selected=False`。selected 與 dashboard promote gate 一致：`fatal_fail` 的策略絕不標 selected（見 `decide_selected`）。
+- **selected**：需同時滿足三條件 → `recommended_action == proceed` **且** gate `fatal_fail == False` **且** `validations_ok`（必要驗證存在且通過：cost-stress 一律必要，CPCV 於 sweep grid 組合數 >1 時必要，經 `emit_manifest.py::required_validations_ok` 判定）→ `selected=True`；`back_to_stage_4`、或 `proceed` 但 `fatal_fail==True`（如 fee-illusion／無 OOS holdout）、或必要驗證缺失/未過（`gate.not_tested` 非空或驗證未通過）→ 入榜但 `selected=False`。selected 與 dashboard promote gate 一致：`fatal_fail` 或 NOT_TESTED 的策略絕不標 selected（見 `decide_selected`）。
 - **評分**：`0.4×(sharpe/1.5) + 0.3×(1−|dd|/0.10) + 0.2×(pf/1.5) + 0.1×(trades/100)`（各項 clamp 0~2）。
 
 ```bash
