@@ -845,3 +845,190 @@ class TestManifestEmission:
         )
         entry = next(e for e in sel["ranking"] if e["strategy_id"] == "btc_fatal")
         assert entry["selected"] is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TestMainValidationsWiring — integration coverage for the main() call site
+# that loads optimization.json/cpcv.json, computes the full gate (including
+# validations_ok), and feeds it into decide_selected(). Complements
+# TestDecideSelectedValidations (pure-logic unit tests) with coverage of the
+# actual _load_optional_block / psr-YAML / gate.not_tested wiring in main().
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _write_spec_yaml_with_psr(tmp_path: Path, strategy_id: str, psr: dict) -> None:
+    """Write research/strategies/<strategy_id>.yaml with a parameter_search_ranges
+    block, at the repo-relative path main() resolves via _REPO_ROOT / entry.spec_yaml."""
+    spec_path = tmp_path / "research" / "strategies" / f"{strategy_id}.yaml"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(
+        _yaml_dump({"parameter_search_ranges": psr}),
+        encoding="utf-8",
+    )
+
+
+def _yaml_dump(data: dict) -> str:
+    import yaml as _y
+    return _y.safe_dump(data)
+
+
+def _setup_strategy_with_oos_and_stress(
+    tmp_path: Path,
+    strategy_id: str,
+    action: str,
+    base_run: str,
+    oos_run: str,
+    stress_run: str,
+    oos_sharpe: float = 1.5,
+    stress_sharpe: float = 0.8,
+) -> None:
+    """Like _setup_strategy but also writes an OOS run (so the fatal
+    oos_sharpe_positive gate passes) and a 3x-fee stress run (so the fatal
+    alpha_not_fee_illusion gate has data and passes)."""
+    _setup_strategy(
+        tmp_path, strategy_id, action,
+        sharpe=2.0, drawdown=0.05, profit_factor=1.8, trade_count=150,
+        base_run=base_run,
+    )
+
+    oos_artifacts = tmp_path / "runs" / oos_run / "artifacts"
+    oos_artifacts.mkdir(parents=True, exist_ok=True)
+    (oos_artifacts / "metrics.csv").write_text(
+        f"sharpe,max_drawdown,profit_factor,trade_count\n"
+        f"{oos_sharpe},0.04,1.6,60\n",
+        encoding="utf-8",
+    )
+
+    stress_artifacts = tmp_path / "runs" / stress_run / "artifacts"
+    stress_artifacts.mkdir(parents=True, exist_ok=True)
+    (stress_artifacts / "metrics.csv").write_text(
+        f"sharpe,max_drawdown,profit_factor,trade_count\n"
+        f"{stress_sharpe},0.06,1.3,150\n",
+        encoding="utf-8",
+    )
+
+
+class TestMainValidationsWiring:
+    """Exercises the main() block (stage5_select.py ~lines 430-452) that loads
+    optimization.json/cpcv.json via _load_optional_block, computes the full
+    gate with compute_gate(backtest, optimization, cpcv), derives
+    gate.not_tested via compute_not_tested(gate, cpcv_required_for(psr))
+    read from the strategy's spec YAML, and feeds validations_ok into
+    decide_selected()."""
+
+    def _run_main_with_entry(self, tmp_path: Path, strategy_id: str, entry) -> tuple[int, str, str]:
+        import pipeline.stage5_select as m5
+        from pipeline.strategy_runs import StrategyRunsMap
+
+        runs_map = StrategyRunsMap(entries={strategy_id: entry})
+        manifests_dir = tmp_path / "research" / "manifests"
+
+        with (
+            patch.object(m5, "load_strategy_runs", return_value=runs_map),
+            patch.object(m5, "manifests_dir", manifests_dir, create=True),
+            patch("pipeline.stage5_select._REPO_ROOT", tmp_path),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            import io
+            from contextlib import redirect_stdout, redirect_stderr
+
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                m5.main()
+
+        return exc_info.value.code, out_buf.getvalue(), err_buf.getvalue()
+
+    def test_grid_requires_cpcv_but_missing_blocks_selection(self, tmp_path: Path):
+        """>1-combo parameter_search_ranges grid + no cpcv.json written →
+        cpcv_required_for(psr) is True, compute_not_tested reports 'cpcv'
+        missing (and cost_stress is present+passing here), so validations_ok
+        is False and selected must be False even though action == 'proceed'
+        and the FATAL gates (oos_sharpe_positive, alpha_not_fee_illusion) pass."""
+        from pipeline.strategy_runs import StrategyRunsEntry
+
+        sid = "btc_needs_cpcv"
+        _setup_strategy_with_oos_and_stress(
+            tmp_path, sid, "proceed",
+            base_run=f"run_{sid}", oos_run=f"run_{sid}_oos", stress_run=f"run_{sid}_3x",
+        )
+        # [lo, hi, step] grid with >1 combo (3 discrete values: 0.1, 0.3, 0.5)
+        _write_spec_yaml_with_psr(tmp_path, sid, {"threshold": [0.1, 0.5, 0.2]})
+        # No cpcv.json written — required but missing.
+
+        entry = StrategyRunsEntry(
+            symbol="BTC-USDT-SWAP",
+            spec_yaml=f"research/strategies/{sid}.yaml",
+            base_run=f"run_{sid}",
+            regime_runs={},
+            stress_runs={"3x_fees": f"run_{sid}_3x"},
+            sweep_run=None,
+            oos_runs=(f"run_{sid}_oos",),
+        )
+
+        exit_code, stdout, _err = self._run_main_with_entry(tmp_path, sid, entry)
+        assert exit_code == 0
+
+        sel = json.loads(
+            (tmp_path / "research" / "manifests" / "selection.json").read_text(encoding="utf-8")
+        )
+        ranked = next(e for e in sel["ranking"] if e["strategy_id"] == sid)
+        assert ranked["selected"] is False
+
+        # stdout confirms the FATAL gates passed (proceed would otherwise be
+        # ambiguous with the pre-existing fatal_fail veto) — selected=False here
+        # is driven by the new validations_ok wiring, not fatal_fail.
+        assert "selected=False, action=proceed" in stdout
+
+    def test_grid_requires_cpcv_present_and_passing_selects(self, tmp_path: Path):
+        """Same >1-combo grid, but this time cpcv.json is present with
+        passing mean/p05 sharpe, cost-stress is present+passing, and OOS
+        sharpe is positive → validations_ok True, fatal_fail False,
+        action == 'proceed' → selected True."""
+        from pipeline.strategy_runs import StrategyRunsEntry
+
+        sid = "btc_cpcv_ok"
+        _setup_strategy_with_oos_and_stress(
+            tmp_path, sid, "proceed",
+            base_run=f"run_{sid}", oos_run=f"run_{sid}_oos", stress_run=f"run_{sid}_3x",
+        )
+        _write_spec_yaml_with_psr(tmp_path, sid, {"threshold": [0.1, 0.5, 0.2]})
+
+        cpcv_path = tmp_path / "research" / "manifests" / sid / "cpcv.json"
+        cpcv_path.write_text(
+            json.dumps({
+                "n_paths": 10,
+                "cpcv_mean_sharpe": 1.2,
+                "cpcv_p05_sharpe": 0.1,
+                "pct_paths_positive": 0.9,
+                "n_blocks": 5,
+                "k_test": 2,
+            }),
+            encoding="utf-8",
+        )
+
+        entry = StrategyRunsEntry(
+            symbol="BTC-USDT-SWAP",
+            spec_yaml=f"research/strategies/{sid}.yaml",
+            base_run=f"run_{sid}",
+            regime_runs={},
+            stress_runs={"3x_fees": f"run_{sid}_3x"},
+            sweep_run=None,
+            oos_runs=(f"run_{sid}_oos",),
+        )
+
+        exit_code, stdout, _err = self._run_main_with_entry(tmp_path, sid, entry)
+        assert exit_code == 0
+
+        sel = json.loads(
+            (tmp_path / "research" / "manifests" / "selection.json").read_text(encoding="utf-8")
+        )
+        ranked = next(e for e in sel["ranking"] if e["strategy_id"] == sid)
+        assert ranked["selected"] is True
+
+        assert "selected=True, action=proceed" in stdout
+
+        # manifest.json is still written for the strategy (emitted regardless
+        # of selection outcome).
+        manifest_path = tmp_path / "research" / "manifests" / sid / "manifest.json"
+        assert manifest_path.exists()
