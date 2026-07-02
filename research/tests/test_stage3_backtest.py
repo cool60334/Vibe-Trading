@@ -657,19 +657,32 @@ class TestStressRunPlan:
             assert m and float(m.group(1)) == mult
 
 
-def test_lag_stress_run_plan(monkeypatch):
-    from pipeline.stage3_backtest import lag_stress_run_plan
-    from pipeline.config import load_config
-    cfg = load_config()
-    # force a walk-forward split so windows = [train, oos]
-    plan = lag_stress_run_plan("eth_s5_half_size", cfg)
-    # windows (train+oos when oos_start set) x lags
-    lags = cfg.lag_stress_bars
-    assert len(plan) == 2 * len(lags) or len(plan) == 1 * len(lags)  # split vs full
-    names, labels, windows, lag_vals = zip(*plan)
-    assert set(lag_vals) == set(lags)
-    assert all("lagstress" in n for n in names)
-    assert all(w in ("train", "oos", "full") for w in windows)
+class TestLagStressRunPlan:
+    def test_split_yields_train_and_oos_each_lag(self):
+        from pipeline.stage3_backtest import lag_stress_run_plan
+        cfg = _make_research_config(period=730, interval="1H")
+        cfg = dataclasses.replace(cfg, oos_start="2025-01-01", lag_stress_bars=(1, 2))
+        plan = lag_stress_run_plan("eth_s5_half_size", cfg, today=date(2026, 1, 1))
+        assert plan == [
+            ("eth_s5_half_size_lagstress_train_lag1", "lag1_train", "train", 1),
+            ("eth_s5_half_size_lagstress_train_lag2", "lag2_train", "train", 2),
+            ("eth_s5_half_size_lagstress_oos_lag1", "lag1_oos", "oos", 1),
+            ("eth_s5_half_size_lagstress_oos_lag2", "lag2_oos", "oos", 2),
+        ]
+
+    def test_no_split_yields_full_window_only(self):
+        from pipeline.stage3_backtest import lag_stress_run_plan
+        cfg = _make_research_config(period=730, interval="1H")
+        cfg = dataclasses.replace(cfg, oos_start=None)
+        plan = lag_stress_run_plan("btc_s9", cfg, today=date(2026, 1, 1))
+        assert len(plan) == len(cfg.lag_stress_bars)
+        assert all(p[2] == "full" for p in plan)
+        assert [p[0] for p in plan] == [
+            f"btc_s9_lagstress_full_lag{lag}" for lag in cfg.lag_stress_bars
+        ]
+        assert [p[1] for p in plan] == [
+            f"lag{lag}_full" for lag in cfg.lag_stress_bars
+        ]
 
 
 class TestPrintSummarySkippedWindow:
@@ -749,3 +762,106 @@ class TestRunStressForStrategy:
             tmp_path / "code", tmp_path / "manifests", today=date(2026, 1, 1),
         )
         assert registered == {}
+
+
+class TestRunLagStressForStrategy:
+    """_run_lag_stress_for_strategy writes config.json + a compiled signal_engine.py
+    per (window x lag) directly (no _setup_run_dir copy), then backtests it.
+
+    compile_strategy() and StrategySpec.model_validate() are mocked so the test
+    exercises only this function's own orchestration logic, not the compiler.
+    """
+
+    def _write_payload(self, tmp_path, strategy_id="btc_s9"):
+        payload = {
+            strategy_id: {
+                "symbol": "BTC-USDT-SWAP",
+                "spec_yaml": "research/strategies/strategy_S1.yaml",
+                "base_run": f"{strategy_id}_base",
+                "regime_runs": {},
+                "stress_runs": {},
+                "sweep_run": None,
+                "walk_forward_runs": [],
+            },
+        }
+        runs_json = tmp_path / "strategy_runs.json"
+        runs_json.write_text(json.dumps(payload), encoding="utf-8")
+        return runs_json
+
+    def test_registers_successful_lag_stress_runs(self, tmp_path, monkeypatch):
+        import subprocess
+        from pipeline import stage3_backtest as s3
+
+        runs_json = self._write_payload(tmp_path, "btc_s9")
+        monkeypatch.setattr("pipeline.strategy_runs._DEFAULT_JSON_PATH", runs_json)
+
+        # StrategySpec.model_validate: skip real schema validation entirely.
+        monkeypatch.setattr(
+            "schemas.StrategySpec.model_validate", lambda raw: MagicMock()
+        )
+        # compile_strategy: canned source string, independent of the real compiler.
+        monkeypatch.setattr(
+            "lib.signal_compiler.compile_strategy",
+            lambda spec, lag_bars=0, **k: f"# lag={lag_bars}\nclass SignalEngine:\n    pass\n",
+        )
+        monkeypatch.setattr(
+            s3, "_run_backtest",
+            lambda run_dir: subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setattr(
+            s3, "verify_run_artifacts",
+            lambda run_dir: BacktestRunResult(run_name=run_dir.name, ok=True),
+        )
+
+        cfg = dataclasses.replace(
+            _make_research_config(period=730, interval="1H"),
+            oos_start="2025-01-01", lag_stress_bars=(1, 2),
+        )
+        registered = s3._run_lag_stress_for_strategy(
+            "btc_s9", "BTC-USDT-SWAP", "research/strategies/strategy_S1.yaml",
+            cfg, tmp_path / "runs", today=date(2026, 1, 1),
+        )
+        assert registered == {
+            "lag1_train": "btc_s9_lagstress_train_lag1",
+            "lag2_train": "btc_s9_lagstress_train_lag2",
+            "lag1_oos": "btc_s9_lagstress_oos_lag1",
+            "lag2_oos": "btc_s9_lagstress_oos_lag2",
+        }
+        on_disk = json.loads(runs_json.read_text())["btc_s9"]["lag_stress_runs"]
+        assert on_disk == registered
+        # signal_engine.py was actually written from the mocked compile_strategy output
+        se = (tmp_path / "runs" / "btc_s9_lagstress_train_lag1" / "code" / "signal_engine.py").read_text()
+        assert "lag=1" in se
+
+    def test_failed_lag_stress_run_not_registered(self, tmp_path, monkeypatch):
+        import subprocess
+        from pipeline import stage3_backtest as s3
+
+        runs_json = self._write_payload(tmp_path, "btc_s9")
+        monkeypatch.setattr("pipeline.strategy_runs._DEFAULT_JSON_PATH", runs_json)
+        monkeypatch.setattr(
+            "schemas.StrategySpec.model_validate", lambda raw: MagicMock()
+        )
+        monkeypatch.setattr(
+            "lib.signal_compiler.compile_strategy",
+            lambda spec, lag_bars=0, **k: "class SignalEngine:\n    pass\n",
+        )
+        monkeypatch.setattr(
+            s3, "_run_backtest",
+            lambda run_dir: subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom"),
+        )
+        # verify_run_artifacts shouldn't even matter here, but stub it ok=False too
+        monkeypatch.setattr(
+            s3, "verify_run_artifacts",
+            lambda run_dir: BacktestRunResult(run_name=run_dir.name, ok=False),
+        )
+
+        cfg = dataclasses.replace(_make_research_config(), oos_start=None, lag_stress_bars=(1,))
+        registered = s3._run_lag_stress_for_strategy(
+            "btc_s9", "BTC-USDT-SWAP", "research/strategies/strategy_S1.yaml",
+            cfg, tmp_path / "runs", today=date(2026, 1, 1),
+        )
+        assert registered == {}
+        # lag_stress_runs must not have been written when nothing registered
+        on_disk = json.loads(runs_json.read_text())["btc_s9"]
+        assert "lag_stress_runs" not in on_disk
