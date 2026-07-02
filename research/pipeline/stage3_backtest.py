@@ -328,6 +328,7 @@ def _run_lag_stress_for_strategy(
     spec_yaml: str,
     cfg: ResearchConfig,
     runs_root: Path,
+    strategies_code_dir: Path,
     today: date | None = None,
 ) -> dict:
     """Generate + register entry-delay lag-stress backtests for one strategy.
@@ -335,8 +336,26 @@ def _run_lag_stress_for_strategy(
     Recompiles the strategy's signal_engine.py per (window x lag) with the
     signal shifted lag_bars later (compile-time), then backtests it. Only
     runs that complete with artifacts are registered.
-    Returns the {label: run_name} mapping that was written.
+
+    Strategies with a hand-written signal_engine.py (marked with the
+    ``# manual: do-not-overwrite`` escape hatch — see stage2b_compile_signal.py)
+    are skipped entirely: there is no safe way to inject a compile-time signal
+    shift into code the compiler doesn't own, so recompiling from the YAML
+    would silently lag-stress a DIFFERENT engine than the one actually deployed.
+
+    Returns the {label: run_name} mapping that was written (empty dict if
+    skipped or if no run registered).
     """
+    from pipeline.stage2b_compile_signal import _check_manual_escape_hatch
+
+    existing_engine = find_signal_engine(strategies_code_dir, strategy_id)
+    if existing_engine is not None and _check_manual_escape_hatch(existing_engine):
+        print(
+            f"  [lag-stress] {strategy_id}: skipping (hand-written signal_engine.py, "
+            "cannot recompile with lag)"
+        )
+        return {}
+
     import yaml as _yaml
     from schemas import StrategySpec
     from lib.signal_compiler import compile_strategy
@@ -1112,9 +1131,13 @@ def main() -> None:
         for sid, symbol in stress_eligible:
             entry = runs_map.entries[sid]
             print(f"\n[lag-stress] {sid}")
-            _run_lag_stress_for_strategy(
-                sid, symbol, entry.spec_yaml, cfg, runs_root,
-            )
+            try:
+                _run_lag_stress_for_strategy(
+                    sid, symbol, entry.spec_yaml, cfg, runs_root, strategies_code_dir,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [lag-stress] {sid}: ERROR — {exc}")
+                continue
 
     print_summary(all_results)
     sys.exit(compute_exit_code(all_results))

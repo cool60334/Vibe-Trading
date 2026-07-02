@@ -819,7 +819,8 @@ class TestRunLagStressForStrategy:
         )
         registered = s3._run_lag_stress_for_strategy(
             "btc_s9", "BTC-USDT-SWAP", "research/strategies/strategy_S1.yaml",
-            cfg, tmp_path / "runs", today=date(2026, 1, 1),
+            cfg, tmp_path / "runs", tmp_path / "strategies_code",
+            today=date(2026, 1, 1),
         )
         assert registered == {
             "lag1_train": "btc_s9_lagstress_train_lag1",
@@ -859,9 +860,50 @@ class TestRunLagStressForStrategy:
         cfg = dataclasses.replace(_make_research_config(), oos_start=None, lag_stress_bars=(1,))
         registered = s3._run_lag_stress_for_strategy(
             "btc_s9", "BTC-USDT-SWAP", "research/strategies/strategy_S1.yaml",
-            cfg, tmp_path / "runs", today=date(2026, 1, 1),
+            cfg, tmp_path / "runs", tmp_path / "strategies_code",
+            today=date(2026, 1, 1),
         )
         assert registered == {}
         # lag_stress_runs must not have been written when nothing registered
         on_disk = json.loads(runs_json.read_text())["btc_s9"]
+        assert "lag_stress_runs" not in on_disk
+
+    def test_skips_hand_written_signal_engine(self, tmp_path, monkeypatch):
+        """A strategy with '# manual: do-not-overwrite' must be skipped entirely —
+        no recompile, no backtest — because the compiled proxy would silently
+        diverge from the real deployed engine (see eth_s5_half_size)."""
+        from pipeline import stage3_backtest as s3
+
+        runs_json = self._write_payload(tmp_path, "eth_s5")
+        monkeypatch.setattr("pipeline.strategy_runs._DEFAULT_JSON_PATH", runs_json)
+
+        # Write a hand-written signal_engine.py with the escape-hatch marker.
+        code_dir = tmp_path / "strategies_code" / "eth_s5"
+        code_dir.mkdir(parents=True)
+        (code_dir / "signal_engine.py").write_text(
+            "# manual: do-not-overwrite\nclass SignalEngine:\n    pass\n",
+            encoding="utf-8",
+        )
+
+        # compile_strategy / StrategySpec.model_validate must NOT be called.
+        compile_called = MagicMock()
+        monkeypatch.setattr("lib.signal_compiler.compile_strategy", compile_called)
+        validate_called = MagicMock()
+        monkeypatch.setattr("schemas.StrategySpec.model_validate", validate_called)
+        run_backtest_called = MagicMock()
+        monkeypatch.setattr(s3, "_run_backtest", run_backtest_called)
+
+        cfg = dataclasses.replace(_make_research_config(), oos_start=None, lag_stress_bars=(1,))
+        registered = s3._run_lag_stress_for_strategy(
+            "eth_s5", "ETH-USDT-SWAP", "research/strategies/strategy_eth_s5_half_size.yaml",
+            cfg, tmp_path / "runs", tmp_path / "strategies_code",
+            today=date(2026, 1, 1),
+        )
+
+        assert registered == {}
+        compile_called.assert_not_called()
+        validate_called.assert_not_called()
+        run_backtest_called.assert_not_called()
+        # lag_stress_runs must not have been written
+        on_disk = json.loads(runs_json.read_text())["eth_s5"]
         assert "lag_stress_runs" not in on_disk
