@@ -565,3 +565,52 @@ def test_symbolconfig_binance_usdt():
     assert s.binance_usdt == "BTCUSDT"
     s2 = SymbolConfig(name="eth", okx_swap="ETH-USDT-SWAP", ccxt_bybit="ETH/USDT:USDT")
     assert s2.binance_usdt == "ETHUSDT"
+
+
+# ─── Unit: lag_stress_bars field (Task 3, strategy-level lag-stress) ─────────
+
+def test_lag_stress_bars_default_and_parse():
+    import dataclasses
+    names = {f.name for f in dataclasses.fields(ResearchConfig)}
+    assert "lag_stress_bars" in names
+
+
+def test_lag_stress_bars_defaults_to_1_2(tmp_path: Path) -> None:
+    """When absent from YAML, lag_stress_bars defaults to (1, 2)."""
+    p = write_yaml(tmp_path, MINIMAL_VALID_YAML)
+    cfg = load_config(p)
+    assert cfg.lag_stress_bars == (1, 2)
+
+
+def test_lag_stress_bars_is_tuple(tmp_path: Path) -> None:
+    p = write_yaml(tmp_path, MINIMAL_VALID_YAML)
+    cfg = load_config(p)
+    assert isinstance(cfg.lag_stress_bars, tuple)
+
+
+def test_lag_stress_bars_parsed_from_yaml(tmp_path: Path) -> None:
+    base = yaml.safe_load(textwrap.dedent(MINIMAL_VALID_YAML))
+    base["lag_stress_bars"] = [1, 2, 4]
+
+    p = tmp_path / "research_config.yaml"
+    p.write_text(yaml.dump(base), encoding="utf-8")
+
+    cfg = load_config(p)
+    assert cfg.lag_stress_bars == (1, 2, 4)
+
+
+def test_lag_stress_bars_not_list_raises_type_error(tmp_path: Path) -> None:
+    base = yaml.safe_load(textwrap.dedent(MINIMAL_VALID_YAML))
+    base["lag_stress_bars"] = 1  # scalar instead of list
+
+    p = tmp_path / "research_config.yaml"
+    p.write_text(yaml.dump(base), encoding="utf-8")
+
+    with pytest.raises(TypeError, match="lag_stress_bars"):
+        load_config(p)
+
+
+def test_real_config_lag_stress_bars_present() -> None:
+    cfg = load_config()
+    assert len(cfg.lag_stress_bars) >= 1
+    assert all(isinstance(b, int) for b in cfg.lag_stress_bars)

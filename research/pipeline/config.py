@@ -101,6 +101,8 @@ class ResearchConfig:
     )
     feature_store_path: str = "research/manifests"   # relative to repo root
     append_coverage_threshold: float = 0.5           # min non-NaN fraction to accept a feature column
+    # ── Strategy-level lag-stress (stage3 --lag-stress) ───────────────────────
+    lag_stress_bars: tuple[int, ...] = (1, 2)  # entry-delay stress bars for stage3 --lag-stress
 
     # ── Convenience helpers ──────────────────────────────────────────────────
 
@@ -334,6 +336,15 @@ def load_config(path: Path | str | None = None) -> ResearchConfig:
             raise TypeError("'indicator_pool' in research_config.yaml must be a list of strings.")
         indicator_pool = tuple(str(s) for s in raw_pool)
 
+    # ── lag_stress_bars ──────────────────────────────────────────────────────
+    raw_lag_stress_bars = raw.get("lag_stress_bars", None)
+    if raw_lag_stress_bars is None:
+        lag_stress_bars = (1, 2)
+    else:
+        if not isinstance(raw_lag_stress_bars, list):
+            raise TypeError("'lag_stress_bars' in research_config.yaml must be a list of ints.")
+        lag_stress_bars = tuple(int(x) for x in raw_lag_stress_bars)
+
     # ── feature_store_path ───────────────────────────────────────────────────
     feature_store_path = str(raw.get("feature_store_path", "research/manifests"))
 
@@ -372,5 +383,6 @@ def load_config(path: Path | str | None = None) -> ResearchConfig:
         feature_store_path=feature_store_path,
         append_coverage_threshold=append_coverage_threshold,
         oos_start=oos_start,
+        lag_stress_bars=lag_stress_bars,
     )
     return _apply_interval_override(_apply_symbol_filter(cfg))

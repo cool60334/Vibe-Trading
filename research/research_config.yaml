@@ -109,3 +109,7 @@ discovery_cache_days: 7    # 重跑間隔天數（0 = 永不快取）
 # ─── Feature 覆蓋率門檻 ──────────────────────────────────────────────────────
 # 新增一欄特徵時，非 NaN 比例必須達到此閾值才接受（0.0–1.0）。
 # append_coverage_threshold: 0.5   # 預設 50%
+
+# ─── 策略級 lag-stress（stage3 --lag-stress） ─────────────────────────────────
+# 進場延遲壓測的 bar 數清單；stage3 用來驗證訊號在延遲 N 根 K 線進場後是否仍存活。
+lag_stress_bars: [1, 2]   # entry-delay stress in bars (stage3 --lag-stress)
