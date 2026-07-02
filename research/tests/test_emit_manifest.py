@@ -100,6 +100,7 @@ def _make_entry(
     sweep_run: str | None = None,
     walk_forward_runs: tuple[str, ...] = (),
     oos_runs: tuple[str, ...] = (),
+    intrabar_audit_runs: dict | None = None,
 ) -> StrategyRunsEntry:
     import types
 
@@ -112,6 +113,7 @@ def _make_entry(
         sweep_run=sweep_run,
         walk_forward_runs=walk_forward_runs,
         oos_runs=oos_runs,
+        intrabar_audit_runs=types.MappingProxyType(intrabar_audit_runs or {}),
     )
 
 
@@ -646,6 +648,44 @@ class TestBuildBacktestBlock:
         from emit_manifest import derive_red_flags
         flags = derive_red_flags(bt)
         assert RedFlagCode.UNDERPERFORMS_HODL in flags
+
+    def test_intrabar_audit_block_from_runs(self, tmp_path):
+        runs_root = tmp_path / "runs"
+        base = runs_root / "eth_s5_base" / "artifacts"
+        base.mkdir(parents=True)
+        (base / "metrics.csv").write_text(
+            "sharpe,total_return,trades\n1.0,0.1,40\n", encoding="utf-8"
+        )
+        (base / "intrabar_audit.json").write_text(json.dumps({
+            "window": "train", "source_run": "eth_s5_base",
+            "n_trades": 40, "n_breached": 7, "breached_pct": 17.5,
+            "n_optimistic": 5, "mean_breach_depth_pct": 1.8, "max_breach_depth_pct": 4.2,
+        }), encoding="utf-8")
+
+        entry = _make_entry(
+            base_run="eth_s5_base",
+            intrabar_audit_runs={"train": "eth_s5_base"},
+        )
+        bt = build_backtest_block(entry, runs_root)
+        assert bt is not None
+        assert bt.intrabar_audit is not None
+        assert bt.intrabar_audit.source_run == "eth_s5_base"
+        lvl = bt.intrabar_audit.levels[0]
+        assert lvl.window == "train"
+        assert lvl.n_breached == 7
+        assert lvl.n_optimistic == 5
+
+    def test_no_intrabar_audit_runs_no_block(self, tmp_path):
+        runs_root = tmp_path / "runs"
+        base = runs_root / "eth_s5_base" / "artifacts"
+        base.mkdir(parents=True)
+        (base / "metrics.csv").write_text(
+            "sharpe,total_return,trades\n1.0,0.1,40\n", encoding="utf-8"
+        )
+        entry = _make_entry(base_run="eth_s5_base")  # no intrabar_audit_runs -> {}
+        bt = build_backtest_block(entry, runs_root)
+        assert bt is not None
+        assert bt.intrabar_audit is None
 
 
 # ─── (e2) TestOosSource ───────────────────────────────────────────────────────

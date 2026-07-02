@@ -73,6 +73,8 @@ from schemas import (  # noqa: E402
     GateBlock,
     GateThreshold,
     GenerationBlock,
+    IntrabarAuditBlock,
+    IntrabarAuditLevel,
     LagStressBlock,
     LagStressLevel,
     OptimizationBlock,
@@ -712,12 +714,42 @@ def build_backtest_block(
             levels=lag_levels,
         )
 
+    # ── Intrabar stop-audit from intrabar_audit_runs ─────────────────────────────
+    intrabar_audit: IntrabarAuditBlock | None = None
+    audit_levels: list[IntrabarAuditLevel] = []
+    audit_source_run: str | None = None
+
+    for _win, audit_run_name in entry.intrabar_audit_runs.items():
+        audit_path = runs_root / audit_run_name / "artifacts" / "intrabar_audit.json"
+        payload = _load_json_block(audit_path)
+        if payload is None:
+            continue
+        if audit_source_run is None:
+            audit_source_run = audit_run_name
+        audit_levels.append(IntrabarAuditLevel(
+            window=payload.get("window", _win),
+            source_run=audit_run_name,
+            n_trades=payload.get("n_trades"),
+            n_breached=payload.get("n_breached"),
+            breached_pct=payload.get("breached_pct"),
+            n_optimistic=payload.get("n_optimistic"),
+            mean_breach_depth_pct=payload.get("mean_breach_depth_pct"),
+            max_breach_depth_pct=payload.get("max_breach_depth_pct"),
+        ))
+
+    if audit_levels and audit_source_run is not None:
+        intrabar_audit = IntrabarAuditBlock(
+            source_run=audit_source_run,
+            levels=audit_levels,
+        )
+
     return BacktestBlock(
         in_sample=in_sample,
         oos=oos,
         by_regime=by_regime,
         cost_stress=cost_stress,
         lag_stress=lag_stress,
+        intrabar_audit=intrabar_audit,
         benchmark=benchmark,
     )
 
