@@ -1516,3 +1516,46 @@ def test_build_strategy_manifest_not_tested_when_psr_not_a_dict(tmp_path):
     assert gate is not None
     # psr treated as {} -> cpcv not required -> only cost_stress missing
     assert gate["not_tested"] == ["cost_stress"]
+
+
+# ─── (k) edge_survives_lag gate ─────────────────────────────────────────────────
+
+
+class TestEdgeSurvivesLag:
+    def _bt(self, is_sharpe, oos_sharpe, levels):
+        from schemas import BacktestBlock, BacktestMetrics, LagStressBlock, LagStressLevel
+        lag = LagStressBlock(source_run="r", levels=[
+            LagStressLevel(label=l[0], source_run="r", lag_bars=l[1], window=l[2], sharpe=l[3])
+            for l in levels])
+        return BacktestBlock(
+            in_sample=BacktestMetrics(source_run="b", sharpe=is_sharpe),
+            oos=BacktestMetrics(source_run="o", sharpe=oos_sharpe),
+            lag_stress=lag)
+
+    def _th(self, gate):
+        return {t.name: t for t in gate.thresholds}.get("edge_survives_lag")
+
+    def test_retention_fail(self):
+        # base 1.2, worst lag 0.6 -> retention 0.5 < 0.6 -> fail (floor 0.6>=0.5 passes)
+        bt = self._bt(1.2, 1.2, [("lag1_train", 1, "train", 0.6), ("lag1_oos", 1, "oos", 0.6)])
+        t = self._th(compute_gate(bt))
+        assert t is not None and t.passed is False and t.fatal is False
+
+    def test_floor_fail(self):
+        # worst 0.4 < 0.5 floor -> fail even with fine retention
+        bt = self._bt(0.45, 0.45, [("lag1_train", 1, "train", 0.4)])
+        assert self._th(compute_gate(bt)).passed is False
+
+    def test_passes(self):
+        bt = self._bt(1.0, 1.0, [("lag1_train", 1, "train", 0.8), ("lag2_oos", 2, "oos", 0.8)])
+        assert self._th(compute_gate(bt)).passed is True
+
+    def test_nonpositive_base_skips_retention(self):
+        # train base <=0 -> retention skipped; floor alone decides (0.6>=0.5 -> pass)
+        bt = self._bt(-0.1, 1.5, [("lag1_train", 1, "train", 0.6)])
+        assert self._th(compute_gate(bt)).passed is True
+
+    def test_absent_when_no_lag_stress(self):
+        from schemas import BacktestBlock, BacktestMetrics
+        bt = BacktestBlock(in_sample=BacktestMetrics(source_run="b", sharpe=1.0))
+        assert self._th(compute_gate(bt)) is None

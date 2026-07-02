@@ -64,6 +64,8 @@ from schemas import (  # noqa: E402
     GATE_MIN_CPCV_MEAN_SHARPE,
     GATE_MIN_CPCV_P05_SHARPE,
     GATE_MIN_DEFLATED_SHARPE,
+    GATE_MIN_LAG_RETENTION,
+    GATE_MIN_LAG_SHARPE,
     GATE_MIN_PROFIT_FACTOR,
     GATE_MIN_SHARPE,
     GATE_MIN_TRADES,
@@ -71,6 +73,8 @@ from schemas import (  # noqa: E402
     GateBlock,
     GateThreshold,
     GenerationBlock,
+    LagStressBlock,
+    LagStressLevel,
     OptimizationBlock,
     RedFlagCode,
     RegimeMetrics,
@@ -322,6 +326,23 @@ def compute_gate(
                 passed=cpcv.cpcv_p05_sharpe > GATE_MIN_CPCV_P05_SHARPE,
                 fatal=False,
             ))
+
+    # ── edge_survives_lag (execution-delay dual gate; non-fatal) ─────────────────
+    if backtest.lag_stress is not None and backtest.lag_stress.levels:
+        lvls = backtest.lag_stress.levels
+        lag_sharpes = [l.sharpe for l in lvls if l.sharpe is not None]
+        worst_lag = min(lag_sharpes) if lag_sharpes else None
+        retentions: list[float] = []
+        for l in lvls:
+            base = is_m.sharpe if l.window == "train" else (backtest.oos.sharpe if backtest.oos else None)
+            if l.sharpe is not None and base is not None and base > 0:
+                retentions.append(l.sharpe / base)
+        worst_ret = min(retentions) if retentions else None
+        floor_ok = worst_lag is not None and worst_lag >= GATE_MIN_LAG_SHARPE
+        ret_ok = worst_ret is None or worst_ret >= GATE_MIN_LAG_RETENTION
+        thresholds.append(GateThreshold(
+            name="edge_survives_lag", threshold=GATE_MIN_LAG_SHARPE,
+            actual=worst_lag, passed=(floor_ok and ret_ok), fatal=False))
 
     overall_pass = all(t.passed for t in thresholds)
     fatal_fail = any(t.fatal and not t.passed for t in thresholds)
@@ -648,11 +669,55 @@ def build_backtest_block(
             levels=stress_levels,
         )
 
+    # ── Lag-stress from lag_stress_runs ─────────────────────────────────────────
+    lag_stress: LagStressBlock | None = None
+    lag_levels: list[LagStressLevel] = []
+    lag_source_run: str | None = None
+
+    for lag_label, lag_run_name in entry.lag_stress_runs.items():
+        lag_metrics_path = runs_root / lag_run_name / "artifacts" / "metrics.csv"
+        row = read_metrics_csv(lag_metrics_path)
+        if row is None:
+            continue
+        if lag_source_run is None:
+            lag_source_run = lag_run_name
+
+        # Labels are minted by stage3_backtest as f"lag{N}_{window}" (e.g.
+        # "lag1_train", "lag2_oos") -- parse lag_bars/window from the LABEL,
+        # not the run name (unlike cost_stress's fee-multiplier regex).
+        label_match = re.match(r"lag(\d+)_(\w+)", lag_label)
+        if not label_match:
+            continue
+
+        def _float_l(key: str, r: dict = row) -> float | None:
+            v = r.get(key)
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return None
+
+        lag_levels.append(LagStressLevel(
+            label=lag_label,
+            source_run=lag_run_name,
+            lag_bars=int(label_match.group(1)),
+            window=label_match.group(2),
+            sharpe=_float_l("sharpe"),
+        ))
+
+    if lag_levels and lag_source_run is not None:
+        lag_stress = LagStressBlock(
+            source_run=lag_source_run,
+            levels=lag_levels,
+        )
+
     return BacktestBlock(
         in_sample=in_sample,
         oos=oos,
         by_regime=by_regime,
         cost_stress=cost_stress,
+        lag_stress=lag_stress,
         benchmark=benchmark,
     )
 
