@@ -415,6 +415,24 @@ class TestDecideSelected:
         assert decide_selected("back_to_stage_4", fatal_fail=True) is False
 
 
+class TestDecideSelectedValidations:
+    """validations_ok (defaults True for back-compat) additionally blocks
+    selection when required cost-stress/CPCV data is missing or failing."""
+
+    def test_validations_ok_default_true_preserves_old(self):
+        from pipeline.stage5_select import decide_selected
+        assert decide_selected("proceed", fatal_fail=False) is True
+
+    def test_validations_not_ok_blocks_selection(self):
+        from pipeline.stage5_select import decide_selected
+        assert decide_selected("proceed", fatal_fail=False, validations_ok=False) is False
+
+    def test_still_needs_proceed_and_not_fatal(self):
+        from pipeline.stage5_select import decide_selected
+        assert decide_selected("back_to_stage_4", fatal_fail=False, validations_ok=True) is False
+        assert decide_selected("proceed", fatal_fail=True, validations_ok=True) is False
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # print_summary
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -46,6 +46,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml as _yaml
+
 # ── Path bootstrap ─────────────────────────────────────────────────────────────
 # This module lives at <repo-root>/research/pipeline/stage5_select.py.
 # Bootstrap research/ onto sys.path so imports work regardless of CWD.
@@ -65,7 +67,10 @@ from pipeline.stage3_diagnose import read_metrics_csv  # noqa: E402
 from emit_manifest import (  # noqa: E402
     build_backtest_block,
     compute_gate,
+    compute_not_tested,
+    cpcv_required_for,
     emit_manifest_for_strategy,
+    required_validations_ok,
 )
 
 # ── Dashboard schemas path ─────────────────────────────────────────────────────
@@ -73,7 +78,7 @@ _DASHBOARD_SCHEMAS = _REPO_ROOT / "dashboard" / "server"
 if str(_DASHBOARD_SCHEMAS) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_SCHEMAS))
 
-from schemas import SelectionManifest, SelectionEntry  # noqa: E402
+from schemas import CPCVBlock, OptimizationBlock, SelectionManifest, SelectionEntry  # noqa: E402
 
 # ─── ANSI colour constants ────────────────────────────────────────────────────
 _RED = "\033[31m"
@@ -208,12 +213,26 @@ def is_eligible(
     return True, "eligible"
 
 
-def decide_selected(recommended_action: str, fatal_fail: bool) -> bool:
+def _load_optional_block(path: Path, model):
+    """Load and validate an optional JSON block; None if missing or invalid."""
+    if not path.exists():
+        return None
+    try:
+        return model.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def decide_selected(
+    recommended_action: str, fatal_fail: bool, validations_ok: bool = True
+) -> bool:
     """Whether a strategy should be marked selected=True for testnet promotion.
 
-    selected requires BOTH:
+    selected requires ALL THREE:
       1. diagnosis recommended_action == "proceed", AND
-      2. the strategy did not hard-fail a FATAL gate (``fatal_fail`` is False).
+      2. the strategy did not hard-fail a FATAL gate (``fatal_fail`` is False), AND
+      3. required validations (cost-stress always; CPCV when the sweep grid has
+         >1 combo) are present and passing (``validations_ok``).
 
     The second clause keeps selection.json consistent with the dashboard promote
     gate (which blocks on ``gate.fatal_fail``). Without it a fee-illusion
@@ -221,9 +240,12 @@ def decide_selected(recommended_action: str, fatal_fail: bool) -> bool:
     vanishes under the cost-stress FATAL gate — would be advertised as selected
     while being unpromotable. ``fatal_fail`` also covers a missing OOS holdout
     (the fatal ``oos_sharpe_positive`` gate), so an unvalidated strategy is never
-    marked selected.
+    marked selected. The third clause (``validations_ok``, defaulting True for
+    backward compatibility with existing callers) additionally blocks selection
+    when required cost-stress/CPCV data is missing or failing — matching the
+    dashboard promote endpoint's NOT_TESTED hard block.
     """
-    return recommended_action == _SELECTED_ACTION and not fatal_fail
+    return recommended_action == _SELECTED_ACTION and not fatal_fail and validations_ok
 
 
 def build_selection_entry(
@@ -428,15 +450,30 @@ def main() -> None:
         score = score_strategy(sharpe_f, drawdown_f, pf_f, tc_f)
 
         # Determine selected flag from recommended_action, vetoed by the FATAL
-        # gate so selection.json stays consistent with the dashboard promote gate
-        # (a fee-illusion / unvalidated strategy must not advertise as selected).
+        # gate and required validations so selection.json stays consistent with
+        # the dashboard promote gate (a fee-illusion / unvalidated / not-yet-
+        # stress-tested strategy must not advertise as selected).
         diagnosis_data = json.loads(diagnosis_path.read_text(encoding="utf-8"))
         action = diagnosis_data.get("recommended_action", "")
         backtest_block = build_backtest_block(entry, runs_root)
-        fatal_fail = (
-            compute_gate(backtest_block).fatal_fail if backtest_block is not None else True
-        )
-        selected_flag = decide_selected(action, fatal_fail)
+        if backtest_block is not None:
+            optimization = _load_optional_block(optimization_path, OptimizationBlock)
+            cpcv_path = manifests_dir / strategy_id / "cpcv.json"
+            cpcv = _load_optional_block(cpcv_path, CPCVBlock)
+            gate = compute_gate(backtest_block, optimization, cpcv)
+            spec_yaml_path = _REPO_ROOT / entry.spec_yaml
+            psr = {}
+            if spec_yaml_path.exists():
+                spec_doc = _yaml.safe_load(spec_yaml_path.read_text(encoding="utf-8")) or {}
+                psr = spec_doc.get("parameter_search_ranges", {}) or {}
+                if not isinstance(psr, dict):
+                    psr = {}
+            gate.not_tested = compute_not_tested(gate, cpcv_required_for(psr))
+            fatal_fail = gate.fatal_fail
+            validations_ok = required_validations_ok(gate)
+        else:
+            fatal_fail, validations_ok = True, False
+        selected_flag = decide_selected(action, fatal_fail, validations_ok)
 
         # Derive short symbol name from entry.symbol (may be "BTC-USDT-SWAP" etc.)
         # Use the first hyphen-delimited token or the whole string if no hyphen.
