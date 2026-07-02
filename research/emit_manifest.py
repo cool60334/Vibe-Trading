@@ -80,7 +80,12 @@ from schemas import (  # noqa: E402
     StrategyManifest,
 )
 
-# Use the config module's _REPO_ROOT as the canonical repo root
+# Use the config module's _REPO_ROOT as the canonical repo root.
+# NOTE: this is its own module-level binding, independent of pipeline.stage5_select's
+# `from pipeline.config import _REPO_ROOT` import. Patching one in a test does NOT
+# patch the other — a test needing both emit_manifest and stage5_select to see a
+# tmp_path repo root must patch both `emit_manifest._REPO_ROOT` and
+# `pipeline.stage5_select._REPO_ROOT` explicitly.
 _REPO_ROOT = _CFG_REPO_ROOT
 
 # OOS trade gate — consistent with stage3-diag OOS fallback gate of 30
