@@ -60,9 +60,9 @@ data/.duckdb_tmp/
 data/parquet/
 data/backup/
 
-# Internal docs (plans, specs) — ignore all EXCEPT docs/hermes/ (Hermes agent specs, tracked)
+# Internal docs (plans, specs) — ignore all EXCEPT docs/talos/ (Talos agent specs, tracked)
 docs/*
-!docs/hermes/
+!docs/talos/
 !wiki/docs/
 !wiki/docs/**
 docs/screenshots/agent-run.png

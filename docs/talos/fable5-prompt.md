@@ -1,5 +1,7 @@
 # Fable 5 任務 Prompt — Vibe-Trading 優化 + Hermes 自主因子引擎
 
+> ⚠️ **更名紀錄（2026-07-04）**：本文件中的代號 **Hermes 已更名為 Talos**（守護克里特的青銅自動人 —— 確定性自動機+護欄）。改名原因：與 NousResearch 的開源專案 hermes-agent 撞名造成混淆；**本設計與該專案無關**。本檔為原始任務 mandate，保留原文不改寫；新文件一律用 Talos，目錄已移至 `docs/talos/`。
+>
 > 直接把 `---` 之間整段貼給 Fable 5。技術名詞/路徑/識別碼保持英文；敘述繁中。
 
 ---

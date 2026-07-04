@@ -60,7 +60,7 @@ sudo -u fable-ro ls  /home/eric/REPO/runs/pipeline_jobs            # 必成功
 ```
 ssh -i ~/.ssh/fable_ro fable-ro@<server-ip>
 ```
-（填進 `docs/hermes/fable5-prompt.md` §1.5 連線資訊）
+（填進 `docs/talos/fable5-prompt.md` §1.5 連線資訊）
 
 ## 7. 收工（Fable 5 跑完 Part A/B 後務必做）
 ```bash

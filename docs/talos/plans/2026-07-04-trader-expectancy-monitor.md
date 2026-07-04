@@ -127,7 +127,7 @@ A strategy that goes silent for a month is either legitimately low-frequency
 or broken (all-NaN transforms, stale regime mask, drifted factor
 distribution). The kill switch only watches losses; these helpers give the
 loop a "should have traded by now" dimension so silence becomes visible.
-Seed of the Hermes alpha-decay monitor (Part A D2).
+Seed of the Talos alpha-decay monitor (Part A D2).
 """
 from __future__ import annotations
 

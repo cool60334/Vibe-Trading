@@ -1,7 +1,7 @@
 # 平行實作計畫索引（Part A 核准項）
 
 > 產出 2026-07-04。7 份計畫**檔案足跡互斥**，可各開一個新 session（Sonnet）獨立實作、任意順序 merge。
-> 每份計畫自帶完整 context，執行 session 建議開場："請用 superpowers:executing-plans 執行 docs/hermes/plans/<檔名>"。
+> 每份計畫自帶完整 context，執行 session 建議開場："請用 superpowers:executing-plans 執行 docs/talos/plans/<檔名>"。
 
 ## 計畫清單與檔案所有權
 

@@ -1,6 +1,6 @@
 # Part A — 架構審查 + 優化提案報告
 
-> 產出：Fable 5（Hermes 專案 Part A）· 2026-07-04
+> 產出：Fable 5（Talos 專案 Part A）· 2026-07-04
 > 範圍：`research/` + `dashboard/`（quant pipeline 私有系統）；`agent/` 僅作為被依賴的回測引擎審視，不提議修改上游。
 > 性質：**只提案、不實作**。每項附優先序，等使用者挑選後才動工。
 > 伺服器觀察：已透過唯讀 SSH（fable-ro@&lt;server-ip&gt;，IP 不進版控；零 mutate、零觸碰秘密）折入 runtime 面。
@@ -15,7 +15,7 @@
 
 ### 先講「已經做對、不用動」的部分（避免重複造輪）
 
-審查過程確認以下設計**已經健全**，後續 Hermes 應直接複用，不要重寫：
+審查過程確認以下設計**已經健全**，後續 Talos 應直接複用，不要重寫：
 
 | 環節 | 現況 | 結論 |
 |---|---|---|
@@ -25,7 +25,7 @@
 | CPCV | `stage4_cpcv` + `lib/cpcv.py`（purge + embargo）已實作，gate 已接 | 已有，Foundry 直接複用 |
 | 成本/延遲壓測 | `--stress`（2x/3x 費率）、`--lag-stress`（延遲 1/2 根進場）、`--intrabar-audit` 皆已 merge 且進 gate | 已有 |
 | 併發安全 | `factor_io` 用 mkstemp + `os.replace` **atomic write**，trader 讀 parquet 不會讀到半寫檔 | 已有 |
-| 解耦模式 | dashboard 只寫 `job.json`/`control.json`，獨立 runner/manager reconcile；部署 dashboard 不殺 trader | 已有，Hermes 的骨架 |
+| 解耦模式 | dashboard 只寫 `job.json`/`control.json`，獨立 runner/manager reconcile；部署 dashboard 不殺 trader | 已有，Talos 的骨架 |
 | 資料快取（回測側）| `agent/backtest/loaders/okx.py` 有磁碟快取（同日同窗共用），stage4 60 combos 不會重抓 60 次 | 已有 |
 | 雙保險 | trader 端 killswitch（DD pause/terminate）+ factor 新鮮度 pause + refresh-stall 告警 | 已有 |
 | 滑價 | 引擎雙邊固定 5bps 滑價（`apply_slippage`）；1H 頻率下固定值可接受 | 已有（動態滑價列為 Foundry 期精修，非現缺）|
@@ -52,7 +52,7 @@
   4. 改完**重跑全部 baseline**，比對新舊指標差距，重新校準 gate 門檻。
 - **影響範圍**：`agent/backtest/engines/crypto.py`、`_market_hooks.py`（上游檔案 —— 需以「不破壞上游行為」方式加：新 config key 預設維持舊行為）、`research/pipeline/stage3_backtest.py`、`stage4_optimize.py`、假資料單測。
 - **風險**：既有策略指標全面下修，可能有策略跌破 gate（這是**誠實化**，不是變壞）；動上游引擎檔需保證 default 行為不變（用 opt-in config key）。
-- **優先序**：**P0**。這是「回測數字可不可信」的根，也是 Hermes 拿回測結果做自主決策前的前提。
+- **優先序**：**P0**。這是「回測數字可不可信」的根，也是 Talos 拿回測結果做自主決策前的前提。
 
 ### A2. OOS 重複窺視（peeking）無登記、無家族層級懲罰
 
@@ -65,13 +65,13 @@
   3. family-wise 標示：gate/報表明示「此 OOS 已被本家族看過 N 次、全漏斗累計 M 次 trial」。定位是**透明化警示，不是嚴格統計懲罰**（把窺視次數塞進 DSR trial 數只是 heuristic，統計正當性不足，不當作硬 gate）。
 - **影響範圍**：`stage4_optimize.py` / `stage0a`、`stage1`（寫 ledger）、`emit_manifest.py`（gate 讀 ledger + 終極 holdout 結果）、新 lib 模組 + 單測。
 - **風險**：低（記帳性質）；終極 holdout 會縮短可用 OOS 窗（可接受的代價）。
-- **優先序**：**P1**；但**若 Hermes 自動迭代（Phase 1+）啟動，此項視同 P0 前置** —— 自動化會把窺視頻率放大百倍，沒有 ledger + 終極 holdout 就是自動化過擬合機器。
+- **優先序**：**P1**；但**若 Talos 自動迭代（Phase 1+）啟動，此項視同 P0 前置** —— 自動化會把窺視頻率放大百倍，沒有 ledger + 終極 holdout 就是自動化過擬合機器。
 
 ### A3. 回測窗口隨執行日漂移（不可重現的跨期比較）
 
 - **環節**：`stage3_backtest.build_run_config()`：`start = today - period days`。
-- **現況問題**：同一策略今天跑和下週跑，train 窗起點差 7 天 —— 單一 run 可重現（config.json 有記錄），但**跨時間的 run 之間不可比**：sharpe 變了 0.05，你分不清是改動造成還是窗口漂移造成。Hermes 自動化後會大量做「改動前後對比」，這個噪音源會直接污染它的決策。
-- **怎麼優化**（agy 二審修正版）：**不是**固定 `train_start` 錨點（那會讓 train 窗隨時間越長越不平穩、自由度漂移），而是「**固定窗長 + 凍結窗口**」：`research_config.yaml` 加可選 `window_end` 凍結參數 —— 一個迭代週期內所有 run 用同一組 (window_end, period) → start/end 全同、可比；週期結束（如每季或每輪 selection 後）人工滾動 `window_end`。未設時維持現行為（end=today）。Hermes 憲法規定：**做 A/B 對比的 run 必須同窗（start 與 end 都同）**。
+- **現況問題**：同一策略今天跑和下週跑，train 窗起點差 7 天 —— 單一 run 可重現（config.json 有記錄），但**跨時間的 run 之間不可比**：sharpe 變了 0.05，你分不清是改動造成還是窗口漂移造成。Talos 自動化後會大量做「改動前後對比」，這個噪音源會直接污染它的決策。
+- **怎麼優化**（agy 二審修正版）：**不是**固定 `train_start` 錨點（那會讓 train 窗隨時間越長越不平穩、自由度漂移），而是「**固定窗長 + 凍結窗口**」：`research_config.yaml` 加可選 `window_end` 凍結參數 —— 一個迭代週期內所有 run 用同一組 (window_end, period) → start/end 全同、可比；週期結束（如每季或每輪 selection 後）人工滾動 `window_end`。未設時維持現行為（end=today）。Talos 憲法規定：**做 A/B 對比的 run 必須同窗（start 與 end 都同）**。
 - **影響範圍**：`pipeline/config.py`、`stage3_backtest.py`、`stage4_optimize.py`。
 - **風險**：極低；凍結期間最新資料不進回測（本來就該如此 —— 那是 OOS/實盤的事）。
 - **優先序**：**P1**。
@@ -116,8 +116,8 @@
   2. live_refresh 快路徑：只更新尾部窗（最長 rolling 窗 + buffer），特徵尾段重算後拼接；每週跑一次全量重建做對帳（checksum 比對），防增量漂移。
   3. **緊急控制閥（agy 二審補強）**：快取帶 TTL/世代標記，外加「一鍵全量抹除重建」開關（env 或 job 參數）—— API 斷點、伺服器重啟造成的無聲資料損壞，第一時間能以全量重建自救，不用等每週對帳。
 - **影響範圍**：`lib/okx_data.py`、`ccxt_data.py`、`defillama_data.py`、`stage0a_features.py`、假資料單測（增量 vs 全量一致性測試是硬要求）。
-- **風險**：**中** —— 增量邏輯 bug 會無聲污染 feature store（實盤在讀）。緩解：對帳測試 + 全量重建 fallback + 先在 candidate store 試跑（見 Hermes Phase 0 隔離庫，兩者可共用機制）。
-- **優先序**：**P1**。這也是 Hermes nightly Foundry 的算力預算前提 —— 現在的成本結構下，nightly 多因子掃描會被資料重抓吃光預算。
+- **風險**：**中** —— 增量邏輯 bug 會無聲污染 feature store（實盤在讀）。緩解：對帳測試 + 全量重建 fallback + 先在 candidate store 試跑（見 Talos Phase 0 隔離庫，兩者可共用機制）。
+- **優先序**：**P1**。這也是 Talos nightly Foundry 的算力預算前提 —— 現在的成本結構下，nightly 多因子掃描會被資料重抓吃光預算。
 
 ### B2. 已停策略仍在燒 hourly refresh
 
@@ -144,11 +144,11 @@
 ### C1. 巨檔與單檔多職責
 
 - **環節**：`stage2_strategies.py`（1399 行）、`stage3_backtest.py`（1298 行：base + stress + lag-stress + intrabar-audit 四個 driver 同檔）、`emit_manifest.py`（1132 行）、`stage0_discovery.py`（930）、`stage3_diagnose.py`（903）。
-- **現況問題**：對人還可忍，對 Hermes（LLM 要讀懂再決策）與對測試隔離都是負擔；stage3 的四個 driver 共用 module state，改一個容易碰另一個。
+- **現況問題**：對人還可忍，對 Talos（LLM 要讀懂再決策）與對測試隔離都是負擔；stage3 的四個 driver 共用 module state，改一個容易碰另一個。
 - **怎麼優化**：不搬邏輯、只拆檔：`stage3_backtest/` 拆成 `base.py` / `stress.py` / `lag.py` / `intrabar.py` + 薄 orchestrator（保持 `python -m research.pipeline.stage3_backtest` 入口不變）。emit_manifest 拆 gate / blocks / io。
 - **影響範圍**：對應檔案 + import 路徑；測試不需重寫（純搬家）。
 - **風險**：低（機械性重構），但要一次到位避免 import 混亂。
-- **優先序**：**P2**（建議排在 Hermes Phase 1 之前做 stage3 那份，其餘隨手）。
+- **優先序**：**P2**（建議排在 Talos Phase 1 之前做 stage3 那份，其餘隨手）。
 
 ### C2. research → agent 上游引擎的無合約耦合
 
@@ -170,7 +170,7 @@
 
 ---
 
-## 4. 自動化就緒度（Hermes 前置）+ 伺服器 runtime 觀察
+## 4. 自動化就緒度（Talos 前置）+ 伺服器 runtime 觀察
 
 ### 伺服器現況快照（2026-07-04，唯讀）
 
@@ -185,33 +185,33 @@
 
 > 觀察過程的教訓（自首）：伺服器 `ls` 顯示本地時（UTC+2）、job.json 是 UTC，我一度把「6 分鐘前開始的正常 stage1」誤判成「卡 2 小時的 zombie」。人會犯的錯，自主 agent 更會犯 → 直接催生 D1 的 UTC 統一健康端點提案。
 
-### D1. 缺單一 machine-readable 健康/結果彙總（Hermes 的眼睛）
+### D1. 缺單一 machine-readable 健康/結果彙總（Talos 的眼睛）
 
 - **環節**：跨 `runs/pipeline_jobs/`、`research/manifests/*/manifest.json`、`selection.json`、`runs/testnet/*/`、git 版本。
-- **現況問題**：「這輪 pipeline 跑完結論是什麼？線上現在健康嗎？」要讀 4+ 種分散 artifact，且時間戳 UTC/本地混用。人讀費勁，Hermes 讀 = 每次燒 token 重建現場、還可能像我一樣誤判。
+- **現況問題**：「這輪 pipeline 跑完結論是什麼？線上現在健康嗎？」要讀 4+ 種分散 artifact，且時間戳 UTC/本地混用。人讀費勁，Talos 讀 = 每次燒 token 重建現場、還可能像我一樣誤判。
 - **怎麼優化**：
   1. **`pipeline_summary.json`**：stage5 收尾時 emit 單檔（每策略一行：verdict / gate / OOS 指標 / 缺哪些驗證），全 UTC。
   2. **`ops_health.json`**：dashboard server 定期聚合（factor 新鮮度、job 佇列狀態、trader heartbeat、**部署 git hash**），全 UTC。
 - **影響範圍**：`stage5_select.py` / `emit_manifest.py`、`dashboard/server/main.py`（或獨立小 writer）、schema + 單測。
 - **風險**：低（純新增產物）。
-- **優先序**：**P1**（Hermes Phase 2 的直接輸入；沒有它，Hermes 每個決策都要自己爬檔案）。
+- **優先序**：**P1**（Talos Phase 2 的直接輸入；沒有它，Talos 每個決策都要自己爬檔案）。
 
 ### D2. Trader 缺「預期 vs 實際」監控（alpha-decay 監控的地基）
 
 - **環節**：`dashboard/trader/loop.py` 狀態輸出。
 - **現況問題**：eth_s5 上線近一個月 **0 筆交易**、sol_s1 亦 0 筆。可能完全正常（低頻策略 + regime mask），也可能是壞掉（例如 regime 檔 stale 導致永遠 mask、或因子分佈漂移讓條件永不觸發）—— **現在沒有任何機制區分這兩者**。killswitch 只管虧損，不管「沉默」。
 - **怎麼優化**（拆兩段，agy 二審後加急前段）：
-  1. ~~即刻一次性診斷~~ **已執行（2026-07-04），確診：結構性壞死** —— 兩個 paper trader 自部署起數學上不可能成交。因果鏈：策略用 `percentile_90d`（rolling 2160 根、min_periods 1080）→ engine 先把因子 reindex 到 ohlcv 索引再 rolling → live trader 只餵 200 根 K（loop 預設，manager 不傳 lookback）→ percentile 全 NaN → 條件全 False → 訊號恆 0。回測餵數年資料所以沒事 = backtest-live parity 缺口。regime/factor 檔皆新鮮、迴圈心跳正常 —— 全部現有監控都看不到「該交易而未交易」。完整證據鏈與修復方案（F1 分頁抓 K + F3 fail-loud guard 建議立即做；F2 engine 重排併入 A1 重驗）見 `docs/hermes/d2-diagnosis-2026-07-04.md`。**修復本身為新 P0 項（P0-2）**，等核准。
+  1. ~~即刻一次性診斷~~ **已執行（2026-07-04），確診：結構性壞死** —— 兩個 paper trader 自部署起數學上不可能成交。因果鏈：策略用 `percentile_90d`（rolling 2160 根、min_periods 1080）→ engine 先把因子 reindex 到 ohlcv 索引再 rolling → live trader 只餵 200 根 K（loop 預設，manager 不傳 lookback）→ percentile 全 NaN → 條件全 False → 訊號恆 0。回測餵數年資料所以沒事 = backtest-live parity 缺口。regime/factor 檔皆新鮮、迴圈心跳正常 —— 全部現有監控都看不到「該交易而未交易」。完整證據鏈與修復方案（F1 分頁抓 K + F3 fail-loud guard 建議立即做；F2 engine 重排併入 A1 重驗）見 `docs/talos/d2-diagnosis-2026-07-04.md`。**修復本身為新 P0 項（P0-2）**，等核准。
   2. **常設監控（寫 code）**：trader 每 bar 記錄訊號值分佈摘要；status 加 `expected_trades_per_30d`（從 manifest.backtest 導出）vs `actual_trades_30d`，偏離（如 P(observed|expected)<5%）發 warning alert。順手把「regime 檔案 age」也納入 stale 檢查（現在只查 factor parquet，`regime_<sym>.json` 沒查 —— 而 regime overlay 正是 eth_s5 的 alpha 來源）。
 - **影響範圍**：診斷段 = 唯讀觀察；監控段 = `trader/loop.py`、`trader/signal.py`、`freshness.py`、schema、單測。
 - **風險**：低。
-- **優先序**：診斷段**即刻**（下一步就做）；監控段 **P1**。此監控直接演化成 Hermes Phase 2+ 的因子衰減監測。
+- **優先序**：診斷段**即刻**（下一步就做）；監控段 **P1**。此監控直接演化成 Talos Phase 2+ 的因子衰減監測。
 
 ### D3. 部署 drift 無偵測
 
 - **環節**：server 部署流程。
 - **現況問題**：server 落後 18 commits（含 intrabar-audit 全系列 —— 即 server 上的 gate 少一種驗證）。無任何地方記錄「線上跑的是哪個 commit」，dashboard 也不顯示。研究結論（本地新碼）與線上行為（舊碼）可能靜默分歧。
-- **怎麼優化**：部署腳本寫 `version.json`（git hash + 部署時間, UTC）到 repo 部署目錄；`ops_health.json`（D1）納入；dashboard 頁腳顯示。Hermes 憲法加：**版本不明或落後超過閾值 → 不做 promote 推薦**。
+- **怎麼優化**：部署腳本寫 `version.json`（git hash + 部署時間, UTC）到 repo 部署目錄；`ops_health.json`（D1）納入；dashboard 頁腳顯示。Talos 憲法加：**版本不明或落後超過閾值 → 不做 promote 推薦**。
 - **影響範圍**：部署腳本 + D1 的 health writer。
 - **風險**：無。
 - **優先序**：**P1**（一小時工作量）。
@@ -225,14 +225,14 @@
 - **風險**：低；切換期間保留 cron 一週做 fallback。
 - **優先序**：**P2**。
 
-### D5. Promote 流程半自動（Hermes promote 推薦的落地介面缺口）
+### D5. Promote 流程半自動（Talos promote 推薦的落地介面缺口）
 
 - **環節**：`supervisor.start()` / dashboard promote API。
 - **現況問題**：伺服器上 sol/xrp 的 `control.json` 帶手工調的 `env` overlay（KILL_PAUSE_DD、FACTOR_MAX_AGE_DAYS…）與手算的 `qty` —— trader manager 支援這 schema，但 **supervisor API 寫不出來**（不含 env），等於正式介面缺了實務上必用的欄位；qty sizing（名目金額 notional → 合約數）靠人腦。
 - **怎麼優化**：promote API/`supervisor.start()` 增 `env: dict` 與 sizing 參數；sizing 從 manifest（size_mult、目標 notional、幣價）確定性推導，人只按確認。
 - **影響範圍**：`supervisor.py`、`main.py` API、前端表單、單測。
 - **風險**：低。
-- **優先序**：**P1**（Hermes Phase 2 的 promote 推薦要能落地成一個結構化 artifact，這是它的寫入格式）。
+- **優先序**：**P1**（Talos Phase 2 的 promote 推薦要能落地成一個結構化 artifact，這是它的寫入格式）。
 
 ---
 
@@ -242,14 +242,14 @@
 |---|---|---|---|---|
 | **D2-fix** | live trader lookback 200<1080 致訊號恆 0（F1 分頁抓 K + F3 fail-loud） | 自動化/實盤 | **P0 → ✅已實作（本地，89 tests 綠；待部署）** | 兩個 paper trader 自部署起無法成交 |
 | A1 | 回測成本模型三重失真（funding 歷史序列 / 雙邊 taker / config fees 接線） | 效度 | **P0** | 回測數字可信度的根 |
-| A2 | 終極 holdout（強制）+ 全漏斗研究記帳 ledger + family-wise 透明標示 | 效度 | P1（Hermes 自動迭代前 = P0） | 「OOS 為權威」的機器可執行化 |
+| A2 | 終極 holdout（強制）+ 全漏斗研究記帳 ledger + family-wise 透明標示 | 效度 | P1（Talos 自動迭代前 = P0） | 「OOS 為權威」的機器可執行化 |
 | A3 | 回測窗口固定錨點 | 效度 | P1 | A/B 對比去噪 |
 | C2 | 引擎 golden-run 合約測試 | 維護 | P1 | 動 A1 前的安全網，半天工 |
 | B1 | stage0a 增量抓取/計算 | 效能 | P1 | 2.3h→分鐘級；nightly Foundry 的算力前提 |
-| D1 | pipeline_summary.json + ops_health.json（全 UTC） | 自動化 | P1 | Hermes 的眼睛 |
+| D1 | pipeline_summary.json + ops_health.json（全 UTC） | 自動化 | P1 | Talos 的眼睛 |
 | D2 | trader 預期 vs 實際交易率監控 + regime 檔 stale 檢查（一次性診斷即刻先行） | 自動化 | 診斷即刻；監控 P1 | 區分「沉默=正常」vs「沉默=壞掉」 |
 | D3 | 部署 version beacon | 自動化 | P1 | 一小時工，堵 18-commit 級 drift |
-| D5 | promote API 補 env/qty 參數化 | 自動化 | P1 | Hermes promote 推薦的落地介面 |
+| D5 | promote API 補 env/qty 參數化 | 自動化 | P1 | Talos promote 推薦的落地介面 |
 | A4 | sub-hour 兩地雷（compiler *24、stage4 manifests dir） | 效度 | P2 | 現無害；重啟盤中研究前必修 |
 | A5 | IC 非重疊/Newey-West 校正 | 效度 | P2 | 併入 Foundry 守門 |
 | B2 | 停用策略不再 hourly refresh | 效能 | P2 | 省 5-8h/天等效算力 |
@@ -268,14 +268,14 @@
 
 ---
 
-## 6. 與 Hermes 的關係（為什麼這些排在 Part B/C 之前值得做）
+## 6. 與 Talos 的關係（為什麼這些排在 Part B/C 之前值得做）
 
-- A1/A2/A3 = Hermes 憲法「OOS 為權威」「回測必含 funding」的**可信度地基** —— 大腦再聰明，餵它失真數字就是自動化地產生錯誤決策。
-- D1/D3 = Hermes 的感知層：沒有 machine-readable、UTC 統一的現場快照，每個自主決策都從「爬檔案+猜」開始（本次審查我自己就差點因時區誤判 —— 這是實證）。
+- A1/A2/A3 = Talos 憲法「OOS 為權威」「回測必含 funding」的**可信度地基** —— 大腦再聰明，餵它失真數字就是自動化地產生錯誤決策。
+- D1/D3 = Talos 的感知層：沒有 machine-readable、UTC 統一的現場快照，每個自主決策都從「爬檔案+猜」開始（本次審查我自己就差點因時區誤判 —— 這是實證）。
 - B1 = nightly Factor Foundry 的預算可行性。
 - D2 = Phase 2+ alpha-decay 監控的最小內核，先以告警形式存在。
-- D5 = Hermes「推薦進 paper」輸出的落地格式。
+- D5 = Talos「推薦進 paper」輸出的落地格式。
 
 ---
 
-*報告完。等使用者挑選項目後才進入實作；下一步（Part B Hermes 設計文件）亦按 §8 檢查點等核准。*
+*報告完。等使用者挑選項目後才進入實作；下一步（Part B Talos 設計文件）亦按 §8 檢查點等核准。*

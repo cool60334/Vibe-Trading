@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 兩個 machine-readable、全 UTC 的彙總產物：① `pipeline_summary.json` —— stage5 收尾時每策略一行 verdict/gate/OOS 摘要；② `GET /api/ops/health` —— 部署 git 版本 + factor 新鮮度 + job 佇列 + trader 心跳。這是自主決策層（Hermes）與人類的共同「眼睛」，也堵住「伺服器落後 18 commits 沒人知道」的 drift 盲區。
+**Goal:** 兩個 machine-readable、全 UTC 的彙總產物：① `pipeline_summary.json` —— stage5 收尾時每策略一行 verdict/gate/OOS 摘要；② `GET /api/ops/health` —— 部署 git 版本 + factor 新鮮度 + job 佇列 + trader 心跳。這是自主決策層（Talos）與人類的共同「眼睛」，也堵住「伺服器落後 18 commits 沒人知道」的 drift 盲區。
 
 **Architecture:** 純讀既有 artifacts 再彙總，**不改任何現有 artifact 格式**。summary 由 stage5 在 emit manifests 後順手寫（失敗不 fail stage）；ops health 為 FastAPI endpoint 即時計算（無背景工作、無快取，YAGNI）。版本 beacon 直接讀 `.git/HEAD`（部署 = git pull，HEAD 即部署版本，無需 deploy 腳本）。
 
@@ -168,7 +168,7 @@ Expected: 3 passed。
 開 `research/pipeline/stage5_select.py`，搜 `emit_manifest_for_strategy`，在該 emit 迴圈**完成後**（同縮排層）插入（`manifests_dir` 用該迴圈既有的目錄變數，變數名以檔內為準）：
 
 ```python
-    # ── Machine-readable run verdicts (Hermes / ops input) ────────────────────
+    # ── Machine-readable run verdicts (Talos / ops input) ────────────────────
     from pipeline.lib.pipeline_summary import write_pipeline_summary
     try:
         _summary_path = write_pipeline_summary(manifests_dir)
