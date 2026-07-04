@@ -51,6 +51,20 @@ _INTERVAL_SLEEP: dict[str, int] = {
     "1D":  86400,
 }
 
+#: Default OHLCV lookback (bars). Must cover the largest rolling window any
+#: deployed engine computes on the fetched frame: percentile_90d = 90*24 =
+#: 2160 bars (+ warm-up). The old 200-bar default silently produced all-NaN
+#: transforms → permanent zero signal (D2 diagnosis 2026-07-04).
+DEFAULT_LOOKBACK = 2200
+
+
+def resolve_lookback(cli_lookback: int, required: "Optional[int]") -> int:
+    """Effective fetch window: never smaller than the strategy's YAML-derived
+    rolling-window requirement (None = no requirement derivable)."""
+    if required is None:
+        return int(cli_lookback)
+    return max(int(cli_lookback), int(required))
+
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -219,6 +233,7 @@ def run(args: argparse.Namespace) -> None:
     from trader.broker import make_broker
     from trader.freshness import refresh_generated_at, refresh_is_stalled
     from trader.killswitch import KillSwitch
+    from trader.lookback import required_bars_for_strategy
     from trader.signal import compute_signal
 
     strategy_id: str = args.strategy_id
@@ -236,6 +251,16 @@ def run(args: argparse.Namespace) -> None:
     manifests_dir = repo_root / "research" / "manifests"
     sleep_secs = _INTERVAL_SLEEP.get(interval, 3600)
     started_at = _now_iso()
+
+    # The engine's rolling windows dictate the minimum OHLCV window; feeding
+    # fewer bars yields all-NaN transforms and a signal stuck at 0.
+    required_bars = required_bars_for_strategy(repo_root, strategy_id)
+    lookback = resolve_lookback(lookback, required_bars)
+    if required_bars is not None:
+        logger.info(
+            "Lookback resolved to %d bars (strategy rolling windows need %d)",
+            lookback, required_bars,
+        )
 
     logger.info("Starting trader: strategy=%s testnet_id=%s symbol=%s interval=%s mode=%s",
                 strategy_id, testnet_id, symbol, interval, mode)
@@ -258,6 +283,8 @@ def run(args: argparse.Namespace) -> None:
     stale_alerted = False
     stale_pause = False
     refresh_alerted = False
+    insufficient_alerted = False
+    insufficient_pause = False
 
     # Graceful shutdown on SIGTERM / SIGINT
     _shutdown = {"flag": False}
@@ -313,10 +340,10 @@ def run(args: argparse.Namespace) -> None:
                     logger.warning("Kill switch PAUSE: %s", reason)
 
             # ── Compute signal ────────────────────────────────────────────────
-            if live_status == "running" or stale_pause:
+            if live_status == "running" or stale_pause or insufficient_pause:
                 result = call_with_retry(lambda: compute_signal(
                     run_dir, broker.exchange, symbol, interval, lookback,
-                    manifests_dir=manifests_dir,
+                    manifests_dir=manifests_dir, min_bars=required_bars,
                 ))
 
                 if result.stale:
@@ -334,6 +361,28 @@ def run(args: argparse.Namespace) -> None:
                         })
                         logger.warning("Factor data stale (age=%s) — pausing", age)
                     new_signal = current_signal  # hold position, place no new orders
+                elif result.insufficient_history:
+                    # OHLCV window shorter than the engine's rolling windows —
+                    # the signal would be an all-NaN-driven 0, indistinguishable
+                    # from a real flat. Pause LOUDLY instead of trading blind.
+                    live_status = "paused"
+                    insufficient_pause = True
+                    if not insufficient_alerted:
+                        insufficient_alerted = True
+                        alerts.append({
+                            "timestamp": _now_iso(),
+                            "severity": "critical",
+                            "message": (
+                                f"signal history insufficient: {result.bars} bars "
+                                f"< required {required_bars} — paused (rolling "
+                                "windows would be all-NaN)"
+                            ),
+                        })
+                        logger.error(
+                            "Signal history insufficient (%d < %d) — pausing",
+                            result.bars, required_bars,
+                        )
+                    new_signal = current_signal  # hold position, place no new orders
                 else:
                     if stale_pause:
                         # Factors fresh again — resume trading.
@@ -347,6 +396,17 @@ def run(args: argparse.Namespace) -> None:
                             "message": "factor data fresh — resuming",
                         })
                         logger.info("Factor data fresh — resuming")
+                    if insufficient_pause:
+                        insufficient_pause = False
+                        insufficient_alerted = False
+                        if live_status == "paused":
+                            live_status = "running"
+                        alerts.append({
+                            "timestamp": _now_iso(),
+                            "severity": "info",
+                            "message": "signal history sufficient — resuming",
+                        })
+                        logger.info("Signal history sufficient — resuming")
                     new_signal = result.signal
 
                 # ── Cron-health: warn if the factor store stopped being rewritten ─
@@ -376,7 +436,8 @@ def run(args: argparse.Namespace) -> None:
                     logger.info("Factor refresh resumed")
 
                 # ── Execute signal ────────────────────────────────────────────
-                if not result.stale and new_signal != current_signal:
+                if (not result.stale and not result.insufficient_history
+                        and new_signal != current_signal):
                     pos = call_with_retry(lambda: broker.get_position(symbol))
 
                     # Close existing position if changing direction or going flat
@@ -468,7 +529,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-dir", required=True, help="Path to backtest run dir with code/signal_engine.py")
     parser.add_argument("--symbol", required=True, help="ccxt symbol, e.g. BTC/USDT:USDT")
     parser.add_argument("--interval", default="1H")
-    parser.add_argument("--lookback", type=int, default=200)
+    parser.add_argument("--lookback", type=int, default=DEFAULT_LOOKBACK)
     parser.add_argument("--repo-root", default="/repo")
     parser.add_argument("--qty", type=float, default=0.001, help="Order size in base asset")
     parser.add_argument(

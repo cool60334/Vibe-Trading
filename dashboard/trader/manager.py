@@ -55,9 +55,15 @@ def build_trader_command(
     interval: str,
     repo_root: str,
     qty: float,
+    lookback: "Optional[int | str]" = None,
 ) -> list:
-    """Build the ``python -m trader.loop`` argv, including ``--mode``."""
-    return [
+    """Build the ``python -m trader.loop`` argv, including ``--mode``.
+
+    ``lookback`` (optional, from control.json) overrides the loop's default
+    OHLCV fetch window; the loop still raises it to the strategy's YAML-derived
+    rolling-window requirement if that is larger.
+    """
+    cmd = [
         python_exe, "-m", "trader.loop",
         "--strategy-id", strategy_id,
         "--testnet-id", testnet_id,
@@ -68,6 +74,9 @@ def build_trader_command(
         "--qty", str(qty),
         "--mode", mode,
     ]
+    if lookback is not None:
+        cmd += ["--lookback", str(int(lookback))]
+    return cmd
 
 
 def read_control(path: Path) -> Optional[dict]:
@@ -187,6 +196,7 @@ class Manager:
             interval=ctrl.get("interval", "1H"),
             repo_root=str(self.repo_root),
             qty=float(ctrl.get("qty", 0.001)),
+            lookback=ctrl.get("lookback"),
         )
         env["PYTHONPATH"] = str(self.dashboard_dir) + os.pathsep + env.get("PYTHONPATH", "")
         return subprocess.Popen(cmd, env=env)
