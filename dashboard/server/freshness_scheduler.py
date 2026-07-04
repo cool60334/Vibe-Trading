@@ -6,6 +6,7 @@ runs stages itself.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -16,6 +17,37 @@ from typing import Optional
 import pipeline_jobs as pj
 
 logger = logging.getLogger("pipeline.freshness")
+
+
+def _symbol_short(symbol: str) -> str:
+    s = str(symbol or "").strip()
+    if "/" in s:
+        return s.split("/")[0].lower()
+    if "-" in s:
+        return s.split("-")[0].lower()
+    return s.lower()
+
+
+def running_symbols(repo_root) -> set:
+    """Symbols (short form) with at least one control.json desiring 'running'.
+
+    Refreshing factors for a symbol nobody trades burns 12-22 min of compute
+    per hour for nothing -- the scheduler intersects its candidate list with
+    this set. Corrupt/missing controls are skipped (never crash the tick).
+    """
+    base = Path(repo_root) / "runs" / "testnet"
+    out: set = set()
+    if base.is_dir():
+        for p in base.glob("*/control.json"):
+            try:
+                ctrl = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if ctrl.get("desired_state") == "running":
+                short = _symbol_short(ctrl.get("symbol"))
+                if short:
+                    out.add(short)
+    return out
 
 
 def _active_live_refresh(repo_root, symbol: str, now: datetime,

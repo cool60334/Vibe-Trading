@@ -30,3 +30,35 @@ def test_tick_reenqueues_when_active_is_zombie(tmp_path):
     now = datetime.now(timezone.utc)
     ids = fs.tick(tmp_path, ["sol"], now, interval_sec=3600)  # >2*interval old
     assert len(ids) == 1  # zombie ignored -> fresh job enqueued
+
+
+import json as _json
+
+from freshness_scheduler import running_symbols
+
+
+def _write_control(repo_root, testnet_id, desired_state, symbol):
+    d = repo_root / "runs" / "testnet" / testnet_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "control.json").write_text(
+        _json.dumps({"desired_state": desired_state, "symbol": symbol}),
+        encoding="utf-8",
+    )
+
+
+def test_running_symbols_collects_only_running(tmp_path):
+    _write_control(tmp_path, "sol_x_paper", "running", "SOL/USDT:USDT")
+    _write_control(tmp_path, "xrp_y_paper", "stopped", "XRP/USDT:USDT")
+    _write_control(tmp_path, "eth_z_paper", "running", "ETH-USDT-SWAP")
+    assert running_symbols(tmp_path) == {"sol", "eth"}
+
+
+def test_running_symbols_empty_tree(tmp_path):
+    assert running_symbols(tmp_path) == set()
+
+
+def test_running_symbols_ignores_corrupt_control(tmp_path):
+    d = tmp_path / "runs" / "testnet" / "bad"
+    d.mkdir(parents=True)
+    (d / "control.json").write_text("{not json", encoding="utf-8")
+    assert running_symbols(tmp_path) == set()
