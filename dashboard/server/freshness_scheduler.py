@@ -73,10 +73,11 @@ def tick(repo_root, symbols: list[str], now: datetime,
     """One scheduling pass. Returns the job_ids enqueued this pass.
 
     Symbols without a running trader are skipped (their factors have no
-    consumer). FRESHNESS_IGNORE_CONTROLS=1 restores unconditional refresh
-    for dev / recovery scenarios.
+    consumer). FRESHNESS_IGNORE_CONTROLS=1/true/yes/on restores unconditional
+    refresh for dev / recovery scenarios; any other value (including "false",
+    "0", "no", "off", or unset) keeps the filtering behavior.
     """
-    if os.environ.get("FRESHNESS_IGNORE_CONTROLS", "").strip() not in ("", "0"):
+    if os.environ.get("FRESHNESS_IGNORE_CONTROLS", "").strip().lower() in ("1", "true", "yes", "on"):
         active = set(symbols)
     else:
         active = running_symbols(repo_root)

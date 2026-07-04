@@ -86,3 +86,11 @@ def test_tick_ignore_controls_env_refreshes_all(tmp_path, monkeypatch):
 def test_tick_no_controls_at_all_enqueues_nothing(tmp_path):
     now = datetime(2026, 7, 4, tzinfo=timezone.utc)
     assert tick(tmp_path, ["sol"], now, 3600.0) == []
+
+
+def test_tick_ignore_controls_env_false_keeps_filtering(tmp_path, monkeypatch):
+    monkeypatch.setenv("FRESHNESS_IGNORE_CONTROLS", "false")
+    _write_control(tmp_path, "xrp_y_paper", "stopped", "XRP/USDT:USDT")
+    now = datetime(2026, 7, 4, tzinfo=timezone.utc)
+    ids = tick(tmp_path, ["sol", "xrp"], now, 3600.0)
+    assert ids == []  # "false" must NOT be treated as ignore-controls
