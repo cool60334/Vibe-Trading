@@ -60,8 +60,9 @@ data/.duckdb_tmp/
 data/parquet/
 data/backup/
 
-# Internal docs (plans, specs)
-docs/
+# Internal docs (plans, specs) — ignore all EXCEPT docs/hermes/ (Hermes agent specs, tracked)
+docs/*
+!docs/hermes/
 !wiki/docs/
 !wiki/docs/**
 docs/screenshots/agent-run.png
