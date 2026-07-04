@@ -70,9 +70,21 @@ def _active_live_refresh(repo_root, symbol: str, now: datetime,
 
 def tick(repo_root, symbols: list[str], now: datetime,
          interval_sec: float) -> list[str]:
-    """One scheduling pass. Returns the job_ids enqueued this pass."""
+    """One scheduling pass. Returns the job_ids enqueued this pass.
+
+    Symbols without a running trader are skipped (their factors have no
+    consumer). FRESHNESS_IGNORE_CONTROLS=1 restores unconditional refresh
+    for dev / recovery scenarios.
+    """
+    if os.environ.get("FRESHNESS_IGNORE_CONTROLS", "").strip() not in ("", "0"):
+        active = set(symbols)
+    else:
+        active = running_symbols(repo_root)
+
     enqueued: list[str] = []
     for sym in symbols:
+        if sym not in active:
+            continue
         if _active_live_refresh(repo_root, sym, now, 2 * interval_sec) is None:
             job = pj.create_job(repo_root, kind="live_refresh", symbol=sym,
                                 interval="1H")
