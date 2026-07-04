@@ -73,7 +73,11 @@
     "sweep_run": "eth_s5_half_size_train",
     "walk_forward_runs": [
       "eth_s5_half_size_oos"
-    ]
+    ],
+    "intrabar_audit_runs": {
+      "train": "eth_s5_half_size_train",
+      "oos": "eth_s5_half_size_oos"
+    }
   },
   "eth_s3_dynamic_exit": {
     "symbol": "ETH-USDT-SWAP",
