@@ -93,7 +93,10 @@ def build_subprocess_env(base_env: dict, ctrl: dict) -> dict:
     The manager passes one shared container environment to every loop it spawns,
     but risk/freshness knobs are per-strategy: a freshness-sensitive strategy on
     an hourly cron needs a tight ``FACTOR_MAX_AGE_DAYS`` while a daily-factor
-    strategy in the same container needs the loose default. ``control.json`` may
+    strategy in the same container needs the loose default. Likewise
+    ``REGIME_MAX_AGE_DAYS`` (regime-staleness warning threshold) can be
+    tightened per-strategy for one on a tighter regime-refresh cadence.
+    ``control.json`` may
     carry an ``env`` dict whose entries override the base for that strategy only;
     values are coerced to str (env vars are strings). Strategies without an
     ``env`` block keep the container defaults unchanged.

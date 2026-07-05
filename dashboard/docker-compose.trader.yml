@@ -43,6 +43,9 @@ services:
       # Cron-health alert (loop.py): warn when the factor store has not been
       # REWRITTEN within this many hours (refresh cron likely broke). Alert only.
       REFRESH_STALL_HOURS: ${REFRESH_STALL_HOURS:-30}
+      # Regime-staleness alert (loop.py): warn when regime_<sym>.json's last
+      # breakdown date is older than this many days. Alert only, no trading change.
+      REGIME_MAX_AGE_DAYS: ${REGIME_MAX_AGE_DAYS:-3}
       # Credentials only needed for testnet/live modes.
       BYBIT_API_KEY: ${BYBIT_API_KEY:-}
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
