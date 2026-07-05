@@ -25,7 +25,7 @@ for _p in (str(_RESEARCH), str(_RESEARCH.parent / "dashboard" / "server")):
         sys.path.insert(0, _p)
 
 from pipeline.config import _REPO_ROOT, load_config
-from pipeline.stage3_backtest import build_run_config
+from pipeline.stage3_backtest import build_run_config, resolve_anchor_date
 from pipeline.stage4_optimize import (
     apply_overrides_to_spec,
     expand_param_ranges,
@@ -86,7 +86,7 @@ def run(strategy_id: str, n_blocks: int, k_test: int, max_combos: int) -> int:
     base_cfg = build_run_config(symbol=_symbol_of(base_spec), cfg=cfg)
     hist_start = base_cfg["start_date"]
     # full history incl. OOS (CPCV re-splits everything)
-    hist_end = date.today().isoformat() if cfg.oos_start else base_cfg["end_date"]
+    hist_end = resolve_anchor_date(cfg).isoformat() if cfg.oos_start else base_cfg["end_date"]
     blocks = make_blocks(hist_start, hist_end, n_blocks)
 
     warmup_h = max(_hold_hours(base_spec, cfg.horizons_h),

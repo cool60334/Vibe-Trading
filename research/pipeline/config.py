@@ -88,6 +88,19 @@ class ResearchConfig:
     # and a held-out OOS window [oos_start, today] used only for final validation.
     # None = no split (legacy: stages tune/backtest on the full period).
     oos_start: str | None = None
+    # ── Window freeze + final-holdout cap (optional) ─────────────────────────
+    # ISO date (YYYY-MM-DD). When set, this is the frozen "today" anchor used
+    # for ALL window math (see resolve_anchor_date() in stage3_backtest.py),
+    # so a research iteration cycle can share one fixed reference date across
+    # multiple runs instead of drifting with date.today(). None = legacy
+    # behavior (today = date.today()).
+    window_end: str | None = None
+    # ISO date (YYYY-MM-DD). When set, caps the resolved anchor date at
+    # holdout_start - 1 day, UNCONDITIONALLY, so no pipeline window can ever
+    # reach into the reserved final-holdout period. That data is spent
+    # exactly once, later, by a separate manual CLI (final_holdout.py), not
+    # part of the iterative pipeline. None = no cap (legacy behavior).
+    final_holdout_start: str | None = None
     # ── Evidence-driven indicator pool (Task 1.2) ────────────────────────────
     indicator_pool: tuple[str, ...] = (
         # momentum
@@ -370,6 +383,36 @@ def load_config(path: Path | str | None = None) -> ResearchConfig:
                 f"'oos_start' must be an ISO date (YYYY-MM-DD), got {oos_start!r}."
             ) from exc
 
+    # ── window_end (optional frozen window anchor) ───────────────────────────
+    window_end_raw = raw.get("window_end")
+    window_end = None
+    if window_end_raw is not None:
+        window_end = str(window_end_raw)
+        # Validate ISO date format (YYYY-MM-DD).
+        from datetime import date as _date
+
+        try:
+            _date.fromisoformat(window_end)
+        except ValueError as exc:
+            raise ValueError(
+                f"'window_end' must be an ISO date (YYYY-MM-DD), got {window_end!r}."
+            ) from exc
+
+    # ── final_holdout_start (optional final-holdout cap) ─────────────────────
+    final_holdout_start_raw = raw.get("final_holdout_start")
+    final_holdout_start = None
+    if final_holdout_start_raw is not None:
+        final_holdout_start = str(final_holdout_start_raw)
+        # Validate ISO date format (YYYY-MM-DD).
+        from datetime import date as _date
+
+        try:
+            _date.fromisoformat(final_holdout_start)
+        except ValueError as exc:
+            raise ValueError(
+                f"'final_holdout_start' must be an ISO date (YYYY-MM-DD), got {final_holdout_start!r}."
+            ) from exc
+
     cfg = ResearchConfig(
         symbols=tuple(symbol_configs),
         period=period,
@@ -383,6 +426,8 @@ def load_config(path: Path | str | None = None) -> ResearchConfig:
         feature_store_path=feature_store_path,
         append_coverage_threshold=append_coverage_threshold,
         oos_start=oos_start,
+        window_end=window_end,
+        final_holdout_start=final_holdout_start,
         lag_stress_bars=lag_stress_bars,
     )
     return _apply_interval_override(_apply_symbol_filter(cfg))

@@ -144,6 +144,25 @@ def symbol_to_short(symbol: str) -> str:
     return symbol.split("-")[0].lower()
 
 
+def resolve_anchor_date(cfg: ResearchConfig, today: date | None = None) -> date:
+    """Effective 'today' for ALL window math — the single freeze point.
+
+    Priority: explicit `today` (tests/backfills) > cfg.window_end (frozen
+    anchor so cross-run comparisons share one window) > date.today().
+    cfg.final_holdout_start, when set, caps the result at holdout_start - 1
+    day UNCONDITIONALLY: no pipeline window may ever touch the final
+    holdout — that data is spent only once, by final_holdout.py, right
+    before a promote decision.
+    """
+    if today is None:
+        today = date.fromisoformat(cfg.window_end) if cfg.window_end else date.today()
+    if cfg.final_holdout_start:
+        cap = date.fromisoformat(cfg.final_holdout_start) - timedelta(days=1)
+        if today > cap:
+            today = cap
+    return today
+
+
 def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None,
                      fee_multiplier: float | None = None) -> dict:
     """Build the config.json dict for a backtest run.
@@ -177,8 +196,7 @@ def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None
     Returns:
         Dict conforming to BacktestConfigSchema (JSON-serialisable).
     """
-    if today is None:
-        today = date.today()
+    today = resolve_anchor_date(cfg, today)
     start = today - timedelta(days=cfg.period)
     # When a walk-forward split is configured, the base (in-sample) backtest is
     # the TRAIN window only [start, oos_start); the held-out OOS period is
@@ -207,8 +225,7 @@ def train_window(cfg: ResearchConfig, today: date | None = None) -> tuple[str, s
     """
     if not cfg.oos_start:
         return None
-    if today is None:
-        today = date.today()
+    today = resolve_anchor_date(cfg, today)
     start = today - timedelta(days=cfg.period)
     return (start.isoformat(), cfg.oos_start)
 
@@ -221,8 +238,7 @@ def oos_window(cfg: ResearchConfig, today: date | None = None) -> tuple[str, str
     """
     if not cfg.oos_start:
         return None
-    if today is None:
-        today = date.today()
+    today = resolve_anchor_date(cfg, today)
     return (cfg.oos_start, today.isoformat())
 
 
