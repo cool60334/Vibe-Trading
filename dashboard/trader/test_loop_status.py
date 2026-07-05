@@ -36,3 +36,15 @@ def test_write_status_includes_mode(tmp_path):
 def test_write_status_mode_can_be_live(tmp_path):
     _write_status(out_dir=tmp_path, mode="live", **_COMMON)
     assert _read_status(tmp_path)["mode"] == "live"
+
+
+def test_write_status_includes_monitor_block(tmp_path):
+    monitor = {"expected_fills_30d": 5.9, "actual_fills_30d": 0,
+               "silent": False, "regime_age_days": 1.2}
+    _write_status(out_dir=tmp_path, mode="paper", monitor=monitor, **_COMMON)
+    assert _read_status(tmp_path)["monitor"] == monitor
+
+
+def test_write_status_monitor_defaults_to_none(tmp_path):
+    _write_status(out_dir=tmp_path, mode="paper", **_COMMON)
+    assert _read_status(tmp_path)["monitor"] is None

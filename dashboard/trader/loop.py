@@ -168,6 +168,7 @@ def _write_status(
     alerts: list,
     started_at: str,
     mode: str = "paper",
+    monitor: "Optional[dict]" = None,
 ) -> None:
     status = {
         "schema_version": 1,
@@ -194,6 +195,7 @@ def _write_status(
             "terminate_drawdown": terminate_dd,
         },
         "alerts": alerts[-50:],  # keep last 50
+        "monitor": monitor,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "testnet_status.json"
@@ -234,6 +236,7 @@ def run(args: argparse.Namespace) -> None:
     from trader.freshness import refresh_generated_at, refresh_is_stalled
     from trader.killswitch import KillSwitch
     from trader.lookback import required_bars_for_strategy
+    from trader.monitor import actual_fills_last_30d, expected_fills_per_30d, regime_age_days, silence_alert_needed
     from trader.signal import compute_signal
 
     strategy_id: str = args.strategy_id
@@ -285,6 +288,10 @@ def run(args: argparse.Namespace) -> None:
     refresh_alerted = False
     insufficient_alerted = False
     insufficient_pause = False
+    expected_fills = expected_fills_per_30d(repo_root, strategy_id)
+    silence_alerted = False
+    regime_stale_alerted = False
+    REGIME_MAX_AGE_DAYS = float(os.environ.get("REGIME_MAX_AGE_DAYS", "3"))
 
     # Graceful shutdown on SIGTERM / SIGINT
     _shutdown = {"flag": False}
@@ -323,7 +330,7 @@ def run(args: argparse.Namespace) -> None:
                     out_dir, strategy_id, testnet_id, symbol, live_status,
                     equity, 0, trade_count, None, max_dd,
                     ks_triggered, ks_triggered_at, ks_reason, pause_dd, terminate_dd,
-                    alerts, started_at, mode,
+                    alerts, started_at, mode, monitor=None,
                 )
                 # Stop the manager from respawning straight back into terminate.
                 _flip_control_stopped(out_dir)
@@ -481,6 +488,39 @@ def run(args: argparse.Namespace) -> None:
 
                     current_signal = new_signal
 
+            # ── Expectancy / regime telemetry (alert-only, never pauses) ──────
+            now_dt = datetime.now(tz=timezone.utc)
+            actual_fills = actual_fills_last_30d(out_dir, now_dt)
+            r_age = regime_age_days(manifests_dir, symbol, now_dt)
+            silent = silence_alert_needed(expected_fills, actual_fills)
+            monitor = {
+                "expected_fills_30d": expected_fills,
+                "actual_fills_30d": actual_fills,
+                "silent": silent,
+                "regime_age_days": r_age,
+            }
+            if silent and not silence_alerted:
+                silence_alerted = True
+                alerts.append({
+                    "timestamp": _now_iso(), "severity": "warning",
+                    "message": (
+                        f"no fills in 30d but ~{expected_fills:.1f} expected — "
+                        "verify signal path / regime mask / factor drift"
+                    ),
+                })
+                logger.warning("Silent strategy: 0 fills vs %.1f expected/30d", expected_fills)
+            elif not silent:
+                silence_alerted = False
+            if r_age is not None and r_age > REGIME_MAX_AGE_DAYS and not regime_stale_alerted:
+                regime_stale_alerted = True
+                alerts.append({
+                    "timestamp": _now_iso(), "severity": "warning",
+                    "message": f"regime file stale: {r_age:.1f}d old (> {REGIME_MAX_AGE_DAYS}d) — overlay may mask entries forever",
+                })
+                logger.warning("Regime file stale: %.1fd", r_age)
+            elif r_age is not None and r_age <= REGIME_MAX_AGE_DAYS:
+                regime_stale_alerted = False
+
             # ── Write status & equity snapshot ────────────────────────────────
             pos = call_with_retry(lambda: broker.get_position(symbol))
             open_positions = 1 if pos else 0
@@ -490,7 +530,7 @@ def run(args: argparse.Namespace) -> None:
                 out_dir, strategy_id, testnet_id, symbol, live_status,
                 equity, open_positions, trade_count, None, max_dd,
                 ks_triggered, ks_triggered_at, ks_reason, pause_dd, terminate_dd,
-                alerts, started_at, mode,
+                alerts, started_at, mode, monitor=monitor,
             )
 
         except Exception as e:
@@ -517,7 +557,7 @@ def run(args: argparse.Namespace) -> None:
         out_dir, strategy_id, testnet_id, symbol, live_status,
         equity, 0, trade_count, None, None,
         ks_triggered, ks_triggered_at, ks_reason, pause_dd, terminate_dd,
-        alerts, started_at, mode,
+        alerts, started_at, mode, monitor=None,
     )
     logger.info("Trader stopped. strategy=%s", strategy_id)
 
