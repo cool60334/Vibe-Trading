@@ -27,8 +27,8 @@ _TERMINAL_JOB_STATUSES = {"succeeded", "failed", "canceled"}
 
 @dataclass
 class RetentionPlan:
-    run_dirs: list = field(default_factory=list)
-    job_dirs: list = field(default_factory=list)
+    run_dirs: list[Path] = field(default_factory=list)
+    job_dirs: list[Path] = field(default_factory=list)
 
 
 def referenced_runs(strategy_runs: dict) -> set:
@@ -97,15 +97,40 @@ def plan_retention(repo_root: "str | Path", *, now: datetime,
     return plan
 
 
+def _refuses_as_run_dir(resolved: Path, runs_root: Path) -> bool:
+    """True if resolved is (or is nested inside) a protected top-level dir.
+
+    Job dirs legitimately live *inside* runs/pipeline_jobs/<job_id>/, so this
+    guard is only meant for entries in plan.run_dirs — pipeline_jobs itself
+    (and testnet/ entirely) must never be treated as a deletable run.
+    """
+    rel_parts = resolved.relative_to(runs_root).parts
+    return bool(rel_parts) and rel_parts[0] in _PROTECTED_TOPLEVEL
+
+
+def _rmtree_if_exists(resolved: Path) -> None:
+    if not resolved.exists():
+        return  # already gone (e.g. race) — nothing to do
+    shutil.rmtree(resolved)
+
+
 def apply_retention(repo_root: "str | Path", plan: RetentionPlan) -> None:
     runs_root = Path(repo_root).resolve() / "runs"
-    for d in list(plan.run_dirs) + list(plan.job_dirs):
+
+    for d in plan.run_dirs:
         resolved = Path(d).resolve()
-        if runs_root not in resolved.parents:
+        if not resolved.is_relative_to(runs_root) or resolved == runs_root:
             raise ValueError(f"refusing to delete outside runs/: {resolved}")
-        if resolved.name in _PROTECTED_TOPLEVEL and resolved.parent == runs_root:
+        if _refuses_as_run_dir(resolved, runs_root):
             raise ValueError(f"refusing to delete protected dir: {resolved}")
-        shutil.rmtree(resolved, ignore_errors=True)
+        _rmtree_if_exists(resolved)
+
+    jobs_root = runs_root / "pipeline_jobs"
+    for d in plan.job_dirs:
+        resolved = Path(d).resolve()
+        if not resolved.is_relative_to(jobs_root) or resolved == jobs_root:
+            raise ValueError(f"refusing to delete outside pipeline_jobs/: {resolved}")
+        _rmtree_if_exists(resolved)
 
 
 def main() -> None:
