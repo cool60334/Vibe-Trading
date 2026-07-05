@@ -32,6 +32,7 @@ from pipeline.stage4_optimize import (
     sample_combos,
     _compile_signal_code,
     _invoke_backtest,
+    _resolve_manifests_dir,
     _scaffold_combo_run,
 )
 from lib.cpcv import cpcv_distribution, combinatorial_splits, make_blocks
@@ -70,7 +71,7 @@ def run(strategy_id: str, n_blocks: int, k_test: int, max_combos: int) -> int:
     cfg = load_config()
     ppy = bars_per_year(cfg.interval)
     strategies_dir = _REPO_ROOT / "research" / "strategies"
-    manifests_dir = _REPO_ROOT / "research" / "manifests"
+    manifests_dir = _resolve_manifests_dir()
     runs_root = _REPO_ROOT / "runs"
 
     yaml_path = strategies_dir / f"strategy_{strategy_id}.yaml"
@@ -97,7 +98,7 @@ def run(strategy_id: str, n_blocks: int, k_test: int, max_combos: int) -> int:
     matrix: dict[int, dict[int, pd.Series]] = {}
     for cid, overrides in enumerate(combos):
         spec_dict = apply_overrides_to_spec(base_spec, overrides)
-        code = _compile_signal_code(spec_dict)
+        code = _compile_signal_code(spec_dict, interval=cfg.interval)
         matrix[cid] = {}
         for bid, (b_start, b_end) in enumerate(blocks):
             warm_start = (date.fromisoformat(b_start) - timedelta(days=warmup_days)).isoformat()

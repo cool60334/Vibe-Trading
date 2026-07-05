@@ -336,10 +336,17 @@ def apply_overrides_to_spec(base_spec: dict, overrides: dict) -> dict:
 # ─── Per-combo execution ──────────────────────────────────────────────────────
 
 
-def _compile_signal_code(spec_dict: dict) -> str:
+def _resolve_manifests_dir():
+    """Interval-namespaced manifests dir -- keeps 30m runs from clobbering 1H
+    artifacts. Same delegation as stage 1/2.5/3/3diag/emit_manifest."""
+    from lib.timeframe import active_manifests_dir
+    return active_manifests_dir()
+
+
+def _compile_signal_code(spec_dict: dict, interval: str = "1H") -> str:
     """Validate spec dict against StrategySpec and compile to signal_engine source."""
     spec_model = StrategySpec.model_validate(spec_dict)
-    return compile_strategy(spec_model)
+    return compile_strategy(spec_model, interval=interval)
 
 
 def _scaffold_combo_run(
@@ -382,13 +389,14 @@ def _run_one_combo(
     base_config: dict,
     strategy_id: str,
     runs_root: Path,
+    interval: str = "1H",
 ) -> ComboResult:
     run_name = f"{strategy_id}_sweep_{idx:03d}"
     run_dir = runs_root / run_name
 
     try:
         spec_dict = apply_overrides_to_spec(base_spec, overrides)
-        signal_code = _compile_signal_code(spec_dict)
+        signal_code = _compile_signal_code(spec_dict, interval=interval)
     except Exception as exc:  # noqa: BLE001
         return ComboResult(idx=idx, overrides=overrides, run_name=run_name, metrics=None,
                            error=f"compile failed: {exc}")
@@ -657,7 +665,7 @@ def _optimize_strategy(
     for i, overrides in enumerate(combos):
         res = _run_one_combo(
             idx=i, overrides=overrides, base_spec=base_spec, base_config=base_config,
-            strategy_id=strategy_id, runs_root=runs_root,
+            strategy_id=strategy_id, runs_root=runs_root, interval=cfg.interval,
         )
         results.append(res)
         if res.error:
@@ -732,7 +740,7 @@ def _optimize_strategy(
             oos_config = build_run_config(symbol=entry.symbol, cfg=cfg)
             oos_config["start_date"], oos_config["end_date"] = oos_win
             spec_dict = apply_overrides_to_spec(base_spec, best.overrides)
-            signal_code = _compile_signal_code(spec_dict)
+            signal_code = _compile_signal_code(spec_dict, interval=cfg.interval)
             _scaffold_combo_run(runs_root / holdout_name, oos_config, signal_code)
             proc = _invoke_backtest(runs_root / holdout_name)
             if proc.returncode != 0:
@@ -786,7 +794,7 @@ def main() -> None:
 
     runs_root = _REPO_ROOT / "runs"
     strategies_dir = _REPO_ROOT / "research" / "strategies"
-    manifests_dir = _REPO_ROOT / "research" / "manifests"
+    manifests_dir = _resolve_manifests_dir()
 
     print("=" * 60)
     print(f"Stage 4 — Deterministic Grid Sweep")

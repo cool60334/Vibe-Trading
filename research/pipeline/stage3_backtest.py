@@ -385,7 +385,7 @@ def _run_lag_stress_for_strategy(
             json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         (code_dir / "signal_engine.py").write_text(
-            compile_strategy(spec, lag_bars=lag), encoding="utf-8"
+            compile_strategy(spec, lag_bars=lag, interval=cfg.interval), encoding="utf-8"
         )
 
         print(f"  [lag-stress] {run_name} (lag{lag}, {window})")
