@@ -103,6 +103,7 @@ def _atomic_to_parquet(df: "pd.DataFrame", path: Path) -> None:
     tmp_path = Path(tmp)
     try:
         df.to_parquet(tmp_path, engine="pyarrow", compression="snappy")
+        os.chmod(tmp_path, 0o644)  # mkstemp is 0600 regardless of umask; readers need group read
         os.replace(tmp_path, path)
     finally:
         if tmp_path.exists():
@@ -116,6 +117,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
     tmp_path = Path(tmp)
     try:
         tmp_path.write_text(text, encoding="utf-8")
+        os.chmod(tmp_path, 0o644)  # mkstemp is 0600 regardless of umask; readers need group read
         os.replace(tmp_path, path)
     finally:
         if tmp_path.exists():
