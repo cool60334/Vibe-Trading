@@ -4,7 +4,12 @@ Validates that compiling eth_s5_dsl_equiv.yaml (with regime_filter: true and
 size_mult: 0.45) produces a signal_engine.py whose backtest results match the
 hand-written eth_s5_half_size reference runs within tolerance.
 
-Reference values (from runs/eth_s5_half_size_oos and runs/eth_s5_half_size_train):
+Reference values are the hand-written eth_s5_half_size engine's metrics, captured
+on the FROZEN factor/regime fixture under research/tests/fixtures/manifests_eth_s5/
+(NOT the live research/manifests/, which stage1 rewrites on every pipeline run —
+the freeze-time parquet was gitignored and is unrecoverable). The compiled engine
+is pointed at that fixture via the RESEARCH_MANIFESTS_DIR env var so this test is
+hermetic and immune to future factor/regime revisions.
 
   OOS  (2025-01-01 → 2026-06-02):
     sharpe       = 1.0157874592604321
@@ -12,9 +17,13 @@ Reference values (from runs/eth_s5_half_size_oos and runs/eth_s5_half_size_train
     trade_count  = 49
 
   Train (2022-06-11 → 2025-01-01):
-    sharpe       = 1.2386463971329293
-    max_drawdown = -0.14889666790038583
-    trade_count  = 86
+    sharpe       = 1.163302928642236
+    max_drawdown = -0.1311973550103349
+    trade_count  = 82
+
+REF is bound to the fixture data version. If the fixture is regenerated, rerun the
+hand-written eth_s5_half_size train/OOS backtests against it and re-freeze
+REF_TRAIN/REF_OOS below.
 
 Tolerances:
   sharpe:       ±0.05
@@ -30,6 +39,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -59,16 +69,21 @@ from lib.signal_compiler import compile_strategy
 # ---------------------------------------------------------------------------
 FIXTURE_YAML = _RESEARCH_DIR / "tests" / "fixtures" / "eth_s5_dsl_equiv.yaml"
 
-# Reference metrics
+# Frozen factor/regime snapshot — the compiled engine reads factor_values_eth.parquet
+# and regime_eth.json from here (via RESEARCH_MANIFESTS_DIR) instead of the live
+# research/manifests/ dir, keeping the backtest reproducible across pipeline reruns.
+FIXTURE_MANIFESTS_DIR = _RESEARCH_DIR / "tests" / "fixtures" / "manifests_eth_s5"
+
+# Reference metrics — hand-written eth_s5_half_size engine on the fixture above.
 REF_OOS = {
     "sharpe": 1.0157874592604321,
     "max_drawdown": -0.09128048816641941,
     "trade_count": 49,
 }
 REF_TRAIN = {
-    "sharpe": 1.2386463971329293,
-    "max_drawdown": -0.14889666790038583,
-    "trade_count": 86,
+    "sharpe": 1.163302928642236,
+    "max_drawdown": -0.1311973550103349,
+    "trade_count": 82,
 }
 
 SHARPE_TOL = 0.05
@@ -123,13 +138,19 @@ def _setup_run_dir(run_name: str, config: dict, source: str) -> Path:
 
 
 def _run_backtest(run_dir: Path) -> None:
-    """Invoke backtest.runner as a subprocess (matches stage3 pattern)."""
+    """Invoke backtest.runner as a subprocess (matches stage3 pattern).
+
+    RESEARCH_MANIFESTS_DIR points the compiled engine at the frozen fixture so
+    factor + regime reads are hermetic (see FIXTURE_MANIFESTS_DIR).
+    """
+    env = {**os.environ, "RESEARCH_MANIFESTS_DIR": str(FIXTURE_MANIFESTS_DIR)}
     proc = subprocess.run(
         [sys.executable, "-m", "backtest.runner", str(run_dir)],
         cwd=str(_REPO_ROOT),
         capture_output=True,
         text=True,
         timeout=600,
+        env=env,
     )
     if proc.returncode != 0:
         raise RuntimeError(

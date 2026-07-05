@@ -681,6 +681,47 @@ def test_regime_missing_json_fail_soft(tmp_path):
     )
 
 
+def test_regime_env_override_reads_manifests_dir(tmp_path, monkeypatch):
+    """_load_regime_series honors RESEARCH_MANIFESTS_DIR (hermetic backtests).
+
+    The compiled engine is written where its parents[3]/research/manifests path
+    holds no regime json, so only the env override can supply one. Setting
+    RESEARCH_MANIFESTS_DIR to a dir containing regime_eth.json must make the
+    loader read that file.
+    """
+    import importlib.util
+    import json
+    import pandas as pd
+
+    spec = _make_spec(
+        entry_long_conds=["funding_rate_percentile_90d <= 20.0"],
+        entry_short_conds=["funding_rate_percentile_90d >= 80.0"],
+        exit_rules=[_ExitTimeBased(condition="time_based", max_hold_hours=48)],
+    )
+    spec = spec.model_copy(update={"regime_filter": True})
+    source = compile_strategy(spec)
+
+    engine_file = tmp_path / "eng" / "signal_engine.py"
+    engine_file.parent.mkdir(parents=True)
+    engine_file.write_text(source, encoding="utf-8")
+
+    override = tmp_path / "override_manifests"
+    override.mkdir()
+    (override / "regime_eth.json").write_text(
+        json.dumps({"breakdown": [{"date": "2024-01-01", "regime": "bull"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RESEARCH_MANIFESTS_DIR", str(override))
+
+    mod_spec = importlib.util.spec_from_file_location("signal_engine_env_regime", engine_file)
+    module = importlib.util.module_from_spec(mod_spec)
+    mod_spec.loader.exec_module(module)
+
+    idx = pd.date_range("2024-01-05", periods=48, freq="1h")
+    regime = module._load_regime_series("eth", idx)
+    assert (regime == "bull").all(), "env-dir regime json must override the repo path"
+
+
 # ---------------------------------------------------------------------------
 # lag_bars — optional shift of the position series
 # ---------------------------------------------------------------------------

@@ -45,12 +45,20 @@ def active_manifests_dir() -> Path:
 
     research/manifests for 1H or unset (zero 1H regression); research/manifests/<interval>
     for a supported sub-hour interval. Raises ValueError for an unsupported value.
+
+    RESEARCH_MANIFESTS_DIR overrides the base directory (defaults to
+    research/manifests). Set it to point factor/regime reads at a frozen fixture
+    so backtests are hermetic and immune to stage1 rewriting the live parquet.
+    The sub-hour interval namespace is still applied on top of the override.
     """
+    base_override = os.environ.get("RESEARCH_MANIFESTS_DIR", "").strip()
+    manifests_base = Path(base_override) if base_override else _MANIFESTS_BASE
+
     iv = os.environ.get("RESEARCH_INTERVAL", "").strip()
     if not iv or iv == "1H":
-        return _MANIFESTS_BASE
+        return manifests_base
     if iv not in SUPPORTED_INTERVALS:
         raise ValueError(
             f"RESEARCH_INTERVAL={iv!r} is not supported; valid: {sorted(SUPPORTED_INTERVALS)}"
         )
-    return _MANIFESTS_BASE / iv
+    return manifests_base / iv

@@ -48,3 +48,17 @@ def test_active_manifests_dir_invalid_raises(monkeypatch):
     monkeypatch.setenv("RESEARCH_INTERVAL", "7m")
     with pytest.raises(ValueError, match="RESEARCH_INTERVAL"):
         active_manifests_dir()
+
+
+def test_active_manifests_dir_env_override(monkeypatch, tmp_path):
+    """RESEARCH_MANIFESTS_DIR overrides the repo manifests base (hermetic tests)."""
+    monkeypatch.delenv("RESEARCH_INTERVAL", raising=False)
+    monkeypatch.setenv("RESEARCH_MANIFESTS_DIR", str(tmp_path))
+    assert active_manifests_dir() == tmp_path
+
+
+def test_active_manifests_dir_env_override_with_interval(monkeypatch, tmp_path):
+    """Override base still applies the sub-hour interval namespace on top."""
+    monkeypatch.setenv("RESEARCH_MANIFESTS_DIR", str(tmp_path))
+    monkeypatch.setenv("RESEARCH_INTERVAL", "30m")
+    assert active_manifests_dir() == tmp_path / "30m"
