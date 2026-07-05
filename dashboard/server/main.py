@@ -17,6 +17,7 @@ import pipeline_jobs
 import pipeline_status
 import state as state_module
 import supervisor as supervisor_module
+from ops_health import build_ops_health
 from schemas import FATAL_GATE_CHECKS, StrategyManifest
 
 # Repo root — override with REPO_ROOT env var for Docker / Linux deployment.
@@ -42,6 +43,11 @@ app.add_middleware(
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "repo_root": str(REPO_ROOT)}
+
+
+@app.get("/api/ops/health")
+def api_ops_health():
+    return build_ops_health(REPO_ROOT)
 
 
 # ---------------------------------------------------------------------------
