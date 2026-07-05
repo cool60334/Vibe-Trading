@@ -537,6 +537,14 @@ def main() -> None:
             emit_fail += 1
     print(f"Emitted: {emit_ok}/{emit_ok + emit_fail} manifests successfully.")
 
+    # ── Machine-readable run verdicts (Talos / ops input) ────────────────────
+    from pipeline.lib.pipeline_summary import write_pipeline_summary
+    try:
+        _summary_path = write_pipeline_summary(manifests_dir)
+        print(f"[stage5] wrote {_summary_path}")
+    except Exception as exc:  # noqa: BLE001 — summary must never fail the stage
+        print(f"[stage5] WARN: pipeline_summary failed: {exc}")
+
     # ── Print summary and exit ────────────────────────────────────────────────
     print_summary(entries, total_strategies)
     sys.exit(compute_exit_code(check.ok))
