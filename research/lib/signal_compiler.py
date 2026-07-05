@@ -48,6 +48,7 @@ from backtest.runner import (  # noqa: E402
     _validate_function_def,
     _is_safe_constant_assignment,
 )
+from lib.timeframe import bars_per_day, bars_per_hour  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Jinja2 template loader
@@ -163,6 +164,7 @@ def _resolve_indicator_var(
 def _render_condition(
     cond_str: str,
     indicator_var_map: Optional[dict] = None,
+    bpd: int = 24,
 ) -> str:
     """Translate a DSL condition string into a pandas boolean expression string.
 
@@ -174,6 +176,10 @@ def _render_condition(
         Optional mapping of ``{indicator_key: python_var_name}`` from the
         StrategySpec.  When provided, zscore/percentile conditions are resolved
         to the correct Python variable rather than the regex-extracted prefix.
+    bpd:
+        Bars per day at the compiled interval (24 for legacy 1H). Used to scale
+        the ``{n_days}`` rolling windows encoded in percentile/zscore indicator
+        names into the correct number of bars.
 
     Returns a Python expression string (no trailing newline, no indentation).
     """
@@ -188,15 +194,15 @@ def _render_condition(
             indicator_expr, _PERCENTILE_INDICATOR_RE, indicator_var_map
         )
         base_cond = (
-            f"({base_name}.rolling({n_days}*24, min_periods={n_days}*24//2).rank(pct=True)*100 {op} {value})"
+            f"({base_name}.rolling({n_days}*{bpd}, min_periods={n_days}*{bpd}//2).rank(pct=True)*100 {op} {value})"
         )
     elif zscore_m:
         base_name, n_days = _resolve_indicator_var(
             indicator_expr, _ZSCORE_INDICATOR_RE, indicator_var_map
         )
         base_cond = (
-            f"(({base_name} - {base_name}.rolling({n_days}*24, min_periods={n_days}*24//2).mean()) "
-            f"/ ({base_name}.rolling({n_days}*24, min_periods={n_days}*24//2).std() + 1e-9) {op} {value})"
+            f"(({base_name} - {base_name}.rolling({n_days}*{bpd}, min_periods={n_days}*{bpd}//2).mean()) "
+            f"/ ({base_name}.rolling({n_days}*{bpd}, min_periods={n_days}*{bpd}//2).std() + 1e-9) {op} {value})"
         )
     else:
         # Raw comparison — indicator name used as-is
@@ -216,6 +222,7 @@ def _render_entry_block(
     side: str,
     block: Optional[EntryBlock],
     indicator_var_map: Optional[dict] = None,
+    bpd: int = 24,
 ) -> str:
     """Render entry_{side} boolean Series assignment.
 
@@ -228,7 +235,7 @@ def _render_entry_block(
     if block is None:
         return f"        {var} = pd.Series(False, index=ohlcv.index)"
 
-    cond_exprs = [_render_condition(c, indicator_var_map) for c in block.conditions]
+    cond_exprs = [_render_condition(c, indicator_var_map, bpd=bpd) for c in block.conditions]
     op = " & " if block.logic == "all" else " | "
     joined = op.join(cond_exprs)
     return f"        {var} = ({joined})"
@@ -246,6 +253,7 @@ def _render_exit_rule_check(
     rule,
     rule_idx: int = 0,
     indent: str = "                ",
+    bph: int = 1,
 ) -> str:
     """Render one exit rule inside the loop else-body. Returns lines joined with newlines.
 
@@ -260,11 +268,16 @@ def _render_exit_rule_check(
         are present.
     indent:
         Default indent is 16 spaces (inside: for-loop -> else -> rule checks).
+    bph:
+        Bars per hour at the compiled interval (1 for legacy 1H). Used to
+        convert ``max_hold_hours`` (an hour-denominated spec field) into the
+        correct number of bars.
     """
     condition = rule.condition
 
     if condition == "time_based":
-        return f"{indent}if bars_held >= {rule.max_hold_hours}:\n{indent}    exit_flag = True"
+        max_hold_bars = int(rule.max_hold_hours) * bph
+        return f"{indent}if bars_held >= {max_hold_bars}:\n{indent}    exit_flag = True"
 
     elif condition == "take_profit_pct":
         return f"{indent}if pnl_pct >= {rule.value} / 100:\n{indent}    exit_flag = True"
@@ -290,7 +303,13 @@ def _render_exit_rule_check(
         raise ValueError(f"Unknown exit rule condition: {condition!r}")
 
 
-def _render_exit_state_machine(exit_rules, size_mult: float = 1.0, lag_bars: int = 0) -> str:
+def _render_exit_state_machine(
+    exit_rules,
+    size_mult: float = 1.0,
+    lag_bars: int = 0,
+    bpd: int = 24,
+    bph: int = 1,
+) -> str:
     """Render the full exit state machine loop. Indented at 8 spaces (class method body)."""
     if lag_bars < 0:
         raise ValueError(f"lag_bars must be >= 0, got {lag_bars}")
@@ -319,12 +338,12 @@ def _render_exit_state_machine(exit_rules, size_mult: float = 1.0, lag_bars: int
             n_days = int(m.group(2))
             pct_var = f"_inv_pct_{rule_idx}"
             pre_loop_lines.append(
-                f"{i8}{pct_var} = {indicator}.rolling({n_days}*24, min_periods={n_days}*24//2)"
+                f"{i8}{pct_var} = {indicator}.rolling({n_days}*{bpd}, min_periods={n_days}*{bpd}//2)"
                 f".rank(pct=True)*100"
             )
 
     rule_checks = "\n".join(
-        _render_exit_rule_check(r, rule_idx=idx, indent=i16)
+        _render_exit_rule_check(r, rule_idx=idx, indent=i16, bph=bph)
         for idx, r in enumerate(exit_rules)
     )
 
@@ -386,7 +405,12 @@ def _render_exit_state_machine(exit_rules, size_mult: float = 1.0, lag_bars: int
 # 3.7 — Public compile_strategy()
 # ---------------------------------------------------------------------------
 
-def compile_strategy(spec: StrategySpec, yaml_hash: str = "", lag_bars: int = 0) -> str:
+def compile_strategy(
+    spec: StrategySpec,
+    yaml_hash: str = "",
+    lag_bars: int = 0,
+    interval: str = "1H",
+) -> str:
     """Compile a StrategySpec to signal_engine.py source code string.
 
     Parameters
@@ -400,6 +424,12 @@ def compile_strategy(spec: StrategySpec, yaml_hash: str = "", lag_bars: int = 0)
         Optional number of bars to shift the generated position series by
         (simulating execution lag). Defaults to 0 (no shift, output
         unchanged from prior behavior).
+    interval:
+        Candle interval the compiled strategy will run at (e.g. "1H", "30m",
+        "15m"). Defaults to "1H" for byte-identical output with the legacy
+        renderer (which hard-coded 24 bars/day, 1 bar/hour). Controls the
+        rolling-window and hold-period bar counts via
+        ``research.lib.timeframe.bars_per_day``/``bars_per_hour``.
 
     Returns
     -------
@@ -412,6 +442,9 @@ def compile_strategy(spec: StrategySpec, yaml_hash: str = "", lag_bars: int = 0)
         If the rendered source fails AST syntax check or the backtest AST
         scrubber rejects it.
     """
+    bpd = bars_per_day(interval)
+    bph = bars_per_hour(interval)
+
     # 1. Render indicator loads
     # Build a map {indicator_key: python_var_name} for condition resolution.
     # Currently the Python variable name equals the indicator key (both are the
@@ -425,12 +458,12 @@ def compile_strategy(spec: StrategySpec, yaml_hash: str = "", lag_bars: int = 0)
     indicator_code = "\n".join(indicator_lines) if indicator_lines else "        pass"
 
     # 2. Render entry blocks
-    entry_long_code = _render_entry_block("long", spec.entry_long, indicator_var_map)
-    entry_short_code = _render_entry_block("short", spec.entry_short, indicator_var_map)
+    entry_long_code = _render_entry_block("long", spec.entry_long, indicator_var_map, bpd=bpd)
+    entry_short_code = _render_entry_block("short", spec.entry_short, indicator_var_map, bpd=bpd)
 
     # 3. Render exit state machine
     exit_code = _render_exit_state_machine(
-        spec.exit_rules, size_mult=spec.size_mult, lag_bars=lag_bars
+        spec.exit_rules, size_mult=spec.size_mult, lag_bars=lag_bars, bpd=bpd, bph=bph
     )
 
     # 4. Render template
