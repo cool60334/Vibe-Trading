@@ -47,7 +47,7 @@ for _p in (_RESEARCH_DIR,):
         sys.path.insert(0, _ps)
 
 # ── Extend sys.path for dashboard/server/ and agent/ ──────────────────────────
-from pipeline.config import _REPO_ROOT  # noqa: E402  (bootstrap must be first)
+from pipeline.config import _REPO_ROOT, load_config  # noqa: E402  (bootstrap must be first)
 
 _DASHBOARD_SCHEMAS = _REPO_ROOT / "dashboard" / "server"
 if str(_DASHBOARD_SCHEMAS) not in sys.path:
@@ -262,6 +262,7 @@ def _compile_one(
     entry: dict,
     *,
     dry_run: bool = False,
+    interval: str = "1H",
 ) -> CompileResult:
     """Compile the signal engine for one strategy.
 
@@ -278,6 +279,8 @@ def _compile_one(
         entry:       Raw dict from strategy_runs.json for this strategy.
         dry_run:     If True, render and validate but do not write any files
                      and do not execute pytest.
+        interval:    Candle interval (e.g. "1H", "30m") from research_config.yaml,
+                     threaded into compile_strategy() for interval-aware bar counts.
 
     Returns:
         CompileResult with status "ok", "skip", or "fail".
@@ -325,7 +328,7 @@ def _compile_one(
         spec = StrategySpec.model_validate(raw_doc)
 
         # 4. Compile.
-        source = compile_strategy(spec, yaml_hash=yaml_hash)
+        source = compile_strategy(spec, yaml_hash=yaml_hash, interval=interval)
 
         if dry_run:
             print(
@@ -381,6 +384,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    cfg = load_config()
     runs_map = load_strategy_runs()
     entries = dict(runs_map.entries)  # strategy_id -> StrategyRunsEntry
 
@@ -410,7 +414,7 @@ def main() -> None:
             "stress_runs": dict(entry.stress_runs),
             "sweep_run": entry.sweep_run,
         }
-        result = _compile_one(strategy_id, entry_dict, dry_run=args.dry_run)
+        result = _compile_one(strategy_id, entry_dict, dry_run=args.dry_run, interval=cfg.interval)
         results.append(result)
 
     # Print summary.

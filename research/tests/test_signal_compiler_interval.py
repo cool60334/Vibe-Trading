@@ -74,3 +74,20 @@ def test_15m_scales_windows_and_hold():
 def test_invalidation_hoist_scales_too():
     src = compile_strategy(_make_spec(), interval="30m")
     assert "_inv_pct_1 = funding_z.rolling(90*48" in src or "rolling(90*48" in src
+
+
+def test_stage4_resolves_manifests_via_active_dir(monkeypatch):
+    from pipeline.stage4_optimize import _resolve_manifests_dir
+
+    monkeypatch.delenv("RESEARCH_INTERVAL", raising=False)
+    assert _resolve_manifests_dir().name == "manifests"
+
+    monkeypatch.setenv("RESEARCH_INTERVAL", "30m")
+    assert _resolve_manifests_dir().name == "30m"
+
+
+def test_stage4_cpcv_uses_same_resolver(monkeypatch):
+    import pipeline.stage4_cpcv as cpcv
+    from pipeline.stage4_optimize import _resolve_manifests_dir
+
+    assert cpcv._resolve_manifests_dir is _resolve_manifests_dir
