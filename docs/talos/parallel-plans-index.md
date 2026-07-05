@@ -22,6 +22,12 @@
 - `dashboard/server/`：B2 動 freshness_scheduler；D1+D3 動 main.py+新檔；B3 只建新檔 —— 無同檔。
 - `dashboard/trader/`：只有 D2-監控 動。
 
+## 第二批（平行批次 merge 後的接續計畫，單一 session 執行）
+
+| 計畫 | Part A 項 | 檔案所有權 | 備註 |
+|---|---|---|---|
+| [2026-07-05-oos-ledger-window-freeze.md](plans/2026-07-05-oos-ledger-window-freeze.md) | A2+A3 | `research/lib/research_ledger.py`（新）、`research/pipeline/final_holdout.py`（新）、`config.py`、`stage3_backtest.py`、`stage4_optimize.py`、`stage4_cpcv.py`、`stage0a_features.py`、`emit_manifest.py`、`dashboard/server/schemas.py`（僅 optional 欄位）+ 三個新測試檔 | **不可與其他計畫平行**（動 stage3/4）；第一批已全 merge，單獨跑 |
+
 ## 刻意排除（勿在平行批次做）
 
 | 項 | 原因 |
