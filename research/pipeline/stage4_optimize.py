@@ -63,6 +63,7 @@ from pipeline.strategy_runs import (
 from pipeline.stage3_backtest import (
     build_run_config,
     oos_window,
+    resolve_anchor_date,
     symbol_to_short,
     train_window,
 )
@@ -787,7 +788,7 @@ def main() -> None:
         parser.error("--train-start and --train-end must be given together.")
     if args.train_start and args.train_end:
         window = (args.train_start, args.train_end)
-        oos_win = (args.train_end, date.today().isoformat())
+        oos_win = (args.train_end, resolve_anchor_date(cfg).isoformat())
     else:
         window = train_window(cfg)          # None unless cfg.oos_start is set
         oos_win = oos_window(cfg)            # None unless cfg.oos_start is set
