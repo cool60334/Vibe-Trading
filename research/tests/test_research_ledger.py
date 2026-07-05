@@ -72,6 +72,24 @@ class TestAppendEventFailSoft:
         # Must not raise, even though bad_dir's parent doesn't exist.
         append_event(bad_dir, kind="sweep", symbol="eth")
 
+    def test_append_never_raises_on_non_serializable_detail(self, tmp_path):
+        try:
+            import numpy as np  # type: ignore
+
+            bad_value = np.int64(5)
+        except ImportError:
+            # numpy isn't a guaranteed dependency in this environment;
+            # a bare set is equally non-JSON-serializable by default.
+            bad_value = {1, 2, 3}
+
+        # Must not raise: fail-soft covers TypeError from json.dumps on
+        # non-serializable detail values, not just OSError from the fs.
+        append_event(tmp_path, kind="sweep", symbol="eth", detail={"bad": bad_value})
+
+        events = read_events(tmp_path)
+        assert len(events) == 1
+        assert "bad" in events[0]["detail"]
+
 
 class TestResearchAccountingBlock:
     def test_shape(self, tmp_path):

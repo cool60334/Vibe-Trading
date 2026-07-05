@@ -32,7 +32,7 @@ def append_event(
     strategy_id: Optional[str] = None,
     detail: Optional[dict] = None,
 ) -> None:
-    """Append one event. Fail-soft: any OSError is printed, never raised."""
+    """Append one event. Fail-soft: OSError/TypeError are printed, never raised."""
     event = {
         "ts": datetime.now(tz=timezone.utc).isoformat(),
         "kind": kind,
@@ -42,8 +42,11 @@ def append_event(
     }
     try:
         with _ledger_path(manifests_dir).open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
-    except OSError as exc:  # ledger must never sink a stage
+            # default=str coerces non-JSON-serializable values (e.g. numpy
+            # scalars from pandas/numpy aggregations) instead of raising —
+            # the event is preserved rather than dropped.
+            f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+    except (OSError, TypeError) as exc:  # ledger must never sink a stage
         print(f"[ledger] WARN: append failed: {exc}")
 
 
