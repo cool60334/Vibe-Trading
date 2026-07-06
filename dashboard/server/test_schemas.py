@@ -405,7 +405,8 @@ def test_factor_verdict_enum_has_four_values():
 
 
 def test_red_flag_enum_has_six_codes():
-    assert len(list(RedFlagCode)) == 6
+    # 7 as of oos_window_overevaluated (ledger-based OOS-peek red flag).
+    assert len(list(RedFlagCode)) == 7
 
 
 # ---------------------------------------------------------------------------

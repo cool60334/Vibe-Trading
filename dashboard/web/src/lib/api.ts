@@ -28,7 +28,8 @@ export type RedFlagCode =
   | "too_few_trades"
   | "alpha_is_fee_illusion"
   | "overfit_suspect"
-  | "regime_conditional";
+  | "regime_conditional"
+  | "oos_window_overevaluated";
 export type LiveStatus = "running" | "paused" | "stopped";
 export type AlertSeverity = "info" | "warning" | "critical";
 

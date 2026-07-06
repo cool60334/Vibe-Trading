@@ -76,6 +76,7 @@ from schemas import GATE_MAX_DRAWDOWN, OptimizationBlock, StrategySpec  # noqa: 
 
 from lib.signal_compiler import compile_strategy  # noqa: E402
 from lib.deflated_sharpe import bars_in_window, bars_per_year, deflated_sharpe  # noqa: E402
+from lib.research_ledger import append_event  # noqa: E402
 
 
 OPTIMIZATION_METHOD = "deterministic grid sweep (stage 4)"
@@ -715,6 +716,13 @@ def _optimize_strategy(
     out_path.write_text(json.dumps(block, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"  [OK] wrote {out_path}")
 
+    # Ledger: record this sweep (funnel-wide trial accounting).
+    append_event(manifests_dir, kind="sweep", symbol=symbol_to_short(entry.symbol),
+                 strategy_id=strategy_id,
+                 detail={"n_trials": n_trials,
+                         "factors": sorted((base_spec.get("indicators") or {}).keys()),
+                         "best_sharpe": best.sharpe if best is not None else None})
+
     # Refresh strategy_runs.json so downstream stages (diag, stage 5) see the
     # tuned best run as the canonical sweep_run. Failure here is non-fatal —
     # optimization.json already carries the same info, so a warning suffices.
@@ -757,6 +765,13 @@ def _optimize_strategy(
                     )
                     update_walk_forward_runs(strategy_id, [holdout_name])
                     print(f"  [OK] strategy_runs.json: {strategy_id}.walk_forward_runs -> [{holdout_name}]")
+
+                    # Ledger: record this OOS window evaluation (holdout-freshness accounting).
+                    append_event(manifests_dir, kind="oos_eval",
+                                 symbol=symbol_to_short(entry.symbol),
+                                 strategy_id=strategy_id,
+                                 detail={"window": list(oos_win),
+                                         "sharpe": float(m.get("sharpe", 0) or 0)})
         except Exception as exc:  # noqa: BLE001
             print(f"  [WARN] OOS holdout step failed: {exc}", file=sys.stderr)
 

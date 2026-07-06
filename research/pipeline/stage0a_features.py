@@ -74,6 +74,7 @@ from lib.derived_factors import (
     positioning_factors,
 )
 from lib.orderflow_factors import orderflow_factors
+from lib.research_ledger import append_event
 from lib.timeframe import bars_per_hour
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -670,6 +671,10 @@ def _process_symbol(
             len(sorted_entries),
             sorted_entries[0]["feature_key"] if sorted_entries else "—",
         )
+
+        # ── 8. Ledger: record this factor screen ─────────────────────────────
+        append_event(manifests_dir, kind="factor_screen", symbol=sym,
+                     detail={"n_features": len(feature_dict)})
 
         return True
 

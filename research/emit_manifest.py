@@ -48,8 +48,10 @@ if str(_DASHBOARD_SCHEMAS) not in sys.path:
 # ── Internal imports ────────────────────────────────────────────────────────────
 from pipeline.config import _REPO_ROOT as _CFG_REPO_ROOT, load_config  # noqa: E402
 from pipeline.strategy_runs import StrategyRunsEntry, load_strategy_runs  # noqa: E402
+from pipeline.stage3_backtest import symbol_to_short  # noqa: E402
 from pipeline.stage3_diagnose import read_metrics_csv  # noqa: E402
 from pipeline.stage4_optimize import expand_param_ranges  # noqa: E402
+from lib.research_ledger import research_accounting_block  # noqa: E402
 
 from schemas import (  # noqa: E402
     BacktestBlock,
@@ -827,6 +829,11 @@ def build_strategy_manifest(
     """
     strategy_dir = manifests_dir / strategy_id
 
+    # Short lowercase symbol (e.g. "eth") -- matches the key stage0a/stage4 write
+    # to the research ledger (SymbolConfig.name / symbol_to_short()), NOT the
+    # canonical_symbol() uppercase base-coin form used for dashboard grouping.
+    short_symbol = symbol_to_short(symbol)
+
     # Canonicalise symbol to base coin (BTC-USDT-SWAP -> BTC) so the dashboard
     # groups by coin and the factor-manifest join (factor_<coin>.json) resolves.
     symbol = canonical_symbol(symbol)
@@ -892,6 +899,19 @@ def build_strategy_manifest(
             psr = {}
         gate.not_tested = compute_not_tested(gate, cpcv_required_for(psr))
 
+    # ── Research ledger accounting (funnel-wide trial counters) ─────────────────
+    # Informational only: red_flags never feeds overall_pass/fatal_fail (those
+    # are derived solely from thresholds[].passed/.fatal at GateBlock construction
+    # time, above). This surfaces holdout-freshness debt without hard-blocking.
+    accounting = research_accounting_block(manifests_dir, short_symbol)
+    if gate is not None:
+        oos_n = accounting.get("oos_evals_symbol", 0)
+        if oos_n >= 4:
+            gate.red_flags = sorted(
+                set(gate.red_flags) | {RedFlagCode.OOS_WINDOW_OVEREVALUATED},
+                key=lambda x: x.value,
+            )
+
     # ── pipeline_stage ──────────────────────────────────────────────────────────
     pipeline_stage = _determine_pipeline_stage(strategy_id, manifests_dir)
 
@@ -909,6 +929,7 @@ def build_strategy_manifest(
         cpcv=cpcv,
         diagnosis=diagnosis,
         gate=gate,
+        research_accounting=accounting,
     )
 
     return json.loads(manifest.model_dump_json())

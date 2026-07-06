@@ -104,6 +104,7 @@ class RedFlagCode(str, Enum):
     ALPHA_IS_FEE_ILLUSION = "alpha_is_fee_illusion"
     OVERFIT_SUSPECT = "overfit_suspect"
     REGIME_CONDITIONAL = "regime_conditional"
+    OOS_WINDOW_OVEREVALUATED = "oos_window_overevaluated"
 
 
 class LiveStatus(str, Enum):
@@ -554,6 +555,13 @@ class StrategyManifest(_Manifest):
     cpcv: Optional[CPCVBlock] = None
     diagnosis: Optional[DiagnosisBlock] = None
     gate: Optional[GateBlock] = None
+    research_accounting: Optional[dict] = Field(
+        default=None,
+        description="Per-symbol funnel counters from the research ledger "
+        "(factor_screens_symbol, sweeps_symbol, oos_evals_symbol, "
+        "final_holdout_evals_symbol). Null for manifests emitted before the "
+        "ledger existed.",
+    )
 
 
 # ---------------------------------------------------------------------------
