@@ -52,6 +52,7 @@ const FLAG_LABELS: Record<RedFlagCode, string> = {
   alpha_is_fee_illusion: "費用幻覺",
   overfit_suspect: "疑似過擬",
   regime_conditional: "Regime限定",
+  oos_window_overevaluated: "OOS 過度評估",
 };
 
 function RedFlagChip({ code }: { code: RedFlagCode }) {

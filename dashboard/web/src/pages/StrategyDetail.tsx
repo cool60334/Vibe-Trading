@@ -56,6 +56,7 @@ const RED_FLAG_LABELS: Record<RedFlagCode, { short: string; detail: string }> = 
   alpha_is_fee_illusion:     { short: "Alpha = 費用幻覺",   detail: "扣除交易費後策略無超額收益" },
   overfit_suspect:           { short: "疑似過擬合",          detail: "Walk-forward 或 Monte Carlo 結果惡化" },
   regime_conditional:        { short: "Regime 限定",         detail: "策略只在特定市場環境有效" },
+  oos_window_overevaluated:  { short: "OOS 窗口過度評估",     detail: "同一 holdout 窗口已重複評估多次，新鮮度下降，promote 前建議先跑 final_holdout" },
 };
 
 function RedFlagBanner({ gate }: { gate: GateBlock }) {

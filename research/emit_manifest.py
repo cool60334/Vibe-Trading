@@ -907,9 +907,13 @@ def build_strategy_manifest(
     if gate is not None:
         oos_n = accounting.get("oos_evals_symbol", 0)
         if oos_n >= 4:
-            gate.red_flags = sorted(
-                set(gate.red_flags) | {RedFlagCode.OOS_WINDOW_OVEREVALUATED},
-                key=lambda x: x.value,
+            # dict.fromkeys dedups while preserving insertion order -- existing
+            # flags (in derive_red_flags' check-order) are left untouched; the
+            # new flag is appended at the end, and this is a no-op if already
+            # present. Do NOT alphabetically re-sort here (that would reorder
+            # the pre-existing flags every time this fires).
+            gate.red_flags = list(
+                dict.fromkeys([*gate.red_flags, RedFlagCode.OOS_WINDOW_OVEREVALUATED])
             )
 
     # ── pipeline_stage ──────────────────────────────────────────────────────────
