@@ -55,6 +55,13 @@ interval: "1H"       # K 線週期（OKX bar 格式）
 oos_start: "2025-01-01"
 data_source: okx     # 資金費率 & K 線來源；OI + L/S 持倉比來自 Binance daily-metrics archive（Bybit 為 fallback）
 
+# ─── 窗口凍結與終極 holdout（A2+A3，可選） ─────────────────────────────────
+# window_end: "2026-06-01"          # 凍結回測窗口錨定日：一個迭代週期內所有 run 同窗，
+#                                   # 週期結束人工滾動。未設 = 用執行當日（legacy）。
+# final_holdout_start: "2026-04-01" # 此日之後的資料任何 pipeline 窗口都碰不到；
+#                                   # 只能由 python -m research.pipeline.final_holdout
+#                                   # 在 promote 前手動花費一次。
+
 # ─── 回測引擎 ──────────────────────────────────────────────────────────────────
 engine: daily        # backtest.runner 引擎模式（daily / hourly）
 
