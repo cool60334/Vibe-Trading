@@ -606,18 +606,47 @@ class TestBuildRunConfigFees:
     def _cfg(self):
         return _make_research_config(period=730, interval="1H")
 
-    def test_no_multiplier_has_no_fee_keys(self):
-        """When fee_multiplier is None, no fee keys appear in config."""
-        c = build_run_config("BTC-USDT-SWAP", self._cfg(), today=date(2026, 1, 1))
+    def test_no_multiplier_realistic_default_has_fee_keys(self):
+        """A1 cost-model default (legacy_costs unset): realistic-cost keys are
+        wired from cfg.fees even with no fee_multiplier — this is the pipeline
+        opting into the Tasks 1-2 realistic cost model by default, independent
+        of the fee_multiplier stress path. 'funding_rate' is a stress-only key
+        (from DEFAULT_FEES) and is NOT part of the realistic-cost block, so it
+        must still be absent here.
+        """
+        cfg = self._cfg()
+        c = build_run_config("BTC-USDT-SWAP", cfg, today=date(2026, 1, 1))
+        assert c["maker_rate"] == cfg.fees.maker_rate
+        assert c["taker_rate"] == cfg.fees.taker_rate
+        assert c["slippage"] == cfg.fees.slippage
+        assert "funding_rate" not in c
+        assert c["cost_model_version"] == "v2_realistic"
+
+    def test_no_multiplier_legacy_costs_has_no_fee_keys(self):
+        """legacy_costs=True suppresses all realistic-cost keys even with no
+        fee_multiplier, so the engine falls back to its own hardcoded defaults."""
+        cfg = self._cfg()
+        object.__setattr__(cfg, "legacy_costs", True)
+        c = build_run_config("BTC-USDT-SWAP", cfg, today=date(2026, 1, 1))
         for k in ("maker_rate", "taker_rate", "slippage", "funding_rate"):
             assert k not in c
+        assert c["cost_model_version"] == "v1_legacy"
 
     def test_multiplier_3x_adds_scaled_fees(self):
-        """When fee_multiplier=3.0, all fee keys are scaled by 3x."""
-        c = build_run_config("BTC-USDT-SWAP", self._cfg(), today=date(2026, 1, 1), fee_multiplier=3.0)
-        assert c["taker_rate"] == 0.0005 * 3.0
-        assert c["maker_rate"] == 0.0002 * 3.0
-        assert c["slippage"] == 0.0005 * 3.0
+        """When fee_multiplier=3.0, all fee keys are scaled by 3x.
+
+        Under the realistic-cost default (legacy_costs unset), the realistic
+        block scales cfg.fees (the config-driven rate) by the stress
+        multiplier, not the engine's hardcoded DEFAULT_FEES baseline —
+        otherwise the realistic block would silently overwrite the
+        multiplier's effect back to the unstressed base rate. 'funding_rate'
+        has no cfg.fees equivalent, so it still comes from DEFAULT_FEES.
+        """
+        cfg = self._cfg()
+        c = build_run_config("BTC-USDT-SWAP", cfg, today=date(2026, 1, 1), fee_multiplier=3.0)
+        assert c["taker_rate"] == cfg.fees.taker_rate * 3.0
+        assert c["maker_rate"] == cfg.fees.maker_rate * 3.0
+        assert c["slippage"] == cfg.fees.slippage * 3.0
         assert c["funding_rate"] == 0.0001 * 3.0
 
 
