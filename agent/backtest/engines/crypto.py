@@ -10,6 +10,8 @@ Market rules:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
 from backtest.engines.base import BaseEngine
@@ -29,6 +31,9 @@ class CryptoEngine(BaseEngine):
       - slippage: default 0.0005
       - margin_mode: "isolated" (default) or "cross"
       - funding_rate: fixed rate per settlement, default 0.0001
+      - funding_series_path: optional parquet path with a "funding_rate_raw"
+        column, timestamp-indexed; when set, overrides funding_rate with a
+        real PIT-safe per-settlement lookup (raises on missing/NaN gaps)
       - taker_both_legs: charge taker rate on close leg too, default False
     """
 
@@ -42,6 +47,12 @@ class CryptoEngine(BaseEngine):
         self.interval: str = config.get("interval", "1D")
         self._funding_applied: set = set()   # (symbol, date, hour) — per-slot dedup
         self._funding_daily_done: set = set()  # (symbol, date) — daily fallback dedup
+
+        self._funding_lookup: "dict | None" = None
+        fsp = config.get("funding_series_path")
+        if fsp:
+            fdf = pd.read_parquet(Path(fsp), columns=["funding_rate_raw"])
+            self._funding_lookup = fdf["funding_rate_raw"].to_dict()
 
     def can_execute(self, symbol: str, direction: int, bar: pd.Series) -> bool:
         """Crypto: 24/7, long/short/close all allowed."""
@@ -73,7 +84,7 @@ class CryptoEngine(BaseEngine):
         fee = calc_crypto_funding_fee(
             symbol, bar, timestamp, self.positions,
             self.funding_rate, self._funding_applied, self._funding_daily_done,
-            interval=self.interval,
+            interval=self.interval, funding_lookup=self._funding_lookup,
         )
         self.capital -= fee
 

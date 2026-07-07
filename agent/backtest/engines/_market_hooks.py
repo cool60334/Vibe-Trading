@@ -155,6 +155,7 @@ def calc_crypto_funding_fee(
     applied_set: set,
     daily_done_set: set,
     interval: str = "1D",
+    funding_lookup: "Dict[pd.Timestamp, float] | None" = None,
 ) -> float:
     """Calculate crypto funding fee for one symbol.
 
@@ -169,6 +170,13 @@ def calc_crypto_funding_fee(
         interval: Bar interval string (e.g. "15m", "30m", "1H", "1D").
                   Sub-hour intervals use settlement-only logic (charge only at
                   the exact 00:00/08:00/16:00 bars, no daily fallback).
+        funding_lookup: Optional timestamp -> real funding rate mapping. When
+                  provided, the rate settled AT this exact timestamp is used
+                  instead of the fixed ``funding_rate`` scalar (point-in-time
+                  safe — never a forward-filled or future value). A missing
+                  key or NaN value at a settlement point is a data gap and
+                  raises ``ValueError`` rather than silently falling back to
+                  the fixed rate.
 
     Returns:
         Fee amount (positive = longs pay, negative = longs receive).
@@ -209,7 +217,22 @@ def calc_crypto_funding_fee(
 
     mark_price = float(bar.get("close", pos.entry_price))
     notional = pos.size * mark_price
-    return notional * funding_rate * pos.direction
+
+    # Realistic funding: look up the rate settled AT this timestamp (PIT-safe —
+    # the value published at settlement T, never a future T+8h value). A provided
+    # lookup with a missing/NaN value at a settlement point is a data gap, not a
+    # licence to silently fall back — fail loud (agy #3).
+    rate = funding_rate
+    if funding_lookup is not None:
+        looked_up = funding_lookup.get(timestamp)
+        if looked_up is None or pd.isna(looked_up):
+            raise ValueError(
+                f"funding value missing for {symbol} at settlement {timestamp} "
+                f"(funding_series provided but value absent/NaN — patch the feature file)"
+            )
+        rate = float(looked_up)
+
+    return notional * rate * pos.direction
 
 
 def check_crypto_liquidation(
