@@ -184,14 +184,27 @@ def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None
     - engine: always "daily".
 
     When fee_multiplier is provided, all fee keys (maker_rate, taker_rate, slippage,
-    funding_rate) are included in the config, scaled by the multiplier.
+    funding_rate) are included in the config, scaled by the multiplier. This is
+    the cost-stress path (stage3 --stress) and is independent of the realistic
+    vs. legacy cost model below (it always uses DEFAULT_FEES as its base rate).
+
+    Cost model (A1): unless cfg.legacy_costs is True, the config additionally
+    wires cfg.fees (maker_rate/taker_rate/slippage), sets taker_both_legs=True,
+    and points funding_series_path at the symbol's feature parquet — opting
+    the backtest engine into the realistic cost model added in Tasks 1-2.
+    When cfg.legacy_costs is True, none of those keys are added and the engine
+    falls back to its own hardcoded legacy defaults. Either way the config is
+    tagged with cost_model_version ("v2_realistic" or "v1_legacy") so
+    downstream consumers (e.g. the leaderboard) can avoid comparing runs
+    across cost-model versions.
 
     Args:
         symbol: Exchange ticker, e.g. "BTC-USDT-SWAP".
         cfg:    ResearchConfig loaded from research_config.yaml.
         today:  Reference date for end_date (defaults to date.today()).
         fee_multiplier: If provided, scales DEFAULT_FEES by this multiplier and includes
-                       them in the config. If None, no fee keys are added.
+                       them in the config. If None, no stress-fee keys are added
+                       (the realistic-cost keys above are independent of this).
 
     Returns:
         Dict conforming to BacktestConfigSchema (JSON-serialisable).
@@ -214,6 +227,27 @@ def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None
     if fee_multiplier is not None:
         for key, base_rate in DEFAULT_FEES.items():
             config[key] = base_rate * fee_multiplier
+
+    if cfg.legacy_costs:
+        config["cost_model_version"] = "v1_legacy"
+    else:
+        # Realistic cost model (agy Option B): wire config fees, charge taker on
+        # both legs, and inject the real funding series. Engine stays back-compat
+        # because these keys are opt-in; the pipeline opts in by default.
+        # When fee_multiplier is also set (stress path), scale cfg.fees by it too
+        # so the cost-stress sweep still has an effect under realistic mode —
+        # otherwise these config-fee assignments would silently overwrite the
+        # multiplier block above back to the unstressed base rate.
+        stress_mult = fee_multiplier if fee_multiplier is not None else 1.0
+        config["maker_rate"] = cfg.fees.maker_rate * stress_mult
+        config["taker_rate"] = cfg.fees.taker_rate * stress_mult
+        config["slippage"] = cfg.fees.slippage * stress_mult
+        config["taker_both_legs"] = True
+        short = symbol_to_short(symbol)
+        config["funding_series_path"] = str(
+            _REPO_ROOT / "research" / "manifests" / f"features_{short}.parquet"
+        )
+        config["cost_model_version"] = "v2_realistic"
     return config
 
 

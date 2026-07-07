@@ -101,6 +101,10 @@ class ResearchConfig:
     # exactly once, later, by a separate manual CLI (final_holdout.py), not
     # part of the iterative pipeline. None = no cap (legacy behavior).
     final_holdout_start: str | None = None
+    # When True, the pipeline suppresses realistic-cost keys so the engine uses
+    # its hardcoded legacy defaults (byte-for-byte reproduction of old runs).
+    # Default False = realistic costs (agy Option B). Debug backdoor only.
+    legacy_costs: bool = False
     # ── Evidence-driven indicator pool (Task 1.2) ────────────────────────────
     indicator_pool: tuple[str, ...] = (
         # momentum
@@ -413,6 +417,9 @@ def load_config(path: Path | str | None = None) -> ResearchConfig:
                 f"'final_holdout_start' must be an ISO date (YYYY-MM-DD), got {final_holdout_start!r}."
             ) from exc
 
+    # ── legacy_costs (optional debug backdoor) ───────────────────────────────
+    legacy_costs = bool(raw.get("legacy_costs", False))
+
     cfg = ResearchConfig(
         symbols=tuple(symbol_configs),
         period=period,
@@ -428,6 +435,7 @@ def load_config(path: Path | str | None = None) -> ResearchConfig:
         oos_start=oos_start,
         window_end=window_end,
         final_holdout_start=final_holdout_start,
+        legacy_costs=legacy_costs,
         lag_stress_bars=lag_stress_bars,
     )
     return _apply_interval_override(_apply_symbol_filter(cfg))
