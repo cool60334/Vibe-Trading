@@ -102,3 +102,77 @@ def test_engine_behaviour_is_frozen():
             f"engine contract drift on {key!r}: frozen={expected} now={actual} — "
             "upstream agent/backtest behaviour changed"
         )
+
+
+def _make_funding_series(idx: pd.DatetimeIndex) -> pd.Series:
+    """Constant funding rate with a couple of deliberate sign flips.
+
+    Covers every timestamp in the synthetic OHLCV index so the PIT lookup
+    never hits a data gap at a settlement bar (0/8/16 UTC).
+    """
+    n = len(idx)
+    rates = np.full(n, 0.0001)
+    flip_len = 24 * 10  # 10 days
+    rates[n // 3 : n // 3 + flip_len] *= -1
+    rates[2 * n // 3 : 2 * n // 3 + flip_len] *= -1
+    return pd.Series(rates, index=idx, name="funding_rate_raw")
+
+
+# Frozen snapshot — realistic-cost path (Task 5 Step 2): taker fee on both
+# legs + real (sign-flipping) funding settlement via funding_series_path.
+# Must differ from GOLDEN above — proves the new gating actually changes
+# engine behaviour, not just adds dead config keys.
+GOLDEN_REALISTIC: "dict | None" = {
+    "sharpe": 0.9214637201544323,
+    "total_return": 0.09505683307165369,
+    "max_drawdown": -0.16884208122789035,
+    "trade_count": 24.0,
+}
+
+
+def _run_realistic(tmp_path) -> dict:
+    import tempfile
+
+    df = _synthetic_ohlcv()
+    funding = _make_funding_series(df.index)
+    funding_path = tmp_path / "funding_btc.parquet"
+    funding.to_frame().to_parquet(funding_path)
+
+    config = {
+        "codes": [SYMBOL],
+        "interval": "1H",
+        "initial_cash": 100_000,
+        "taker_both_legs": True,
+        "taker_rate": 0.00055,
+        "funding_series_path": str(funding_path),
+    }
+    engine = CryptoEngine(config)
+    with tempfile.TemporaryDirectory() as td:
+        run_dir = Path(td)
+        (run_dir / "code").mkdir()
+        (run_dir / "code" / "signal_engine.py").write_text("# golden stub\n")
+        metrics = engine.run_backtest(
+            config, _StubLoader(df), _FlipEngine(), run_dir, bars_per_year=8760,
+        )
+    return metrics
+
+
+def test_engine_behaviour_is_frozen_realistic(tmp_path):
+    assert GOLDEN_REALISTIC is not None, (
+        "GOLDEN_REALISTIC snapshot not frozen yet — run the capture step "
+        "(see plan Task 5 Step 2) and paste the printed dict here."
+    )
+    m = _run_realistic(tmp_path)
+    for key, expected in GOLDEN_REALISTIC.items():
+        actual = float(m[key])
+        assert actual == pytest.approx(expected, abs=1e-9), (
+            f"realistic-cost contract drift on {key!r}: frozen={expected} now={actual} — "
+            "engine or pipeline cost-model wiring changed"
+        )
+
+
+def test_golden_snapshots_actually_differ():
+    """The two frozen dicts must NOT be identical — otherwise taker_both_legs
+    and funding_series_path aren't changing anything and the realistic test
+    is a no-op copy of the legacy one."""
+    assert GOLDEN != GOLDEN_REALISTIC
