@@ -29,6 +29,7 @@ class CryptoEngine(BaseEngine):
       - slippage: default 0.0005
       - margin_mode: "isolated" (default) or "cross"
       - funding_rate: fixed rate per settlement, default 0.0001
+      - taker_both_legs: charge taker rate on close leg too, default False
     """
 
     def __init__(self, config: dict):
@@ -37,6 +38,7 @@ class CryptoEngine(BaseEngine):
         self.taker_rate: float = config.get("taker_rate", 0.0005)
         self.slippage_rate: float = config.get("slippage", 0.0005)
         self.funding_rate: float = config.get("funding_rate", 0.0001)
+        self.taker_both_legs: bool = config.get("taker_both_legs", False)
         self.interval: str = config.get("interval", "1D")
         self._funding_applied: set = set()   # (symbol, date, hour) — per-slot dedup
         self._funding_daily_done: set = set()  # (symbol, date) — daily fallback dedup
@@ -54,8 +56,12 @@ class CryptoEngine(BaseEngine):
 
         ``_direction`` is unused — reserved for future funding-rate asymmetry
         between long/short legs on perp swaps.
+
+        If ``taker_both_legs`` is set, the close leg is also charged the
+        taker rate (matches live market-order fills instead of assuming a
+        resting limit order gets maker rebate on exit).
         """
-        rate = self.taker_rate if is_open else self.maker_rate
+        rate = self.taker_rate if (is_open or self.taker_both_legs) else self.maker_rate
         return size * price * rate
 
     def apply_slippage(self, price: float, direction: int) -> float:
