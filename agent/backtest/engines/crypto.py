@@ -52,6 +52,19 @@ class CryptoEngine(BaseEngine):
         fsp = config.get("funding_series_path")
         if fsp:
             fdf = pd.read_parquet(Path(fsp), columns=["funding_rate_raw"])
+            # Feature-store parquets (research/lib/factor_io.py) always save a
+            # tz-aware UTC DatetimeIndex. The engine's own bar timestamps (from
+            # the okx/ccxt loader and local_loader, both tz-naive UTC-equivalent
+            # — see agent/backtest/loaders/okx.py's `pd.to_datetime(..., unit=
+            # "ms")` and local_loader.py's explicit `tz_localize(None)`) are
+            # tz-naive. A dict keyed by tz-aware pd.Timestamps can never match a
+            # tz-naive lookup key (equality is tz-sensitive even for the same
+            # instant), so every real settlement bar would spuriously trip the
+            # fail-loud "missing" check below. Normalize to tz-naive UTC here so
+            # lookups always compare like-for-like, regardless of whether the
+            # source parquet happened to be tz-aware or already tz-naive.
+            if fdf.index.tz is not None:
+                fdf.index = fdf.index.tz_convert("UTC").tz_localize(None)
             self._funding_lookup = fdf["funding_rate_raw"].to_dict()
 
     def can_execute(self, symbol: str, direction: int, bar: pd.Series) -> bool:

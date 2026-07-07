@@ -123,3 +123,35 @@ def test_engine_loads_funding_series_into_dict(tmp_path):
 def test_engine_no_funding_path_leaves_lookup_none():
     eng = CryptoEngine({})
     assert eng._funding_lookup is None
+
+
+def test_engine_normalizes_tz_aware_funding_index_to_naive(tmp_path):
+    """Real feature-store parquets (research/lib/factor_io.py) always save a
+    tz-aware UTC DatetimeIndex. The engine's own bar timestamps (from the okx
+    loader / local_loader, both tz-naive UTC-equivalent) are tz-naive. A dict
+    keyed by tz-aware pd.Timestamps can never match a tz-naive lookup key
+    (pd.Timestamp("2024-01-01", tz="UTC") != pd.Timestamp("2024-01-01")) even
+    though they represent the same instant -- so __init__ must normalize the
+    loaded index to tz-naive before building the lookup dict, or every
+    settlement bar spuriously fails the fail-loud missing-value check on real
+    data.
+    """
+    idx = pd.date_range("2024-01-01", periods=24, freq="h", tz="UTC")
+    df = pd.DataFrame({"funding_rate_raw": [0.00025] * 24}, index=idx)
+    p = tmp_path / "features_eth.parquet"
+    df.to_parquet(p)
+
+    eng = CryptoEngine({"funding_series_path": str(p)})
+    assert eng._funding_lookup is not None
+
+    # The engine's own bar timestamps are tz-naive (see okx.py / local_loader.py).
+    naive_ts = pd.Timestamp("2024-01-01 08:00")
+    assert naive_ts in eng._funding_lookup
+    assert eng._funding_lookup[naive_ts] == pytest.approx(0.00025)
+
+    fee = calc_crypto_funding_fee(
+        "ETH-USDT-SWAP", pd.Series({"close": 100.0}), naive_ts,
+        _long_pos("ETH-USDT-SWAP"), 0.0001, set(), set(),
+        interval="1H", funding_lookup=eng._funding_lookup,
+    )
+    assert fee == pytest.approx(100.0 * 0.00025 * 1)
