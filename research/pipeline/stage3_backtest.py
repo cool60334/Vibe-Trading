@@ -183,17 +183,30 @@ def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None
     - interval: from research_config.yaml's interval field.
     - engine: always "daily".
 
-    When fee_multiplier is provided, all fee keys (maker_rate, taker_rate, slippage,
-    funding_rate) are included in the config, scaled by the multiplier. This is
-    the cost-stress path (stage3 --stress) and is independent of the realistic
-    vs. legacy cost model below (it always uses DEFAULT_FEES as its base rate).
+    When fee_multiplier is provided, the config is first seeded with all
+    DEFAULT_FEES keys (maker_rate, taker_rate, slippage, funding_rate) scaled
+    by the multiplier. This is the cost-stress path (stage3 --stress). Under
+    the realistic cost model (see below, the default), maker_rate/taker_rate/
+    slippage are then OVERWRITTEN with cfg.fees.* * fee_multiplier instead —
+    i.e. those three keys ultimately scale off cfg.fees, not DEFAULT_FEES;
+    only funding_rate keeps its DEFAULT_FEES-scaled value here, and even that
+    is dropped when funding_series_path is set (see below) because it would
+    otherwise be a dead, misleading key.
 
     Cost model (A1): unless cfg.legacy_costs is True, the config additionally
-    wires cfg.fees (maker_rate/taker_rate/slippage), sets taker_both_legs=True,
-    and points funding_series_path at the symbol's feature parquet — opting
-    the backtest engine into the realistic cost model added in Tasks 1-2.
-    When cfg.legacy_costs is True, none of those keys are added and the engine
-    falls back to its own hardcoded legacy defaults. Either way the config is
+    wires cfg.fees (maker_rate/taker_rate/slippage, scaled by fee_multiplier
+    when present), sets taker_both_legs=True, and points funding_series_path
+    at the symbol's feature parquet — opting the backtest engine into the
+    realistic cost model added in Tasks 1-2. Once funding_series_path is set,
+    the engine's calc_crypto_funding_fee() (agent/backtest/engines/
+    _market_hooks.py) never falls back to the scalar funding_rate — it uses
+    the real per-timestamp lookup or raises on a gap — so any funding_rate
+    key written by the fee_multiplier block above is popped here to avoid a
+    config.json that misleadingly implies funding costs were stress-scaled
+    when they were not. When cfg.legacy_costs is True, none of the realistic
+    keys are added (including no pop of funding_rate) and the engine falls
+    back to its own hardcoded legacy defaults, so a stress-scaled
+    funding_rate is genuinely in effect there. Either way the config is
     tagged with cost_model_version ("v2_realistic" or "v1_legacy") so
     downstream consumers (e.g. the leaderboard) can avoid comparing runs
     across cost-model versions.
@@ -229,6 +242,13 @@ def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None
             config[key] = base_rate * fee_multiplier
 
     if cfg.legacy_costs:
+        # NOTE: the fee_multiplier block above already ran unconditionally, so
+        # in legacy mode its keys (maker_rate/taker_rate/slippage/funding_rate,
+        # all DEFAULT_FEES * fee_multiplier) persist untouched below — this is
+        # not a gating leak, legacy mode simply has nothing further to add or
+        # remove. funding_rate stays "live" here because legacy mode never
+        # sets funding_series_path, so the engine's fallback scalar path is
+        # exactly what applies.
         config["cost_model_version"] = "v1_legacy"
     else:
         # Realistic cost model (agy Option B): wire config fees, charge taker on
@@ -247,6 +267,15 @@ def build_run_config(symbol: str, cfg: ResearchConfig, today: date | None = None
         config["funding_series_path"] = str(
             _REPO_ROOT / "research" / "manifests" / f"features_{short}.parquet"
         )
+        # Once funding_series_path is set, calc_crypto_funding_fee() uses the
+        # real per-timestamp lookup exclusively (or raises on a gap) — it never
+        # falls back to the scalar funding_rate (see agent/backtest/engines/
+        # _market_hooks.py). A funding_rate key written by the fee_multiplier
+        # block above would therefore be dead: config.json would show a
+        # stress-scaled funding_rate that was never actually consulted, making
+        # a --stress run look like it stressed funding costs when it silently
+        # didn't. Drop it so the artifact doesn't lie about what ran.
+        config.pop("funding_rate", None)
         config["cost_model_version"] = "v2_realistic"
     return config
 

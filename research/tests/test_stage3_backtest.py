@@ -633,21 +633,38 @@ class TestBuildRunConfigFees:
         assert c["cost_model_version"] == "v1_legacy"
 
     def test_multiplier_3x_adds_scaled_fees(self):
-        """When fee_multiplier=3.0, all fee keys are scaled by 3x.
+        """When fee_multiplier=3.0, maker/taker/slippage are scaled by 3x.
 
         Under the realistic-cost default (legacy_costs unset), the realistic
         block scales cfg.fees (the config-driven rate) by the stress
         multiplier, not the engine's hardcoded DEFAULT_FEES baseline —
         otherwise the realistic block would silently overwrite the
         multiplier's effect back to the unstressed base rate. 'funding_rate'
-        has no cfg.fees equivalent, so it still comes from DEFAULT_FEES.
+        is popped under realistic mode: once funding_series_path is set the
+        engine never reads the scalar funding_rate (see
+        calc_crypto_funding_fee in agent/backtest/engines/_market_hooks.py),
+        so a scaled funding_rate here would be a dead, misleading key.
         """
         cfg = self._cfg()
         c = build_run_config("BTC-USDT-SWAP", cfg, today=date(2026, 1, 1), fee_multiplier=3.0)
         assert c["taker_rate"] == cfg.fees.taker_rate * 3.0
         assert c["maker_rate"] == cfg.fees.maker_rate * 3.0
         assert c["slippage"] == cfg.fees.slippage * 3.0
+        assert "funding_rate" not in c
+        assert c["cost_model_version"] == "v2_realistic"
+
+    def test_multiplier_3x_legacy_costs_keeps_scaled_funding_rate(self):
+        """Under legacy_costs=True, fee_multiplier scales DEFAULT_FEES as before,
+        including funding_rate — legacy mode has no funding_series_path, so the
+        engine's fallback scalar path genuinely consults this scaled value."""
+        cfg = self._cfg()
+        object.__setattr__(cfg, "legacy_costs", True)
+        c = build_run_config("BTC-USDT-SWAP", cfg, today=date(2026, 1, 1), fee_multiplier=3.0)
+        assert c["taker_rate"] == 0.0005 * 3.0
+        assert c["maker_rate"] == 0.0002 * 3.0
+        assert c["slippage"] == 0.0005 * 3.0
         assert c["funding_rate"] == 0.0001 * 3.0
+        assert c["cost_model_version"] == "v1_legacy"
 
 
 # ---------------------------------------------------------------------------
