@@ -48,3 +48,22 @@ def test_legacy_costs_suppresses_realistic_keys(monkeypatch):
     assert "funding_series_path" not in rc
     assert "taker_rate" not in rc                          # no config-fee injection
     assert rc["cost_model_version"] == "v1_legacy"
+
+
+from research.pipeline.stage5_select import assert_uniform_cost_model
+
+
+def test_guard_passes_on_uniform_version():
+    assert_uniform_cost_model([
+        {"id": "a", "cost_model_version": "v2_realistic"},
+        {"id": "b", "cost_model_version": "v2_realistic"},
+    ])  # no raise
+
+
+def test_guard_fails_on_mixed_version():
+    import pytest
+    with pytest.raises(ValueError, match="mixed cost_model_version"):
+        assert_uniform_cost_model([
+            {"id": "a", "cost_model_version": "v2_realistic"},
+            {"id": "b", "cost_model_version": "v1_legacy"},
+        ])

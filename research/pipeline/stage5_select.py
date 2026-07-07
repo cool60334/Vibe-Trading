@@ -70,6 +70,7 @@ from emit_manifest import (  # noqa: E402
     compute_not_tested,
     cpcv_required_for,
     emit_manifest_for_strategy,
+    read_cost_model_version,
     required_validations_ok,
 )
 
@@ -167,6 +168,24 @@ def score_strategy(
         tc_contrib = 0.1 * clamp(trade_count / 100.0, 0.0, 2.0)
 
     return sharpe_contrib + drawdown_contrib + pf_contrib + tc_contrib
+
+
+def assert_uniform_cost_model(entries: "list[dict]") -> None:
+    """Fail loud if a cross-strategy pool mixes cost_model_version (agy #4).
+
+    Comparing v1_legacy (understated costs → inflated sharpe) against
+    v2_realistic in one leaderboard would systematically favour legacy
+    strategies. Any comparison pool must be single-version.
+    """
+    versions = {
+        e.get("cost_model_version", "v1_legacy")
+        for e in entries
+    }
+    if len(versions) > 1:
+        raise ValueError(
+            f"mixed cost_model_version in comparison pool: {sorted(versions)} — "
+            "re-run stale strategies under the current cost model before comparing"
+        )
 
 
 def is_eligible(
@@ -398,6 +417,7 @@ def main() -> None:
         symbol: str
         score: float
         selected: bool  # True if recommended_action == "proceed"
+        cost_model_version: str
 
     total_strategies = len(runs_map.entries)
     candidates: list[_Candidate] = []
@@ -479,13 +499,24 @@ def main() -> None:
         # Use the first hyphen-delimited token or the whole string if no hyphen.
         symbol_short = entry.symbol.split("-")[0] if "-" in entry.symbol else entry.symbol
 
+        cost_model_version = read_cost_model_version(entry, runs_root)
+
         candidates.append(_Candidate(
             strategy_id=strategy_id,
             symbol=symbol_short,
             score=score,
             selected=selected_flag,
+            cost_model_version=cost_model_version,
         ))
         print(f"    [OK] score={score:.4f}, selected={selected_flag}, action={action}")
+
+    # ── Guard: block cross-strategy comparison across mixed cost models ──────
+    # (agy #4) A v1_legacy strategy's understated costs would inflate its
+    # sharpe relative to v2_realistic peers in the same ranking pool.
+    assert_uniform_cost_model([
+        {"id": c.strategy_id, "cost_model_version": c.cost_model_version}
+        for c in candidates
+    ])
 
     # ── Sort by score descending and assign ranks ────────────────────────────
     candidates.sort(key=lambda c: c.score, reverse=True)

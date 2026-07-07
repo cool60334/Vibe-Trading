@@ -562,6 +562,14 @@ class StrategyManifest(_Manifest):
         "final_holdout_evals_symbol). Null for manifests emitted before the "
         "ledger existed.",
     )
+    cost_model_version: str = Field(
+        default="v1_legacy",
+        description="Cost model tag from the base_run's config.json "
+        "('v2_realistic' or 'v1_legacy', see stage3_backtest.build_run_config). "
+        "Defaults to 'v1_legacy' for manifests/runs predating this field. "
+        "stage5_select.assert_uniform_cost_model uses this to block "
+        "cross-strategy comparisons that mix cost-model versions.",
+    )
 
 
 # ---------------------------------------------------------------------------

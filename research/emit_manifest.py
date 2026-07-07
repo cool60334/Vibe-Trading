@@ -545,6 +545,38 @@ def build_spec_block(
     )
 
 
+def read_cost_model_version(entry: StrategyRunsEntry, runs_root: Path) -> str:
+    """Read cost_model_version from the base_run's config.json (agy #4).
+
+    stage3_backtest.build_run_config() tags every run's config.json with
+    "v2_realistic" (default, opts into the realistic cost model from Tasks
+    1-2) or "v1_legacy" (debug backdoor via ``legacy_costs: true``). This is
+    the field stage5_select.assert_uniform_cost_model() reads (via the
+    manifest) to block cross-strategy comparisons that mix cost-model
+    versions.
+
+    Defaults to "v1_legacy" when base_run is unset, config.json is missing/
+    unreadable, or config.json predates this field (runs from before this
+    initiative) -- consistent with build_run_config's own legacy-costs
+    default and the guard's fallback.
+
+    Args:
+        entry:     StrategyRunsEntry from strategy_runs.json.
+        runs_root: <repo_root>/runs/ directory.
+
+    Returns:
+        "v2_realistic" or "v1_legacy" (or whatever string config.json has,
+        defaulting to "v1_legacy" if the key or file is absent).
+    """
+    if entry.base_run is None:
+        return "v1_legacy"
+    config_path = runs_root / entry.base_run / "config.json"
+    config_data = _load_json_block(config_path)
+    if config_data is None:
+        return "v1_legacy"
+    return config_data.get("cost_model_version", "v1_legacy")
+
+
 def build_backtest_block(
     entry: StrategyRunsEntry,
     runs_root: Path,
@@ -919,6 +951,9 @@ def build_strategy_manifest(
     # ── pipeline_stage ──────────────────────────────────────────────────────────
     pipeline_stage = _determine_pipeline_stage(strategy_id, manifests_dir)
 
+    # ── cost_model_version (agy #4 — cross-strategy comparison guard) ──────────
+    cost_model_version = read_cost_model_version(entry, runs_root)
+
     # ── Assemble manifest ───────────────────────────────────────────────────────
     manifest = StrategyManifest(
         strategy_id=strategy_id,
@@ -934,6 +969,7 @@ def build_strategy_manifest(
         diagnosis=diagnosis,
         gate=gate,
         research_accounting=accounting,
+        cost_model_version=cost_model_version,
     )
 
     return json.loads(manifest.model_dump_json())
