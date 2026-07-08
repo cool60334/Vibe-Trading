@@ -1,5 +1,3 @@
-import shutil
-import subprocess
 import pytest
 from research.hermes.sandbox import DockerSandbox, is_docker_available
 from research.hermes.sandbox_ast import UnsafeCodeError
@@ -19,7 +17,7 @@ def test_docker_flags_are_hardened():
     assert "--network=none" in joined
     assert "--memory=512m" in joined
     assert "--read-only" in joined
-    assert "/out:rw" in " ".join(cmd) or ":rw" in joined
+    assert ":rw" in joined
 
 
 @pytest.mark.skipif(not is_docker_available(), reason="docker daemon not running")

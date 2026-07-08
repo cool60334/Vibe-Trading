@@ -39,6 +39,12 @@ class SandboxExecutor(ABC):
 
 
 class DockerSandbox(SandboxExecutor):
+    """Hardened container executor with AST gate + resource limits.
+
+    Known limitation: subprocess.run(..., timeout=...) only terminates the docker CLI client
+    process on timeout, not the container itself (moby doesn't propagate SIGKILL from CLI to
+    daemon). Full container-lifecycle-safe timeout handling is deferred to Task 6 runner wiring.
+    """
     def __init__(self, image: str = DEFAULT_IMAGE, memory: str = "1g",
                  cpus: str = "1", timeout_s: int = 120):
         self.image, self.memory, self.cpus, self.timeout_s = image, memory, cpus, timeout_s
@@ -58,7 +64,7 @@ class DockerSandbox(SandboxExecutor):
         ]
 
     def run(self, source: str, input_parquet, output_dir) -> str:
-        check_source(source)                       # layer-0 gate FIRST
+        check_source(source)  # layer-0 gate FIRST: untrusted source must never reach a subprocess call, even if docker itself is unavailable/misconfigured
         if not is_docker_available():
             raise RuntimeError("docker daemon unavailable; cannot run sandboxed ETL")
         # NOTE: writing `source` + input mount + runner materialisation is completed
