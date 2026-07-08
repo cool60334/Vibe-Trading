@@ -36,6 +36,9 @@ def assert_no_lookahead(
     if perturb_from <= 0 or perturb_from >= n:
         raise ValueError(f"perturb_from {perturb_from} out of range for n={n}")
 
+    if not all(pd.api.types.is_numeric_dtype(dt) for dt in df.dtypes):
+        raise ValueError("assert_no_lookahead requires an all-numeric df; got dtypes: " + str(dict(df.dtypes)))
+
     base = np.asarray(compute_fn(df), dtype="float64")[:perturb_from]
 
     corrupt = df.copy()
