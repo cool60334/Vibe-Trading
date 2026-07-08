@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import pytest
 from research.hermes.candidate_store import write_candidate, ProductionWriteError, CANDIDATE_SUBDIR
@@ -20,5 +22,19 @@ def test_refuses_production_feature_path(tmp_path, monkeypatch):
     # simulate a caller trying to redirect output at the production store
     from research.hermes import candidate_store
     monkeypatch.setattr(candidate_store, "CANDIDATE_SUBDIR", "features")  # production dir name
+    with pytest.raises(ProductionWriteError):
+        write_candidate(_df(), "eth", manifests_dir=tmp_path)
+
+
+def test_refuses_production_filename_prefix(tmp_path, monkeypatch):
+    # Guard clause: filename must not start with production prefixes (features_, factor_values_)
+    # Monkeypatch _candidate_path to simulate a scenario where it would return a production basename
+    from research.hermes import candidate_store
+
+    monkeypatch.setattr(
+        candidate_store,
+        "_candidate_path",
+        lambda symbol, manifests_dir: Path(manifests_dir) / "candidate_features" / "features_eth.parquet",
+    )
     with pytest.raises(ProductionWriteError):
         write_candidate(_df(), "eth", manifests_dir=tmp_path)
