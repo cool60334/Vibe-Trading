@@ -4,7 +4,7 @@ from research.hermes.candidate_store import write_candidate, ProductionWriteErro
 
 
 def _df():
-    idx = pd.date_range("2024-01-01", periods=5, freq="1h", tz="UTC")
+    idx = pd.date_range("2024-01-01", periods=5, freq="1h")
     return pd.DataFrame({"cand_feat": [1.0, 2, 3, 4, 5]}, index=idx)
 
 

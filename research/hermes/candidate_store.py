@@ -40,12 +40,6 @@ def write_candidate(df: pd.DataFrame, symbol: str, manifests_dir) -> Path:
         raise ProductionWriteError(
             f"candidate filename must not start with production prefix, got {path}"
         )
-    # Normalize index to UTC (consistent with factor_io convention)
-    df = df.copy()
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
-    else:
-        df.index = df.index.tz_convert("UTC")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_to_parquet(df, path)
