@@ -16,13 +16,12 @@ from research.hermes.errors import HermesGuardError
 VERDICT_CANDIDATE = "candidate"
 VERDICT_GRAVEYARD = "graveyard"
 _VERDICTS = {VERDICT_CANDIDATE, VERDICT_GRAVEYARD}
-# metrics a promotable candidate must carry (None => rejected at construction).
-# ir/dsr are exempted, not dropped wholesale: they're the only two metrics the
-# test suite ever exercises with a non-finite value (nan/inf), which sanitizes
-# to JSON null on to_dict() -- requiring them here too would make from_dict()
-# reject a card that its own to_dict() just produced (round-trip must never
-# raise). ic_nonoverlap/pbo are never exercised as non-finite, so they stay
-# required: they remain load-bearing for the candidate quality gate.
+# metrics a promotable candidate must carry: net_ic/ic_nonoverlap/pbo are the
+# quality gate itself and must be present *and finite* (None or nan/inf =>
+# rejected at construction -- a candidate can't clear the gate on an undefined
+# number). ir/dsr are excluded from this gate: they may legitimately be
+# non-finite (undefined for low trial counts) without blocking candidacy, and
+# are allowed to sanitize to null on to_dict() without issue.
 _CORE_METRICS = ("net_ic", "ic_nonoverlap", "pbo")
 
 
@@ -77,9 +76,12 @@ class EvidenceCard:
         if self.verdict == VERDICT_GRAVEYARD and not self.death_reason:
             raise CardValidationError("graveyard card requires a death_reason")
         if self.verdict == VERDICT_CANDIDATE:
-            missing = [m for m in _CORE_METRICS if getattr(self, m) is None]
+            missing = [
+                m for m in _CORE_METRICS
+                if (v := getattr(self, m)) is None or (isinstance(v, float) and not math.isfinite(v))
+            ]
             if missing:
-                raise CardValidationError(f"candidate card missing core metrics: {missing}")
+                raise CardValidationError(f"candidate card missing/non-finite core metrics: {missing}")
 
     def to_dict(self) -> dict:
         return {k: _sanitize(v) for k, v in asdict(self).items()}

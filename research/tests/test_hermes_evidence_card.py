@@ -66,6 +66,23 @@ def test_candidate_card_requires_core_metrics():
         EvidenceCard(**_candidate_kwargs(net_ic=None))
 
 
+def test_candidate_card_requires_ic_nonoverlap():
+    with pytest.raises(CardValidationError):
+        EvidenceCard(**_candidate_kwargs(ic_nonoverlap=None))
+
+
+def test_candidate_card_requires_pbo():
+    with pytest.raises(CardValidationError):
+        EvidenceCard(**_candidate_kwargs(pbo=None))
+
+
+def test_candidate_card_rejects_non_finite_core_metric_at_construction():
+    # net_ic is a quality-gate metric: nan must be rejected immediately, not
+    # silently accepted then blow up later on from_dict() reload.
+    with pytest.raises(CardValidationError):
+        EvidenceCard(**_candidate_kwargs(net_ic=float("nan")))
+
+
 def test_unknown_verdict_rejected():
     with pytest.raises(CardValidationError):
         EvidenceCard(**_candidate_kwargs(verdict="maybe"))
