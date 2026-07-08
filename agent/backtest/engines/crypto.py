@@ -50,7 +50,10 @@ class CryptoEngine(BaseEngine):
 
         self._funding_lookup: "dict | None" = None
         fsp = config.get("funding_series_path")
-        if fsp:
+        # `is not None` (not truthiness): if the key is present at all, honour it
+        # strictly — an explicit "" must fail loud via read_parquet, never silently
+        # fall back to the legacy scalar path (agy diff #6).
+        if fsp is not None:
             fdf = pd.read_parquet(Path(fsp), columns=["funding_rate_raw"])
             # Feature-store parquets (research/lib/factor_io.py) always save a
             # tz-aware UTC DatetimeIndex. The engine's own bar timestamps (from
@@ -65,6 +68,15 @@ class CryptoEngine(BaseEngine):
             # source parquet happened to be tz-aware or already tz-naive.
             if fdf.index.tz is not None:
                 fdf.index = fdf.index.tz_convert("UTC").tz_localize(None)
+            # Duplicate settlement timestamps would let to_dict() silently keep
+            # the last, bypassing the fail-loud gap check at the source (agy
+            # diff #1). A duplicated index is a feature-file integrity bug.
+            if not fdf.index.is_unique:
+                dupes = fdf.index[fdf.index.duplicated()].unique().tolist()
+                raise ValueError(
+                    f"funding series has duplicate timestamps: {dupes[:5]} "
+                    f"({len(dupes)} total) — feature file is corrupt, cannot build lookup"
+                )
             self._funding_lookup = fdf["funding_rate_raw"].to_dict()
 
     def can_execute(self, symbol: str, direction: int, bar: pd.Series) -> bool:

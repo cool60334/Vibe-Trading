@@ -155,3 +155,23 @@ def test_engine_normalizes_tz_aware_funding_index_to_naive(tmp_path):
         interval="1H", funding_lookup=eng._funding_lookup,
     )
     assert fee == pytest.approx(100.0 * 0.00025 * 1)
+
+
+def test_funding_series_duplicate_timestamps_fails_loud(tmp_path):
+    """Duplicate settlement timestamps in the feature file are a data-integrity
+    bug — to_dict() would silently keep the last, bypassing fail-loud (agy diff #1)."""
+    idx = pd.DatetimeIndex(
+        ["2024-01-01 00:00", "2024-01-01 08:00", "2024-01-01 08:00"], tz="UTC"
+    )
+    df = pd.DataFrame({"funding_rate_raw": [0.0001, 0.0002, 0.0003]}, index=idx)
+    p = tmp_path / "features_dup.parquet"
+    df.to_parquet(p)
+    with pytest.raises(ValueError, match="duplicate"):
+        CryptoEngine({"funding_series_path": str(p)})
+
+
+def test_funding_series_empty_string_does_not_silently_skip(tmp_path):
+    """An explicit empty-string path must not be treated as 'no path' → silent
+    legacy fallback. Given a key, honour it strictly (agy diff #6)."""
+    with pytest.raises((FileNotFoundError, OSError, ValueError)):
+        CryptoEngine({"funding_series_path": ""})
