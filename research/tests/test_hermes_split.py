@@ -22,3 +22,23 @@ def test_strict_mode_raises_when_caller_preselected_oos_rows():
     df = _df("2025-02-01", 30)  # entirely inside locked OOS
     with pytest.raises(OOSLeakError):
         foundry_split(df, oos_start="2025-01-01", val_frac=0.2, strict=True)
+
+
+def test_tz_aware_index_does_not_crash():
+    df = _df("2024-06-01", 400)
+    df.index = df.index.tz_localize("UTC")  # like okx_data.py real loaders
+    train, val = foundry_split(df, oos_start="2025-01-01", val_frac=0.25)
+    assert not train.empty and not val.empty
+    assert train.index.max() < pd.Timestamp("2025-01-01", tz="UTC")
+
+
+def test_unsorted_index_raises():
+    df = _df("2024-06-01", 400).iloc[::-1]  # descending order
+    with pytest.raises(ValueError, match="sorted"):
+        foundry_split(df, oos_start="2025-01-01", val_frac=0.25)
+
+
+def test_val_frac_producing_empty_split_raises():
+    df = _df("2024-06-01", 5)  # too few pre-oos rows for a tiny val_frac
+    with pytest.raises(ValueError, match="empty split"):
+        foundry_split(df, oos_start="2025-01-01", val_frac=0.01)
