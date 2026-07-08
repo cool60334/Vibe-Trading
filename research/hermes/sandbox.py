@@ -24,6 +24,11 @@ from pathlib import Path
 from research.hermes.errors import HermesGuardError
 from research.hermes.sandbox_ast import check_source
 
+# NON-FUNCTIONAL PLACEHOLDER: bare python:3.11-slim has no pandas/numpy/scipy/ta,
+# so any real compute() the AST gate allows (sandbox_ast.ALLOWED_IMPORTS) will
+# ModuleNotFoundError inside the container. Callers must pass image= pointing at
+# a build with those deps baked in (see Dockerfile.sandbox-example at repo root)
+# until a real Foundry-sandbox image is built and pinned here.
 DEFAULT_IMAGE = "python:3.11-slim"
 
 # Fixed runner script shipped alongside this module; mounted read-only into

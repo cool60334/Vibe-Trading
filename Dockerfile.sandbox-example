@@ -1,0 +1,10 @@
+# Example image for research/hermes/sandbox.py's DockerSandbox.
+#
+# DEFAULT_IMAGE ("python:3.11-slim") has none of the packages
+# research/hermes/sandbox_ast.py's ALLOWED_IMPORTS permits (pandas, numpy,
+# scipy, ta, math, statistics) — build this (or an equivalent) and pass its
+# tag as DockerSandbox(image=...) before running real candidate factors.
+# Not wired up or built automatically; Phase 1 owns pinning/publishing a
+# real image.
+FROM python:3.11-slim
+RUN pip install --no-cache-dir pandas numpy scipy ta
