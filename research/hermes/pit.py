@@ -11,11 +11,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from research.hermes.errors import HermesGuardError
+
 PROBE_FROM_DEFAULT = 101   # rows [0, perturb_from) must be invariant
 PERTURB_GAP = 10           # first corrupted row = probe_end + gap
 
 
-class LookaheadError(AssertionError):
+class LookaheadError(HermesGuardError, AssertionError):
     """Raised when a feature's past values change after the future is corrupted."""
 
 

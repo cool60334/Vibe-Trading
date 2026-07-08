@@ -21,6 +21,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from research.hermes.errors import HermesGuardError
 from research.hermes.sandbox_ast import check_source
 
 DEFAULT_IMAGE = "python:3.11-slim"
@@ -28,6 +29,10 @@ DEFAULT_IMAGE = "python:3.11-slim"
 # Fixed runner script shipped alongside this module; mounted read-only into
 # every container. The LLM never sees or can modify this path.
 RUNNER_TEMPLATE_PATH = Path(__file__).resolve().parent / "_runner_template.py"
+
+
+class SandboxError(HermesGuardError, RuntimeError):
+    """Raised when the Docker sandbox is unavailable or a sandboxed run fails."""
 
 
 def is_docker_available() -> bool:
@@ -97,7 +102,7 @@ class DockerSandbox(SandboxExecutor):
     def run(self, source: str, input_parquet, output_dir) -> str:
         check_source(source)  # layer-0 gate FIRST: untrusted source must never reach a subprocess call, even if docker itself is unavailable/misconfigured
         if not is_docker_available():
-            raise RuntimeError("docker daemon unavailable; cannot run sandboxed ETL")
+            raise SandboxError("docker daemon unavailable; cannot run sandboxed ETL")
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -119,7 +124,7 @@ class DockerSandbox(SandboxExecutor):
             )
             proc = subprocess.run(cmd, capture_output=True, timeout=self.timeout_s, text=True)
             if proc.returncode != 0:
-                raise RuntimeError(f"sandbox run failed: {proc.stderr[-500:]}")
+                raise SandboxError(f"sandbox run failed: {proc.stderr[-500:]}")
             return str(Path(output_dir) / "candidate.parquet")
         finally:
             if tmp_source_path is not None:

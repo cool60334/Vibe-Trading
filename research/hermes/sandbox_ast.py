@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import ast
 
+from research.hermes.errors import HermesGuardError
+
 ALLOWED_IMPORTS = {"pandas", "numpy", "scipy", "ta", "math", "statistics"}
 BANNED_CALLS = {"open", "eval", "exec", "compile", "__import__", "getattr", "setattr"}
 BANNED_ATTRS = {"bfill", "backfill"}
 
 
-class UnsafeCodeError(ValueError):
+class UnsafeCodeError(HermesGuardError, ValueError):
     """Raised when source violates the allowlist / bans."""
 
 

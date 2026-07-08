@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import pandas as pd
 
+from research.hermes.errors import HermesGuardError
 
-class OOSLeakError(AssertionError):
+
+class OOSLeakError(HermesGuardError, AssertionError):
     """Raised in strict mode when the input already contains OOS rows."""
 
 

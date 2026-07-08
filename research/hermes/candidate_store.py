@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from research.hermes.errors import HermesGuardError
 from research.lib.factor_io import _atomic_to_parquet, _symbol_short
 
 CANDIDATE_SUBDIR = "candidate_features"
@@ -18,7 +19,7 @@ CANDIDATE_SUBDIR = "candidate_features"
 _PRODUCTION_PREFIXES = ("features_", "factor_values_")
 
 
-class ProductionWriteError(RuntimeError):
+class ProductionWriteError(HermesGuardError, RuntimeError):
     """Raised when a write would land outside the isolated candidate store."""
 
 
