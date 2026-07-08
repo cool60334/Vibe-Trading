@@ -1,4 +1,5 @@
 import ast
+import os
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,13 @@ from research.hermes.sandbox import DockerSandbox, is_docker_available
 from research.hermes.sandbox_ast import UnsafeCodeError
 
 RUNNER_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "hermes" / "_runner_template.py"
+
+# The container e2e needs a deps-baked image, NOT DockerSandbox's DEFAULT_IMAGE
+# (python:3.11-slim has no pandas/pyarrow — a run against it fails, it does not
+# skip). Build Dockerfile.sandbox-example and point this env at the tag, e.g.
+#   docker build -f Dockerfile.sandbox-example -t talos-sandbox:test .
+#   TALOS_SANDBOX_TEST_IMAGE=talos-sandbox:test python -m pytest research/tests/test_hermes_sandbox.py
+SANDBOX_TEST_IMAGE = os.environ.get("TALOS_SANDBOX_TEST_IMAGE")
 
 
 def test_ast_gate_runs_before_docker():
@@ -25,16 +33,21 @@ def test_docker_flags_are_hardened():
     assert ":rw" in joined
 
 
-@pytest.mark.skipif(not is_docker_available(), reason="docker daemon not running")
+@pytest.mark.skipif(
+    not is_docker_available() or not SANDBOX_TEST_IMAGE,
+    reason="needs docker daemon + TALOS_SANDBOX_TEST_IMAGE pointing at a deps-baked image",
+)
 def test_causal_feature_executes_in_container(tmp_path):
     import pandas as pd
     src = "import pandas as pd\n\ndef compute(df):\n    return df['close'].pct_change(1)\n"
     inp = tmp_path / "in.parquet"
     pd.DataFrame({"close": [1.0, 2, 3]}).to_parquet(inp)
-    out = sb_run_out = DockerSandbox(memory="512m", timeout_s=60).run(
+    DockerSandbox(image=SANDBOX_TEST_IMAGE, memory="512m", timeout_s=90).run(
         src, input_parquet=str(inp), output_dir=str(tmp_path)
     )
-    assert (tmp_path / "candidate.parquet").exists()
+    result = pd.read_parquet(tmp_path / "candidate.parquet")["candidate"].tolist()
+    assert pd.isna(result[0])                # first pct_change is NaN
+    assert result[1:] == [1.0, 0.5]          # container really ran compute()
 
 
 # --- exec-scoping regression coverage (no docker required) -----------------

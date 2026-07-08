@@ -6,5 +6,10 @@
 # tag as DockerSandbox(image=...) before running real candidate factors.
 # Not wired up or built automatically; Phase 1 owns pinning/publishing a
 # real image.
+#
+# pyarrow is REQUIRED even though it is not in ALLOWED_IMPORTS: the runner
+# (_runner_template.py) reads the input and writes the candidate via pandas
+# parquet I/O, which needs a parquet engine. Without it every real run fails
+# with "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'".
 FROM python:3.11-slim
-RUN pip install --no-cache-dir pandas numpy scipy ta
+RUN pip install --no-cache-dir pandas numpy scipy ta pyarrow
