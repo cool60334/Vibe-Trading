@@ -38,6 +38,8 @@ def check_source(src: str) -> None:
             fn = node.func
             if isinstance(fn, ast.Name) and fn.id in BANNED_CALLS:
                 raise UnsafeCodeError(f"banned call: {fn.id}")
+            if isinstance(fn, ast.Attribute) and fn.attr in BANNED_CALLS:
+                raise UnsafeCodeError(f"banned call: .{fn.attr}()")
             if isinstance(fn, ast.Attribute) and fn.attr in BANNED_ATTRS:
                 raise UnsafeCodeError(f"banned method: .{fn.attr}()")
             # fillna(method='bfill'/'backfill')
