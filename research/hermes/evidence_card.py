@@ -17,11 +17,13 @@ VERDICT_CANDIDATE = "candidate"
 VERDICT_GRAVEYARD = "graveyard"
 _VERDICTS = {VERDICT_CANDIDATE, VERDICT_GRAVEYARD}
 # metrics a promotable candidate must carry (None => rejected at construction).
-# Only net_ic is strictly required: ic_nonoverlap/ir/dsr/pbo may legitimately
-# be non-finite (e.g. DSR/PBO undefined for too few trials) and sanitize to
-# null on to_dict(); requiring them here too would make from_dict() reject a
-# card that its own to_dict() just produced (round-trip must never raise).
-_CORE_METRICS = ("net_ic",)
+# ir/dsr are exempted, not dropped wholesale: they're the only two metrics the
+# test suite ever exercises with a non-finite value (nan/inf), which sanitizes
+# to JSON null on to_dict() -- requiring them here too would make from_dict()
+# reject a card that its own to_dict() just produced (round-trip must never
+# raise). ic_nonoverlap/pbo are never exercised as non-finite, so they stay
+# required: they remain load-bearing for the candidate quality gate.
+_CORE_METRICS = ("net_ic", "ic_nonoverlap", "pbo")
 
 
 class CardValidationError(HermesGuardError, ValueError):
