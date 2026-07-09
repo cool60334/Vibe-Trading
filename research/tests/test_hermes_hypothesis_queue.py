@@ -71,3 +71,25 @@ def test_dedupe_preserves_fingerprint_after_dead_classes_merge():
     out = dedupe([zoo, llm])
     assert len(out) == 1
     assert out[0].fingerprint == llm.fingerprint  # replace() didn't corrupt the precomputed fingerprint
+
+
+def test_filter_removes_graveyard_and_dead_classes(tmp_path, monkeypatch):
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO, SOURCE_LLM, string_fingerprint
+    from research.hermes import hypothesis_queue as hq
+    from research.hermes.hypothesis_queue import filter_static, DEAD_CLASSES
+
+    buried = Hypothesis("z1", "close / close.shift(3) - 1", SOURCE_ZOO)
+    fresh = Hypothesis("z2", "volume / volume.shift(3) - 1", SOURCE_ZOO)
+    banned = Hypothesis("z3", "some microstructure thing", SOURCE_LLM,
+                        dead_classes=("intraday_ohlcv_price_derived",))
+
+    monkeypatch.setattr(hq, "_graveyard_fingerprints",
+                        lambda sym, md: {string_fingerprint("close / close.shift(3) - 1")})
+    out = filter_static([buried, fresh, banned], symbol="eth", manifests_dir=tmp_path)
+    assert [h.id for h in out] == ["z2"]           # buried + dead-class removed
+
+
+def test_dead_classes_constant_covers_constitution():
+    from research.hermes.hypothesis_queue import DEAD_CLASSES
+    assert "intraday_ohlcv_price_derived" in DEAD_CLASSES
+    assert "binance_orderflow" in DEAD_CLASSES

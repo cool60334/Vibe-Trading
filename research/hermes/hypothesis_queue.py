@@ -7,7 +7,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from research.hermes.hypothesis import SOURCE_ZOO, Hypothesis, is_python_expr
+from research.hermes.evidence_card import VERDICT_GRAVEYARD
+from research.hermes.evidence_store import load_cards
+from research.hermes.hypothesis import SOURCE_ZOO, Hypothesis, is_python_expr, string_fingerprint
+
+# Constitution dead classes (already-buried families; never re-propose).
+# See talos-design.md §5 + memory project_intraday_ohlcv_class_dead / orderflow_poc.
+DEAD_CLASSES = frozenset({"intraday_ohlcv_price_derived", "binance_orderflow"})
 
 
 def _priority(h: Hypothesis) -> tuple:
@@ -51,3 +57,29 @@ def dedupe(hypotheses: list[Hypothesis]) -> list[Hypothesis]:
             winner = replace(winner, dead_classes=tuple(sorted(merged)))
         result.append(winner)
     return result
+
+
+def _graveyard_fingerprints(symbol: str, manifests_dir) -> set:
+    """String fingerprints of buried factors from the symbol's evidence store.
+    Best-effort, same-representation only (agy 3): cross-representation dedup is
+    1A numerical + post-1C code_sha256."""
+    return {
+        string_fingerprint(c.formula)
+        for c in load_cards(symbol, manifests_dir)
+        if c.verdict == VERDICT_GRAVEYARD
+    }
+
+
+def filter_static(hypotheses: list[Hypothesis], symbol: str, manifests_dir) -> list[Hypothesis]:
+    """Drop hypotheses that are already-buried (graveyard fingerprint match) or
+    tagged into a constitution dead class. Cheap string-level filtering only —
+    numerical/semantic dedup is 1A's job."""
+    dead_fp = _graveyard_fingerprints(symbol, manifests_dir)
+    out: list = []
+    for h in hypotheses:
+        if h.fingerprint in dead_fp:
+            continue
+        if set(h.dead_classes) & DEAD_CLASSES:
+            continue
+        out.append(h)
+    return out
