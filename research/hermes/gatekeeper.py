@@ -64,3 +64,14 @@ def net_ir(weights: pd.Series, ret_1period: pd.Series, cost_frac: float) -> floa
     if len(strat) < 20 or sd <= 0:
         return float("nan")
     return float(strat.mean() / sd)
+
+
+def nonoverlap_ic(factor: pd.Series, fwd_ret: pd.Series, horizon_bars: int) -> float:
+    """IC on non-overlapping subsample (every horizon_bars-th row) so a long
+    horizon's overlapping windows don't inflate significance (agy C-4)."""
+    if horizon_bars < 1:
+        raise ValueError("horizon_bars must be >= 1")
+    paired = pd.concat([factor, fwd_ret], axis=1).dropna().iloc[::horizon_bars]
+    if len(paired) < 3:
+        return float("nan")
+    return float(spearmanr(paired.iloc[:, 0], paired.iloc[:, 1]).statistic)

@@ -60,3 +60,16 @@ def test_net_ir_uses_one_period_return_not_overlapping():
     w = factor_to_weights(_s(np.arange(n, dtype="float64")))
     ir = net_ir(w, ret1, cost_frac=0.0006)
     assert np.isfinite(ir)
+
+
+def test_nonoverlap_ic_strides_and_monotone_is_one():
+    from research.hermes.gatekeeper import nonoverlap_ic
+    n = 300
+    f = _s(np.arange(n, dtype="float64")); r = _s(np.arange(n, dtype="float64"))
+    assert nonoverlap_ic(f, r, horizon_bars=24) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_nonoverlap_ic_nan_when_too_few():
+    from research.hermes.gatekeeper import nonoverlap_ic
+    f = _s(np.arange(30, dtype="float64"))
+    assert np.isnan(nonoverlap_ic(f, f, horizon_bars=24))
