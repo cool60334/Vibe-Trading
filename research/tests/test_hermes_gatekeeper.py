@@ -192,3 +192,84 @@ def test_evaluate_metrics_match_card_fields(tmp_path, monkeypatch):
               "n_samples", "regime_ic", "yearly_ic", "nearest_factor",
               "nearest_abs_spearman"):
         assert k in res.metrics
+
+
+def test_evaluate_1h_interval_uses_add_forward_returns_path(tmp_path, monkeypatch):
+    # Task 7 code-review follow-up: the plan's literal (non-1D-deviation) branch
+    # -- add_forward_returns()/bars_per_hour() -- had zero coverage; all 3
+    # plan-required evaluate() tests use interval="1D" (the deviation branch).
+    from research.hermes import gatekeeper
+    from research.hermes.gatekeeper import evaluate, GateConfig
+    n = 2000
+    idx = pd.date_range("2024-01-01", periods=n, freq="1h")
+    rng = np.random.default_rng(8)
+    close = pd.Series(100 + np.cumsum(rng.normal(size=n)), index=idx)
+    factor = pd.Series(rng.normal(size=n), index=idx)
+    ohlcv = pd.DataFrame({"close": close}, index=idx)
+    monkeypatch.setattr(gatekeeper, "read_events", lambda md: [])
+    res = evaluate(factor, ohlcv, daily_regime=pd.Series("bull", index=idx),
+                   existing_and_dead=pd.DataFrame(index=idx), symbol="eth",
+                   manifests_dir=tmp_path, cfg=GateConfig(interval="1H", horizon_h=4))
+    assert "gross_ic" in res.metrics and np.isfinite(res.metrics["turnover"])
+
+
+def test_evaluate_passes_clean_predictive_factor(tmp_path, monkeypatch):
+    # Task 7 code-review follow-up: no test previously proved a good factor can
+    # actually clear all four gates (redundant/turnover/gross_ic/dsr) to passed=True.
+    from research.hermes import gatekeeper
+    from research.hermes.gatekeeper import evaluate, GateConfig
+    n = 3000
+    idx = pd.date_range("2015-01-01", periods=n, freq="1D")
+    rng = np.random.default_rng(7)
+    t = np.arange(n, dtype="float64")
+    factor_true = np.sin(t / 80.0)                       # slow oscillation -> low turnover
+    ret = np.zeros(n, dtype="float64")
+    ret[1:] = 0.02 * factor_true[:-1] + rng.normal(scale=0.002, size=n - 1)
+    close = pd.Series(100.0 * np.cumprod(1.0 + ret), index=idx)
+    factor = pd.Series(factor_true, index=idx)
+    ohlcv = pd.DataFrame({"close": close}, index=idx)
+    monkeypatch.setattr(gatekeeper, "read_events", lambda md: [])
+    res = evaluate(factor, ohlcv, daily_regime=pd.Series("bull", index=idx),
+                   existing_and_dead=pd.DataFrame(index=idx), symbol="eth",
+                   manifests_dir=tmp_path, cfg=GateConfig(interval="1D", horizon_h=24))
+    assert res.passed is True, res.rejection_reason
+    assert res.metrics["gross_ic"] > 0.03
+
+
+def test_evaluate_rejects_redundant_factor(tmp_path, monkeypatch):
+    # Task 7 code-review follow-up: no test previously exercised the
+    # redundant-factor short-circuit (the first rejection check in evaluate()).
+    from research.hermes import gatekeeper
+    from research.hermes.gatekeeper import evaluate, GateConfig
+    n = 400
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    rng = np.random.default_rng(9)
+    close = pd.Series(100 + np.cumsum(rng.normal(size=n)), index=idx)
+    factor = pd.Series(rng.normal(size=n), index=idx)
+    # evaluate() internally shifts factor by entry_lag (default 1) before
+    # comparing against existing_and_dead -- pre-shift the duplicate here so it
+    # matches what nearest_correlate actually sees post-shift (near-1.0 abs corr).
+    existing = pd.DataFrame({"dup": factor.shift(1)}, index=idx)
+    ohlcv = pd.DataFrame({"close": close}, index=idx)
+    monkeypatch.setattr(gatekeeper, "read_events", lambda md: [])
+    res = evaluate(factor, ohlcv, daily_regime=pd.Series("bull", index=idx),
+                   existing_and_dead=existing, symbol="eth",
+                   manifests_dir=tmp_path, cfg=GateConfig(interval="1D", horizon_h=24))
+    assert res.passed is False and "redundant" in res.rejection_reason.lower()
+
+
+def test_evaluate_1d_horizon_not_multiple_of_24_raises(tmp_path, monkeypatch):
+    # Task 7 code-review follow-up: the horizon_h % 24 guard in the 1D-interval
+    # deviation branch had no direct coverage.
+    from research.hermes import gatekeeper
+    from research.hermes.gatekeeper import evaluate, GateConfig
+    n = 100
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    close = pd.Series(100.0 + np.arange(n, dtype="float64"), index=idx)
+    factor = pd.Series(np.arange(n, dtype="float64"), index=idx)
+    ohlcv = pd.DataFrame({"close": close}, index=idx)
+    monkeypatch.setattr(gatekeeper, "read_events", lambda md: [])
+    with pytest.raises(ValueError, match="multiple of 24"):
+        evaluate(factor, ohlcv, daily_regime=pd.Series("bull", index=idx),
+                 existing_and_dead=pd.DataFrame(index=idx), symbol="eth",
+                 manifests_dir=tmp_path, cfg=GateConfig(interval="1D", horizon_h=5))
