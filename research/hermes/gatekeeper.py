@@ -68,10 +68,16 @@ def net_ir(weights: pd.Series, ret_1period: pd.Series, cost_frac: float) -> floa
 
 def nonoverlap_ic(factor: pd.Series, fwd_ret: pd.Series, horizon_bars: int) -> float:
     """IC on non-overlapping subsample (every horizon_bars-th row) so a long
-    horizon's overlapping windows don't inflate significance (agy C-4)."""
+    horizon's overlapping windows don't inflate significance (agy C-4).
+
+    Threshold is 10, not gross_ic's 20: plan spec's own required test
+    (n=300, horizon_bars=24) only survives striding with 13 rows, so 20 is
+    infeasible here. 10 is the practical floor below which Spearman's
+    significance cutoff is so high that |rho| near 1 is expected from pure
+    chance rather than signal (agy consult, 2026-07-09)."""
     if horizon_bars < 1:
         raise ValueError("horizon_bars must be >= 1")
     paired = pd.concat([factor, fwd_ret], axis=1).dropna().iloc[::horizon_bars]
-    if len(paired) < 3:
+    if len(paired) < 10:
         return float("nan")
     return float(spearmanr(paired.iloc[:, 0], paired.iloc[:, 1]).statistic)
