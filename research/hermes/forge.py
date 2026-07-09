@@ -7,10 +7,14 @@ feedback, then buried. 1C forges only; scoring (1A) + ledger + evidence card are
 wired by 1D."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
 from research.hermes.hypothesis import Hypothesis
+from research.hermes.sandbox_ast import check_source
+
+_FENCE = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL)
 
 _PROMPT = """You are writing a single Python factor for a crypto perp research pipeline.
 
@@ -37,3 +41,22 @@ def build_prompt(hypothesis: Hypothesis, prior_code: Optional[str] = None,
         f"\nYour previous code:\n```python\n{prior_code or ''}\n```\n"
         f"failed with:\n{prior_error}\nFix it.")
     return _PROMPT.format(desc=hypothesis.description, repair=repair)
+
+
+def extract_code(response: str) -> str:
+    """Pull the first ```python fenced block out of an LLM response.
+
+    Falls back to the whole response (stripped) if no fence is present.
+    """
+    m = _FENCE.search(response)
+    return (m.group(1) if m else response).strip()
+
+
+def generate_code(llm: LLMCoder, prompt: str) -> str:
+    """LLM -> fenced code -> AST allowlist gate.
+
+    Raises UnsafeCodeError (from sandbox_ast.check_source) on gate failure.
+    """
+    code = extract_code(llm.complete(prompt))
+    check_source(code)                               # layer-0; raises UnsafeCodeError
+    return code

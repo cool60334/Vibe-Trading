@@ -17,3 +17,18 @@ def test_prompt_appends_prior_code_and_error_for_repair():
                      prior_error="NameError: name 'foo' is not defined")
     assert "NameError" in p and "foo" in p            # agy 5b: prior CODE included too
     assert "previous" in p.lower()
+
+
+def test_extract_code_pulls_fenced_block():
+    from research.hermes.forge import extract_code
+    resp = "sure:\n```python\ndef compute(df):\n    return df['close']\n```\ndone"
+    assert extract_code(resp).startswith("def compute(df):")
+
+
+def test_generate_code_rejects_unsafe_via_ast_gate():
+    from research.hermes.forge import generate_code
+    class BadLLM:
+        def complete(self, prompt): return "```python\nimport os\ndef compute(df):\n    return df\n```"
+    from research.hermes.sandbox_ast import UnsafeCodeError
+    with pytest.raises(UnsafeCodeError):
+        generate_code(BadLLM(), "prompt")            # AST gate blocks os import
