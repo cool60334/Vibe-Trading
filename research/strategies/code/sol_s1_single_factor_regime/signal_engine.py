@@ -45,7 +45,14 @@ def _load_regime_series(symbol_short: str, target_index: pd.DatetimeIndex) -> pd
     df = pd.DataFrame(breakdown)
     df["ts"] = pd.to_datetime(df["date"])
     df = df.set_index("ts").sort_index()
-    out = df["regime"].astype(str).reindex(target_index.normalize(), method="ffill")
+    # ffill_regime_to (NOT a bare reindex+ffill): the manifest's date for a
+    # day is derived from that day's OWN end-of-day close
+    # (resample("1D").last()), so it isn't knowable until ~23:59 that day. A
+    # naive reindex+ffill would assign day-D's label starting at D 00:00 --
+    # ~1 day of look-ahead into real entry decisions. See
+    # research/lib/regime.py:ffill_regime_to for the full explanation.
+    from lib.regime import ffill_regime_to
+    out = ffill_regime_to(df["regime"].astype(str), target_index.normalize())
     out.index = target_index
     return out.fillna("neutral")
 

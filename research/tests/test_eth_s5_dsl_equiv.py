@@ -12,18 +12,29 @@ is pointed at that fixture via the RESEARCH_MANIFESTS_DIR env var so this test i
 hermetic and immune to future factor/regime revisions.
 
   OOS  (2025-01-01 → 2026-06-02):
-    sharpe       = 1.0157874592604321
-    max_drawdown = -0.09128048816641941
+    sharpe       = 0.8490191338430589
+    max_drawdown = -0.0912804881958745
     trade_count  = 49
 
   Train (2022-06-11 → 2025-01-01):
-    sharpe       = 1.163302928642236
-    max_drawdown = -0.1311973550103349
-    trade_count  = 82
+    sharpe       = 0.8778799680805691
+    max_drawdown = -0.13615947394033404
+    trade_count  = 80
 
 REF is bound to the fixture data version. If the fixture is regenerated, rerun the
 hand-written eth_s5_half_size train/OOS backtests against it and re-freeze
 REF_TRAIN/REF_OOS below.
+
+REF re-frozen 2026-07-09 (regime look-ahead fix): research/lib/regime.py's
+compute_regime()-derived daily labels were being ffill'd onto hourly bars with
+~1 day of look-ahead (a label at day-D was assigned starting D 00:00, but it
+depends on day-D's own end-of-day close, only knowable at ~D 23:59 -- see
+ffill_regime_to() in research/lib/regime.py). eth_s5_half_size's manual
+signal_engine.py had this exact bug in its own _load_regime_series() copy.
+Fixing it changed real backtest results: Train sharpe 1.1633 -> 0.8779
+(trade_count 82 -> 80), OOS sharpe 1.0158 -> 0.8490 (trade_count unchanged at
+49). The strategy's true edge is meaningfully smaller than previously
+measured -- the old numbers were partly a look-ahead artifact.
 
 Tolerances:
   sharpe:       ±0.05
@@ -75,15 +86,17 @@ FIXTURE_YAML = _RESEARCH_DIR / "tests" / "fixtures" / "eth_s5_dsl_equiv.yaml"
 FIXTURE_MANIFESTS_DIR = _RESEARCH_DIR / "tests" / "fixtures" / "manifests_eth_s5"
 
 # Reference metrics — hand-written eth_s5_half_size engine on the fixture above.
+# Re-frozen 2026-07-09 after fixing a ~1-day regime look-ahead bug (see module
+# docstring) — these are the honest, look-ahead-free numbers.
 REF_OOS = {
-    "sharpe": 1.0157874592604321,
-    "max_drawdown": -0.09128048816641941,
+    "sharpe": 0.8490191338430589,
+    "max_drawdown": -0.0912804881958745,
     "trade_count": 49,
 }
 REF_TRAIN = {
-    "sharpe": 1.163302928642236,
-    "max_drawdown": -0.1311973550103349,
-    "trade_count": 82,
+    "sharpe": 0.8778799680805691,
+    "max_drawdown": -0.13615947394033404,
+    "trade_count": 80,
 }
 
 SHARPE_TOL = 0.05

@@ -75,8 +75,14 @@ def _load_regime_series(symbol_short: str, target_index: pd.DatetimeIndex) -> pd
     df = df.set_index("ts").sort_index()
     # Strip tz from target if present (ohlcv index is naive).
     daily = df["regime"].astype(str)
-    # Reindex to hourly via ffill: each hour inherits the day's regime.
-    out = daily.reindex(target_index.normalize(), method="ffill")
+    # Reindex to hourly via ffill_regime_to (NOT a bare reindex+ffill): the
+    # manifest's date for a day is derived from that day's OWN end-of-day
+    # close (resample("1D").last()), so it isn't knowable until ~23:59 that
+    # day. A naive reindex+ffill would assign day-D's label starting at D
+    # 00:00 -- ~1 day of look-ahead into real entry decisions. See
+    # research/lib/regime.py:ffill_regime_to for the full explanation.
+    from lib.regime import ffill_regime_to
+    out = ffill_regime_to(daily, target_index.normalize())
     out.index = target_index
     return out.fillna("neutral")
 
