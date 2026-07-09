@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from scipy.stats import spearmanr
 
 
 def factor_to_weights(factor: pd.Series, span: int = 168) -> pd.Series:
@@ -35,3 +36,28 @@ def turnover_of(weights: pd.Series) -> pd.Series:
     are treated as flat (0.0) BEFORE diff so the first real entry from a NaN
     warmup is charged turnover instead of being a free position (agy-3 #1)."""
     return weights.fillna(0.0).diff().abs()
+
+
+def gross_ic(factor: pd.Series, fwd_ret: pd.Series) -> float:
+    """Spearman IC of the factor vs RAW forward return (drops NaN pairs)."""
+    paired = pd.concat([factor, fwd_ret], axis=1).dropna()
+    if len(paired) < 20:
+        return float("nan")
+    return float(spearmanr(paired.iloc[:, 0], paired.iloc[:, 1]).statistic)
+
+
+def net_ir(weights: pd.Series, ret_1period: pd.Series, cost_frac: float) -> float:
+    """Per-bar IR/Sharpe of the net return of a 1-period rebalanced position.
+
+    strat_ret_t = weights_t * ret1_{t+1} - turnover_t * cost_frac.
+    ret_1period MUST be a single-bar forward return (agy #1c: h-period overlap
+    would autocorrelate and inflate Sharpe). Cost is paid when the position is
+    set at t; the position earns the next bar's return."""
+    fwd1 = ret_1period.shift(-1)                       # weights_t earn ret_{t+1}
+    tau = turnover_of(weights)
+    strat = (weights * fwd1) - tau.fillna(0.0) * cost_frac
+    strat = strat.dropna()
+    sd = strat.std(ddof=0)
+    if len(strat) < 20 or sd <= 0:
+        return float("nan")
+    return float(strat.mean() / sd)

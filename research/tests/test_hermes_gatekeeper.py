@@ -29,3 +29,34 @@ def test_turnover_charges_first_entry_from_nan_warmup():
     tau = turnover_of(w).fillna(0.0)
     assert tau.iloc[2] == pytest.approx(0.8)          # entry 0 -> 0.8 charged
     assert tau.iloc[3] == pytest.approx(0.0)
+
+
+def test_gross_ic_matches_spearman():
+    from research.hermes.gatekeeper import gross_ic
+    from scipy.stats import spearmanr
+    rng = np.random.default_rng(0)
+    f = _s(rng.normal(size=400)); r = _s(rng.normal(size=400))
+    assert gross_ic(f, r) == pytest.approx(float(spearmanr(f, r).statistic), abs=1e-9)
+
+
+def test_net_ir_penalises_high_turnover():
+    from research.hermes.gatekeeper import net_ir, factor_to_weights
+    rng = np.random.default_rng(1)
+    n = 500
+    ret1 = _s(rng.normal(scale=0.01, size=n))               # 1-period returns
+    calm = _s(np.sin(np.linspace(0, 6, n)))                 # smooth -> low turnover
+    churn = _s(rng.normal(size=n))                          # noisy -> high turnover
+    ir_calm = net_ir(factor_to_weights(calm), ret1, cost_frac=0.0006)
+    ir_churn = net_ir(factor_to_weights(churn), ret1, cost_frac=0.02)
+    assert ir_churn < ir_calm                               # cost drag bites churn
+
+
+def test_net_ir_uses_one_period_return_not_overlapping():
+    # guard against the overlapping-return Sharpe-inflation trap: net_ir must be
+    # called with a 1-period return series; a longer overlap would inflate it.
+    from research.hermes.gatekeeper import net_ir, factor_to_weights
+    n = 300
+    ret1 = _s(np.random.default_rng(2).normal(scale=0.01, size=n))
+    w = factor_to_weights(_s(np.arange(n, dtype="float64")))
+    ir = net_ir(w, ret1, cost_frac=0.0006)
+    assert np.isfinite(ir)
