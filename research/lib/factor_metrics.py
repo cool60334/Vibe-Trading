@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from lib.timeframe import bars_per_day, bars_per_hour
+from research.lib.timeframe import bars_per_day, bars_per_hour
 
 
 @dataclass
