@@ -14,7 +14,7 @@ from typing import Optional, Protocol
 from research.hermes.hypothesis import Hypothesis
 from research.hermes.sandbox_ast import check_source
 
-_FENCE = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL)
+_FENCE = re.compile(r"```(?:python|py)?\s*(.*?)```", re.DOTALL)
 
 _PROMPT = """You are writing a single Python factor for a crypto perp research pipeline.
 

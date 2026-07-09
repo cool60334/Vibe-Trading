@@ -25,6 +25,17 @@ def test_extract_code_pulls_fenced_block():
     assert extract_code(resp).startswith("def compute(df):")
 
 
+def test_extract_code_accepts_py_shorthand_fence():
+    from research.hermes.forge import extract_code
+    resp = "```py\ndef compute(df):\n    return df['close']\n```"
+    assert extract_code(resp) == "def compute(df):\n    return df['close']"
+
+
+def test_extract_code_falls_back_to_whole_response_when_no_fence():
+    from research.hermes.forge import extract_code
+    assert extract_code("def compute(df):\n    return df") == "def compute(df):\n    return df"
+
+
 def test_generate_code_rejects_unsafe_via_ast_gate():
     from research.hermes.forge import generate_code
     class BadLLM:
