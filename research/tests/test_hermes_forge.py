@@ -65,3 +65,32 @@ def test_pit_check_passes_causal(tmp_path):
     causal = lambda code, p: p["close"].pct_change(5)
     baseline = causal("code", panel)
     assert pit_check_via_sandbox("code", panel, baseline, run=causal) is None
+
+
+def test_pit_check_rejects_panel_too_small_for_perturb_gap():
+    # agy review gap #1: n <= PERTURB_GAP + 1 makes perturb_from <= 0, which
+    # would previously make the comparison slice empty and np.allclose pass
+    # trivially for ANY code. Must raise instead of silently passing.
+    import numpy as np, pandas as pd
+    from research.hermes.forge import pit_check_via_sandbox
+    idx = pd.date_range("2024-01-01", periods=10, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(10.0)}, index=idx)
+    leaky = lambda code, p: p["close"].shift(-1)          # blatant lookahead
+    baseline = leaky("code", panel)
+    with pytest.raises(ValueError, match="out of range"):
+        pit_check_via_sandbox("code", panel, baseline, run=leaky)
+
+
+def test_pit_check_rejects_non_numeric_panel():
+    # agy review gap #2: a non-numeric column must fail with a clear error,
+    # not an unhandled TypeError from `corrupt.iloc[perturb_from:] = 1e10`.
+    import numpy as np, pandas as pd
+    from research.hermes.forge import pit_check_via_sandbox
+    idx = pd.date_range("2024-01-01", periods=300, freq="1h")
+    panel = pd.DataFrame(
+        {"close": np.arange(300.0), "label": ["x"] * 300}, index=idx
+    )
+    causal = lambda code, p: p["close"].pct_change(5)
+    baseline = causal("code", panel)
+    with pytest.raises(ValueError, match="all-numeric"):
+        pit_check_via_sandbox("code", panel, baseline, run=causal)
