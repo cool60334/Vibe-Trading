@@ -91,3 +91,25 @@ def compute_regime(
 def daily_close_from_hourly(df: pd.DataFrame, col: str = "close") -> pd.Series:
     """Resample hourly OHLCV close to daily UTC close."""
     return df[col].resample("1D").last().dropna()
+
+
+def ffill_regime_to(daily_regime: pd.Series, target_index: pd.DatetimeIndex) -> pd.Series:
+    """Reindex a DAILY regime series onto a higher-frequency index, without look-ahead.
+
+    ``resample("1D")`` (default ``label="left"``) stores day-D's bin under the
+    D-00:00 timestamp, but ``.last()`` takes the bin's END-of-day value — so a
+    label at day-D actually reflects data only knowable at ~D 23:00 / D+1
+    00:00, not D 00:00. Naively reindexing+ffilling straight off that index
+    (``daily_regime.reindex(target_index, method="ffill")``) assigns day-D's
+    own label to day-D's first ~23 hours, before it was knowable — a
+    systematic ~1-day look-ahead that bites hardest around regime-transition
+    days. Shifting the daily index forward by one day before ffill makes a
+    label only apply from the moment it's actually known.
+
+    This is the ONLY safe way to consume `compute_regime`'s output at a
+    higher-than-daily frequency; every call site (research analysis scripts,
+    the gatekeeper's regime_ic, and live signal_engine regime overlays) must
+    route through this rather than hand-rolling the reindex+ffill."""
+    shifted = daily_regime.copy()
+    shifted.index = shifted.index + pd.Timedelta(days=1)
+    return shifted.reindex(target_index, method="ffill")

@@ -61,7 +61,7 @@ import pandas as pd
 
 # ── Internal imports ───────────────────────────────────────────────────────────
 from lib.factor_metrics import add_forward_returns, compute_ic
-from lib.regime import compute_regime, daily_close_from_hourly
+from lib.regime import compute_regime, daily_close_from_hourly, ffill_regime_to
 from pipeline.config import load_config, ResearchConfig, SymbolConfig
 from pipeline.config import _REPO_ROOT as _CFG_REPO_ROOT
 from schemas import FactorEntry, FactorManifest, FactorStability, FactorVerdict
@@ -306,8 +306,9 @@ def run_symbol_regime(sym: SymbolConfig, cfg: ResearchConfig, manifests_dir: Pat
         funding_rate=fund_h["funding_rate"] if fund_h is not None else None,
     )
 
-    # Reindex regime labels back to hourly index (forward-fill daily -> hourly)
-    hourly_regime = regime_df["regime"].reindex(df.index, method="ffill")
+    # Reindex regime labels back to hourly index (forward-fill daily -> hourly,
+    # without look-ahead -- see research/lib/regime.py:ffill_regime_to)
+    hourly_regime = ffill_regime_to(regime_df["regime"], df.index)
 
     print(f"\n[regime] label distribution: {dict(hourly_regime.value_counts())}")
 

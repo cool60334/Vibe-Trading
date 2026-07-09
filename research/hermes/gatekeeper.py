@@ -18,6 +18,7 @@ from scipy.stats import spearmanr
 
 from research.lib.deflated_sharpe import deflated_sharpe, bars_per_year
 from research.lib.factor_metrics import add_forward_returns
+from research.lib.regime import ffill_regime_to
 from research.lib.research_ledger import read_events
 from research.lib.timeframe import bars_per_hour
 
@@ -101,8 +102,13 @@ def nonoverlap_ic(factor: pd.Series, fwd_ret: pd.Series, horizon_bars: int) -> f
 
 def regime_ic(factor: pd.Series, fwd_ret: pd.Series, daily_regime: pd.Series) -> dict:
     """IC within each regime. daily_regime is DAILY (compute_regime output); it is
-    ffill'd onto the factor index so hourly factors keep all rows (agy #2)."""
-    labels = daily_regime.reindex(factor.index, method="ffill")
+    ffill'd onto the factor index so hourly factors keep all rows (agy #2).
+
+    Uses ffill_regime_to (not a bare reindex+ffill): a naive ffill straight off
+    compute_regime's own index look-ahead-leaks ~1 day of each label into the
+    hours before it was actually knowable (research/lib/regime.py has the
+    full explanation) -- found in post-merge review, 2026-07-09."""
+    labels = ffill_regime_to(daily_regime, factor.index)
     out: dict = {}
     for label in ("bull", "bear", "neutral"):
         mask = labels == label
