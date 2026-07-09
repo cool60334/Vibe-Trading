@@ -18,8 +18,8 @@ def factor_to_weights(factor: pd.Series, span: int = 168) -> pd.Series:
     """Map factor -> target weights in [-1,1] via causal EMA z-score.
 
     EMA (not SMA) softens window-start instability (agy #5). std==0 runs (a
-    constant/discrete signal) keep their standardised sign instead of becoming
-    NaN: z is set to 0 where std==0 so a bounded signal passes through clip."""
+    constant/discrete signal) are flat by definition — no variance to measure
+    extremity against — so z is set to 0 (not NaN) for the duration of the run."""
     mu = factor.ewm(span=span, adjust=False, min_periods=span // 4).mean()
     sd = factor.ewm(span=span, adjust=False, min_periods=span // 4).std(bias=True)
     z = (factor - mu) / sd
