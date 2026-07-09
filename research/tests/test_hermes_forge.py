@@ -166,3 +166,21 @@ def test_forge_buries_on_stripped_index_with_clear_reason():
     strip = lambda code, pnl: pnl["close"].reset_index(drop=True)   # index stripped
     res = forge(Hypothesis("h", "x", SOURCE_LLM), GoodLLM(), strip, panel, max_retries=2)
     assert not res.success and "index" in res.death_reason.lower()  # clear contract msg
+
+
+def test_forge_buries_cleanly_when_run_sandbox_returns_non_series():
+    # code-review fix: hasattr(series, "index") was True even for a plain
+    # list (list.index is the unrelated builtin method), so a buggy
+    # run_sandbox returning a list crashed forge() with an uncaught
+    # AttributeError instead of being recorded as a clean death result.
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    class GoodLLM:
+        def complete(self, p): return "```python\ndef compute(df):\n    return df['close']\n```"
+    not_a_series = lambda code, pnl: pnl["close"].tolist()   # returns list, not Series
+    res = forge(Hypothesis("h", "x", SOURCE_LLM), GoodLLM(), not_a_series, panel, max_retries=2)
+    assert not res.success and res.death_reason is not None
+    assert "index" in res.death_reason.lower() or "series" in res.death_reason.lower()

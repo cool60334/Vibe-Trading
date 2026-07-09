@@ -137,7 +137,7 @@ def forge(hypothesis: Hypothesis, llm: LLMCoder, run_sandbox, panel, max_retries
             # agy: a stripped/reset/reindexed result must fail with a clear
             # contract message here, not an obscure broadcast/alignment error
             # further downstream in the pipeline.
-            if not hasattr(series, "index") or not series.index.equals(panel.index):
+            if not isinstance(series, pd.Series) or not series.index.equals(panel.index):
                 raise ValueError(
                     "Contract violation: compute(df) must return a Series that "
                     "keeps df's DatetimeIndex unchanged (index was reset, "
