@@ -101,3 +101,22 @@ def yearly_ic(factor: pd.Series, fwd_ret: pd.Series) -> dict:
         if len(idx) >= 20:
             out[str(year)] = gross_ic(factor.loc[idx], fwd_ret.reindex(idx))
     return out
+
+
+def nearest_correlate(factor: pd.Series, others: pd.DataFrame) -> tuple:
+    """(column_name, max_abs_spearman) of the most-correlated existing/dead factor.
+    O(N*K) via corrwith — NOT .corr() (agy-3 #4: .corr() builds the full
+    (K+1)x(K+1) all-to-all matrix; at K=5000 that is ~25M pairs and an OOM bomb
+    when we only need base-vs-each). Rank per column (NaN-preserving) then
+    corrwith aligns pairwise. abs() catches an inverse factor (agy C-2). Returns
+    (None, 0.0) when nothing to compare / nothing overlaps."""
+    if others.shape[1] == 0:
+        return (None, 0.0)
+    ranked_factor = factor.rank()
+    ranked_others = others.rank()                       # per-column, keeps NaN
+    corr = ranked_others.corrwith(ranked_factor).dropna()   # O(N*K), pairwise
+    if corr.empty:
+        return (None, 0.0)
+    abs_corr = corr.abs()
+    top = abs_corr.idxmax()
+    return (str(top), float(abs_corr.loc[top]))

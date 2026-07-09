@@ -95,3 +95,25 @@ def test_yearly_ic_splits_by_year():
     f = pd.Series(np.arange(500, dtype="float64"), index=idx)
     y = yearly_ic(f, f)
     assert "2022" in y and "2023" in y
+
+
+def test_nearest_correlate_pairwise_survives_disjoint_lifespans():
+    from research.hermes.gatekeeper import nearest_correlate
+    n = 300
+    idx = pd.date_range("2024-01-01", periods=n, freq="1h")
+    base = pd.Series(np.arange(n, dtype="float64"), index=idx)
+    others = pd.DataFrame({
+        "dead_early": np.r_[np.arange(150, dtype="float64"), [np.nan] * 150],  # dies mid
+        "dead_late": np.r_[[np.nan] * 150, -np.arange(150, dtype="float64")],  # born mid, inverse
+    }, index=idx)
+    # global dropna() would empty this (no row has BOTH non-NaN); pairwise must not.
+    name, absrho = nearest_correlate(base, others)
+    assert name in {"dead_early", "dead_late"}
+    assert absrho == pytest.approx(1.0, abs=1e-6)          # abs catches inverse
+
+
+def test_nearest_correlate_empty_matrix():
+    from research.hermes.gatekeeper import nearest_correlate
+    idx = pd.date_range("2024-01-01", periods=50, freq="1h")
+    base = pd.Series(np.arange(50, dtype="float64"), index=idx)
+    assert nearest_correlate(base, pd.DataFrame(index=idx)) == (None, 0.0)
