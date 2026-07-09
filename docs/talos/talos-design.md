@@ -126,7 +126,7 @@ Part A 第二批已把時間窗與記帳機械落地並部署，Talos 設計直�
 
 ### A1 成本模型（已落地，Foundry 繼承）
 
-realistic 成本模型（taker 雙腿 + 逐 bar funding PIT 查值 + 平倉費）已是研究側 default（兩層 gating：引擎 legacy default 不變供 golden byte-identical，研究 pipeline default realistic）。Foundry 的 Net-return IC 守門直接用此成本模型算換手後淨報酬（gross − 換手×成本）再算 IC，非「IC 減成本」（見附錄 C-1）。
+realistic 成本模型（taker 雙腿 + 逐 bar funding PIT 查值 + 平倉費）已是研究側 default（兩層 gating：引擎 legacy default 不變供 golden byte-identical，研究 pipeline default realistic）。Foundry 的成本把關用此成本模型算 **Net IR/Sharpe**（1-period 重平衡淨值序列），訊號品質用 **Gross IC**——**不**把成本塞進 IC（見附錄 C-1 2026-07-08 逆轉）。
 
 ---
 
@@ -183,22 +183,21 @@ realistic 成本模型（taker 雙腿 + 逐 bar funding PIT 查值 + 平倉費�
   → 沙盒執行 → 測 IC/IR（複用 factor_metrics / apply_ic_eval_transform）
       • 若產出 1H signal → IC 用 lagged signal（模擬 execution lag）；促晉級進 pipeline
         時繼承 stage3 lag-stress / intrabar 審計（見 4.2）
-  → 統計守門（全過才合格）：
-      • Net-return IC：先算 net forward return = gross return − turnover × transaction_cost，
-        再以 net return 算 IC（扣費後才算 alpha；防高換手垃圾。
-        ⚠️ 不是「IC 減成本」——IC 無單位，成本是 bps，相減無效，見附錄 C-1）
-      • 非重疊 IC / Newey-West：長 horizon 對每 h 小時取一點補 ic_nonoverlap，
-        或對 t-stat 做 Newey-West 校正，篩選看校正後數字（Part A A5，見附錄 C-4）
-      • IC 按 regime（牛/熊/震盪）+ 分年 分別輸出（防「只在牛市強」被平均掩蓋）
-      • 對既有因子 abs(Spearman)>0.7 → 直接丟/進墓地（abs 防反向因子×−1 繞過，見附錄 C-2）
-      • DSR + PBO：trial count 從 research_ledger.jsonl 撈「該標的/家族歷史累計試錯總數」
-        做全局懲罰（非只當晚 sweep，否則 nightly=自動過擬合機，見附錄 C-3）
+  → 統計守門（全過才合格；門檻 config 化，lag 守門員內建；agy-v2 見 1A 計畫）：
+      • 訊號品質 = Gross IC（factor vs 原始 h-horizon 報酬）
+      • 成本把關 = Net IR/Sharpe（1-period 重平衡淨值：weights_t×ret1_{t+1} − turnover_t×cost；
+        turnover 來自權重＝P1；1-period 避免 h-period 重疊→Sharpe 假暴增。⚠️ 廢除 net_ic，見附錄 C-1）
+      • turnover 絕對上限守門（>max_turnover 不可交易→reject）
+      • 非重疊 IC / Newey-West：長 horizon 每 h 小時取一點補 ic_nonoverlap（Part A A5，附錄 C-4）
+      • IC 按 regime（bull/bear/neutral，日級 ffill）+ 分年 分別輸出（防「只在牛市強」被掩蓋）
+      • 對既有+墓地因子 abs(Spearman)>0.7 → 丟/進墓地（矩陣 pairwise，abs 防反向，附錄 C-2/C-6）
+      • DSR：trial count 從 research_ledger 撈該標的**同 interval** 歷史累計（同質子集，非混異質 T；附錄 C-3）
   → 過關 → 寫候選特徵庫（atomic write，見 3.5）+ 證據卡；未過 → 進墓地 + 記死因
 觸發：按需（config 化，預設首推 ETH —— 正卡 ceiling）+ nightly cron
       nightly 有 compute/token 預算 + early stopping
 ```
 
-**每因子產證據卡**：IC / IR / Net-return IC / ic_nonoverlap / regime 分解 / 分年 / DSR（全局 trial）/ PBO / 相關性 / 死活與死因。
+**每因子產證據卡**：Gross IC / Net IR / ic_nonoverlap / regime 分解 / 分年 / DSR（同質 trial）/ PBO / turnover / 相關性 / 死活與死因。
 
 → 分小階段，每步**停、等核准**。
 
@@ -238,7 +237,9 @@ D1 自動到 paper、實盤人工核准 · D2 混合大腦（確定性骨架 + L
 agy 對抗式審查本設計 + 交叉核對既有 code（`resolve_anchor_date` / `research_ledger` / `final_holdout` / `RedFlagCode.OOS_WINDOW_OVEREVALUATED` / `factor_metrics` **引用全查核無誤**）。11 點漏洞全採納並折入上文：
 
 **實質方法論修正**
-- **C-1 Net IC 維度錯（數學無效）** —— 原 `Net IC = IC − turnover×cost` 把無單位相關係數減 bps 損耗，不成立。此錯源頭在 `fable5-prompt.md §6` mandate 原文。改：先算 net forward return（gross − 換手×成本）再算 IC。→ 3.4 A1 節、3.6 守門。
+- **C-1 Net IC 維度錯（數學無效）** —— 原 `Net IC = IC − turnover×cost` 把無單位相關係數減 bps 損耗，不成立。此錯源頭在 `fable5-prompt.md §6` mandate 原文。
+  - **~~初版修法~~**（agy 前輪）：先算 net forward return（gross − 換手×成本）再算 IC。
+  - **⚠️ 2026-07-08 逆轉（agy Phase 1A 二審，權威）**：「把成本扣在 forward return 上再算 rank-corr」統計上仍**無意義**（扭曲報酬分佈）。**廢除 net_ic 概念**。正解：**訊號品質＝Gross IC**（factor vs 原始 h-horizon 報酬）；**成本把關＝Net IR/Sharpe**，從**正確對齊的 1-period 重平衡淨值序列**算（`weights_t × ret1_{t+1} − turnover_t × cost`；turnover 來自權重＝P1；1-period 報酬避免 h-period 重疊→自相關→Sharpe 假暴增）。1E `EvidenceCard.net_ic` 欄改名 `gross_ic`。詳 `docs/talos/plans/2026-07-08-talos-phase1a-gatekeeper.md`（agy-v2）。
 - **C-2 abs 防反向因子** —— LLM 產舊因子×−1 即讓 Spearman<−0.7、IC 轉負，繞過 >0.7 / >0.1 門檻。改 `abs(Spearman)>0.7`、`abs(IC)>0.1`。→ 3.3、3.4、3.6。
 - **C-3 DSR 跨夜試錯洩漏** —— nightly 只算當晚 trial 會嚴重低估多重檢驗債務=自動過擬合機。Foundry DSR 改從 `research_ledger.jsonl` 撈家族累計 trial 全局懲罰。→ 3.4、3.6。
 - **C-4 漏 Newey-West / 非重疊 IC** —— Part A A5（`optimization-report.md:96,254`）明列併入 Foundry 守門，設計初稿遺漏。補回 `ic_nonoverlap` + t-stat Newey-West 校正。→ 3.6。
