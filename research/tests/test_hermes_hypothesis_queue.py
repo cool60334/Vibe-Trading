@@ -204,6 +204,41 @@ def test_evidence_derivation_uses_feature_key(tmp_path, monkeypatch):
     assert any("funding_z" in h.description for h in out)      # feature_key read, not None
 
 
+def test_llm_adapter_namespaces_ids():
+    from research.hermes.hypothesis_queue import hypotheses_from_llm
+    hyps = hypotheses_from_llm([{"id": "ts_mom_2", "description": "close.shift(2)"}])
+    assert len(hyps) == 1
+    assert hyps[0].id == "llm_ts_mom_2"
+    assert hyps[0].source == SOURCE_LLM
+
+
+def test_llm_adapter_requires_id_and_description():
+    from research.hermes.hypothesis_queue import hypotheses_from_llm
+    with pytest.raises(KeyError):
+        hypotheses_from_llm([{"description": "no id here"}])
+    with pytest.raises(KeyError):
+        hypotheses_from_llm([{"id": "no_description_here"}])
+
+
+def test_llm_adapter_does_not_collide_with_academic_id_after_prefixing():
+    """Regression: an LLM-proposed raw id equal to an academic seed id (e.g.
+    'acad_ts_mom') must NOT collide with the academic hypothesis after
+    namespacing — dedupe() only collapses on fingerprint, not id, so an
+    unprefixed collision would silently let two DIFFERENT hypotheses survive
+    under the same Hypothesis.id in the final queue."""
+    from research.hermes.hypothesis_queue import hypotheses_from_academic, hypotheses_from_llm
+
+    academic = hypotheses_from_academic()
+    acad_hit = next(h for h in academic if h.id == "acad_ts_mom")
+
+    # Same raw id string as the academic hypothesis, but a different formula.
+    llm = hypotheses_from_llm([{"id": "acad_ts_mom", "description": "close.shift(3)"}])
+    assert len(llm) == 1
+    assert llm[0].id == "llm_acad_ts_mom"
+    assert llm[0].id != acad_hit.id
+    assert llm[0].description != acad_hit.description
+
+
 def test_build_queue_assembles_dedupes_filters(tmp_path, monkeypatch):
     from research.hermes import hypothesis_queue as hq
     from research.hermes.hypothesis import Hypothesis, SOURCE_ACADEMIC

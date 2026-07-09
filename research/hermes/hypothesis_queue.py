@@ -205,10 +205,17 @@ def hypotheses_from_llm(raw: list) -> list[Hypothesis]:
     """Wrap LLM-proposed ideas into Hypothesis objects (actual LLM generation
     happens in 1C — this is just the adapter). `raw` entries must carry 'id'
     and 'description' (fail fast via KeyError on malformed LLM output);
-    'dead_classes' is optional."""
+    'dead_classes' is optional.
+
+    ids are namespaced with an `llm_` prefix, consistent with the other three
+    adapters (zoo_/der_/acad_) — an LLM-proposed raw id is caller-supplied and
+    can otherwise collide verbatim with an academic/zoo/derived id. dedupe()
+    only collapses on fingerprint (description content), not id, so an
+    unprefixed collision would let two distinct hypotheses survive under the
+    same Hypothesis.id into the final queue."""
     return [
         Hypothesis(
-            id=r["id"],
+            id=f"llm_{r['id']}",
             description=r["description"],
             source=SOURCE_LLM,
             dead_classes=tuple(r.get("dead_classes", ())),
