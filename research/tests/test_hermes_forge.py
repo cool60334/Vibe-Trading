@@ -43,3 +43,25 @@ def test_generate_code_rejects_unsafe_via_ast_gate():
     from research.hermes.sandbox_ast import UnsafeCodeError
     with pytest.raises(UnsafeCodeError):
         generate_code(BadLLM(), "prompt")            # AST gate blocks os import
+
+
+def test_pit_check_flags_future_leak_via_sandbox(tmp_path):
+    import numpy as np, pandas as pd
+    from research.hermes.forge import pit_check_via_sandbox
+    from research.hermes.pit import LookaheadError
+    idx = pd.date_range("2024-01-01", periods=300, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(300.0)}, index=idx)
+    leaky = lambda code, p: p["close"].shift(-1)          # peeks at t+1
+    baseline = leaky("code", panel)                       # forge already ran it
+    with pytest.raises(LookaheadError):
+        pit_check_via_sandbox("code", panel, baseline, run=leaky)
+
+
+def test_pit_check_passes_causal(tmp_path):
+    import numpy as np, pandas as pd
+    from research.hermes.forge import pit_check_via_sandbox
+    idx = pd.date_range("2024-01-01", periods=300, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(300.0)}, index=idx)
+    causal = lambda code, p: p["close"].pct_change(5)
+    baseline = causal("code", panel)
+    assert pit_check_via_sandbox("code", panel, baseline, run=causal) is None

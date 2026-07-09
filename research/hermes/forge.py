@@ -11,7 +11,10 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
+import numpy as np
+
 from research.hermes.hypothesis import Hypothesis
+from research.hermes.pit import LookaheadError, PROBE_FROM_DEFAULT, PERTURB_GAP
 from research.hermes.sandbox_ast import check_source
 
 _FENCE = re.compile(r"```(?:python|py)?\s*(.*?)```", re.DOTALL)
@@ -60,3 +63,21 @@ def generate_code(llm: LLMCoder, prompt: str) -> str:
     code = extract_code(llm.complete(prompt))
     check_source(code)                               # layer-0; raises UnsafeCodeError
     return code
+
+
+def pit_check_via_sandbox(code: str, panel, baseline, run, atol=1e-9, rtol=1e-9) -> None:
+    """Verify point-in-time at the sandbox boundary. `baseline` is the series
+    forge ALREADY computed on the clean panel (agy 4a: don't recompute it).
+    We corrupt the future of the panel, run the sandbox ONCE more, and assert the
+    pre-corruption region matches baseline. `run(code, panel)->Series` is injected
+    (real DockerSandbox in 1D; fake in tests). Raises LookaheadError on leak."""
+    n = len(panel)
+    perturb_from = min(PROBE_FROM_DEFAULT, n - PERTURB_GAP - 1)
+    corrupt = panel.copy()
+    corrupt.iloc[perturb_from:] = 1e10
+    corrupt.iloc[perturb_from + PERTURB_GAP:] = np.nan
+    after = np.asarray(run(code, corrupt), dtype="float64")[:perturb_from]
+    base = np.asarray(baseline, dtype="float64")[:perturb_from]
+    if not np.allclose(base, after, atol=atol, rtol=rtol, equal_nan=True):
+        drift = np.nanmax(np.abs(base - after))
+        raise LookaheadError(f"factor peeks into the future via sandbox: drift {drift:.3e}")
