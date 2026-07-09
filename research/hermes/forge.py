@@ -16,7 +16,8 @@ import pandas as pd
 
 from research.hermes.hypothesis import Hypothesis
 from research.hermes.pit import LookaheadError, PROBE_FROM_DEFAULT, PERTURB_GAP
-from research.hermes.sandbox_ast import check_source
+from research.hermes.sandbox import SandboxError
+from research.hermes.sandbox_ast import check_source, UnsafeCodeError
 
 _FENCE = re.compile(r"```(?:python|py)?\s*(.*?)```", re.DOTALL)
 
@@ -91,3 +92,62 @@ def pit_check_via_sandbox(code: str, panel, baseline, run, atol=1e-9, rtol=1e-9)
     if not np.allclose(base, after, atol=atol, rtol=rtol, equal_nan=True):
         drift = np.nanmax(np.abs(base - after))
         raise LookaheadError(f"factor peeks into the future via sandbox: drift {drift:.3e}")
+
+
+@dataclass(frozen=True)
+class ForgeResult:
+    """Outcome of a bounded forge() repair loop.
+
+    On success: `series` is the pd.Series computed by the winning attempt.
+    On exhaustion: `code` still holds the LAST attempt's code (agy 5c) so a
+    1D orchestrator can record the bad code on the evidence card/ledger even
+    though the hypothesis was buried.
+    """
+    success: bool
+    attempts: int
+    code: Optional[str] = None
+    series: object = None                 # pd.Series on success
+    death_reason: Optional[str] = None
+
+
+def forge(hypothesis: Hypothesis, llm: LLMCoder, run_sandbox, panel, max_retries: int = 3) -> ForgeResult:
+    """Bounded repair loop: generate -> sandbox-run -> index-contract check ->
+    PIT-at-boundary check, retrying on code errors with prior-attempt feedback.
+
+    `run_sandbox(code, panel) -> pd.Series` executes the code (real
+    DockerSandbox.run in 1D; a fake in tests). `SandboxError` signals
+    infrastructure trouble (e.g. docker daemon down) rather than a bad
+    hypothesis/code, so it is NOT treated as repairable: it propagates
+    immediately instead of burning a retry (agy 5a). Everything else that can
+    plausibly come from bad LLM code (AST-gate rejection, a lookahead leak, or
+    a stripped/reindexed result) is fed back to the LLM as `prior_error` on
+    the next attempt. After `max_retries` failed attempts the hypothesis is
+    buried: the result carries `code=<last attempt's code>` (agy 5c) and a
+    human-readable `death_reason`.
+    """
+    prior_code, prior_error = None, None
+    last_error, last_code = "no attempt ran", None
+    for attempt in range(1, max_retries + 1):
+        prompt = build_prompt(hypothesis, prior_code, prior_error)
+        code = extract_code(llm.complete(prompt))
+        last_code = code                             # agy 5c: keep even if this attempt fails
+        try:
+            check_source(code)                       # layer-0 AST gate; raises UnsafeCodeError
+            series = run_sandbox(code, panel)
+            # agy: a stripped/reset/reindexed result must fail with a clear
+            # contract message here, not an obscure broadcast/alignment error
+            # further downstream in the pipeline.
+            if not hasattr(series, "index") or not series.index.equals(panel.index):
+                raise ValueError(
+                    "Contract violation: compute(df) must return a Series that "
+                    "keeps df's DatetimeIndex unchanged (index was reset, "
+                    "reindexed, or otherwise dropped)"
+                )
+            pit_check_via_sandbox(code, panel, series, run_sandbox)
+            return ForgeResult(True, attempt, code=code, series=series)
+        except SandboxError:
+            raise                                    # agy 5a: infra error, not repairable, don't retry
+        except (UnsafeCodeError, LookaheadError, ValueError, KeyError, TypeError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            prior_code, prior_error = code, last_error
+    return ForgeResult(False, max_retries, code=last_code, death_reason=last_error)

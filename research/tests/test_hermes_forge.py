@@ -94,3 +94,75 @@ def test_pit_check_rejects_non_numeric_panel():
     baseline = causal("code", panel)
     with pytest.raises(ValueError, match="all-numeric"):
         pit_check_via_sandbox("code", panel, baseline, run=causal)
+
+
+def test_forge_succeeds_first_try():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    class GoodLLM:
+        def complete(self, p): return "```python\ndef compute(df):\n    return df['close'].pct_change(5)\n```"
+    run = lambda code, pnl: pnl["close"].pct_change(5)
+    res = forge(Hypothesis("h", "mom5", SOURCE_LLM), GoodLLM(), run, panel, max_retries=3)
+    assert res.success and res.attempts == 1 and res.series is not None
+
+
+def test_forge_repairs_then_succeeds():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    calls = {"n": 0}
+    class FlakyLLM:
+        def complete(self, p):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "```python\nimport os\ndef compute(df):\n    return df['close']\n```"  # AST fail
+            return "```python\ndef compute(df):\n    return df['close'].pct_change(3)\n```"
+    run = lambda code, pnl: pnl["close"].pct_change(3)
+    res = forge(Hypothesis("h", "x", SOURCE_LLM), FlakyLLM(), run, panel, max_retries=3)
+    assert res.success and res.attempts == 2          # repaired after AST rejection
+
+
+def test_forge_buries_after_max_retries():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    class BadLLM:
+        def complete(self, p): return "```python\nimport socket\ndef compute(df):\n    return df['close']\n```"
+    run = lambda code, pnl: pnl["close"]
+    res = forge(Hypothesis("h", "x", SOURCE_LLM), BadLLM(), run, panel, max_retries=3)
+    assert not res.success and res.attempts == 3 and res.death_reason
+    assert res.code is not None                       # agy 5c: last bad code kept for 1D
+
+
+def test_forge_reraises_infra_error_without_retrying():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    from research.hermes.sandbox import SandboxError
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    class GoodLLM:
+        def complete(self, p): return "```python\ndef compute(df):\n    return df['close']\n```"
+    def broken_infra(code, pnl): raise SandboxError("docker daemon unavailable")
+    with pytest.raises(SandboxError):                 # agy 5a: infra error NOT retried
+        forge(Hypothesis("h", "x", SOURCE_LLM), GoodLLM(), broken_infra, panel, max_retries=3)
+
+
+def test_forge_buries_on_stripped_index_with_clear_reason():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    class GoodLLM:
+        def complete(self, p): return "```python\ndef compute(df):\n    return df['close']\n```"
+    strip = lambda code, pnl: pnl["close"].reset_index(drop=True)   # index stripped
+    res = forge(Hypothesis("h", "x", SOURCE_LLM), GoodLLM(), strip, panel, max_retries=2)
+    assert not res.success and "index" in res.death_reason.lower()  # clear contract msg
