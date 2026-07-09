@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -59,9 +60,14 @@ class SandboxExecutor(ABC):
 class DockerSandbox(SandboxExecutor):
     """Hardened container executor with AST gate + resource limits.
 
-    Known limitation: subprocess.run(..., timeout=...) only terminates the docker CLI client
-    process on timeout, not the container itself (moby doesn't propagate SIGKILL from CLI to
-    daemon). Full container-lifecycle-safe timeout handling remains a follow-up.
+    Container-lifecycle-safe timeout: every `docker run` is given a fixed
+    `--name talos_sbx_<uuid>`. The run stays synchronous/blocking (no `-d`) so
+    `capture_output` can still read stdout/stderr back on the happy path. If
+    `subprocess.run(..., timeout=...)` raises `TimeoutExpired` — which only
+    kills the docker CLI client, not the container itself, since moby doesn't
+    propagate SIGKILL from CLI to daemon — `run()` follows up with `docker
+    kill` + `docker rm -f` (best-effort) to reap the orphaned container before
+    raising SandboxError.
     """
     def __init__(self, image: str = DEFAULT_IMAGE, memory: str = "1g",
                  cpus: str = "1", timeout_s: int = 120):
@@ -74,6 +80,7 @@ class DockerSandbox(SandboxExecutor):
         runner: str,
         source_mount: tuple[str, str] | None = None,
         input_mount: tuple[str, str] | None = None,
+        name: str | None = None,
     ) -> list:
         """Build the hardened `docker run` argv.
 
@@ -81,9 +88,19 @@ class DockerSandbox(SandboxExecutor):
         pairs added as extra read-only `-v` mounts. They default to None so
         this method's 3-positional-arg call shape (used directly by tests)
         keeps working unchanged.
+
+        `name` sets a fixed `--name` on the container so a caller can
+        `docker kill`/`docker rm` it by name if the CLI-side wait times out.
+        Defaults to a fresh `talos_sbx_<uuid>` when not supplied. Deliberately
+        NOT `-d` (detached): the run must stay synchronous so `capture_output`
+        can still read stdout/stderr back, and so `subprocess.run(timeout=)`
+        actually bounds wall-clock time on the CLI call.
         """
+        if name is None:
+            name = f"talos_sbx_{uuid.uuid4().hex[:12]}"
         cmd = [
             "docker", "run", "--rm",
+            f"--name={name}",
             "--network=none",
             f"--memory={self.memory}",
             f"--cpus={self.cpus}",
@@ -120,14 +137,30 @@ class DockerSandbox(SandboxExecutor):
             input_path = Path(input_parquet)
             container_input_path = f"/in/{input_path.name}"
 
+            name = f"talos_sbx_{uuid.uuid4().hex[:12]}"
             cmd = self._build_command(
                 container_input_path,
                 str(output_dir),
                 runner=str(RUNNER_TEMPLATE_PATH),
                 source_mount=(tmp_source_path, "/app/user_source.py"),
                 input_mount=(str(input_path), container_input_path),
+                name=name,
             )
-            proc = subprocess.run(cmd, capture_output=True, timeout=self.timeout_s, text=True)
+            try:
+                proc = subprocess.run(cmd, capture_output=True, timeout=self.timeout_s, text=True)
+            except subprocess.TimeoutExpired as exc:
+                # subprocess.run(timeout=) only kills the docker CLI client; the
+                # container itself keeps running (--rm only fires on the
+                # container's own exit). Hunt it down by its fixed --name,
+                # best-effort, before surfacing the timeout as a hard failure.
+                for verb in (["docker", "kill", name], ["docker", "rm", "-f", name]):
+                    try:
+                        subprocess.run(verb, capture_output=True, timeout=15)
+                    except Exception:
+                        pass
+                raise SandboxError(
+                    f"sandbox timed out after {self.timeout_s}s; container {name} reaped"
+                ) from exc
             if proc.returncode != 0:
                 raise SandboxError(f"sandbox run failed: {proc.stderr[-500:]}")
             return str(Path(output_dir) / "candidate.parquet")
