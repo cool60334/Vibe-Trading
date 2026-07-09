@@ -73,3 +73,25 @@ def test_nonoverlap_ic_nan_when_too_few():
     from research.hermes.gatekeeper import nonoverlap_ic
     f = _s(np.arange(30, dtype="float64"))
     assert np.isnan(nonoverlap_ic(f, f, horizon_bars=24))
+
+
+def test_regime_ic_ffills_daily_labels_to_factor_freq():
+    from research.hermes.gatekeeper import regime_ic
+    # hourly factor, DAILY regime labels — must ffill, not drop 23/24 rows
+    hidx = pd.date_range("2024-01-01", periods=240, freq="1h")   # 10 days
+    factor = pd.Series(np.arange(240, dtype="float64"), index=hidx)
+    fwd = pd.Series(np.arange(240, dtype="float64"), index=hidx)
+    didx = pd.date_range("2024-01-01", periods=10, freq="1D")
+    daily_labels = pd.Series((["bull"] * 5) + (["bear"] * 5), index=didx)
+    r = regime_ic(factor, fwd, daily_labels)
+    assert set(r) <= {"bull", "bear", "neutral"}
+    # bull covers ~5 days * 24h = 120 hourly rows (ffill worked), IC computable
+    assert "bull" in r and np.isfinite(r["bull"])
+
+
+def test_yearly_ic_splits_by_year():
+    from research.hermes.gatekeeper import yearly_ic
+    idx = pd.date_range("2022-06-01", periods=500, freq="1D")
+    f = pd.Series(np.arange(500, dtype="float64"), index=idx)
+    y = yearly_ic(f, f)
+    assert "2022" in y and "2023" in y

@@ -81,3 +81,23 @@ def nonoverlap_ic(factor: pd.Series, fwd_ret: pd.Series, horizon_bars: int) -> f
     if len(paired) < 10:
         return float("nan")
     return float(spearmanr(paired.iloc[:, 0], paired.iloc[:, 1]).statistic)
+
+
+def regime_ic(factor: pd.Series, fwd_ret: pd.Series, daily_regime: pd.Series) -> dict:
+    """IC within each regime. daily_regime is DAILY (compute_regime output); it is
+    ffill'd onto the factor index so hourly factors keep all rows (agy #2)."""
+    labels = daily_regime.reindex(factor.index, method="ffill")
+    out: dict = {}
+    for label in ("bull", "bear", "neutral"):
+        mask = labels == label
+        if mask.sum() >= 20:
+            out[label] = gross_ic(factor[mask], fwd_ret[mask])
+    return out
+
+
+def yearly_ic(factor: pd.Series, fwd_ret: pd.Series) -> dict:
+    out: dict = {}
+    for year, idx in factor.groupby(factor.index.year).groups.items():
+        if len(idx) >= 20:
+            out[str(year)] = gross_ic(factor.loc[idx], fwd_ret.reindex(idx))
+    return out
