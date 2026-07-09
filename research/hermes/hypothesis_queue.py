@@ -11,7 +11,11 @@ from pathlib import Path
 
 from research.hermes.evidence_card import VERDICT_GRAVEYARD
 from research.hermes.evidence_store import load_cards
-from research.hermes.hypothesis import SOURCE_ZOO, Hypothesis, is_python_expr, string_fingerprint
+from research.hermes.hypothesis import (
+    SOURCE_ACADEMIC, SOURCE_DERIVED, SOURCE_LLM, SOURCE_ZOO,
+    Hypothesis, is_python_expr, string_fingerprint,
+)
+from research.lib.factor_io import load_evidence
 
 # Constitution dead classes (already-buried families; never re-propose).
 # See talos-design.md §5 + memory project_intraday_ohlcv_class_dead / orderflow_poc.
@@ -144,3 +148,83 @@ def hypotheses_from_zoo(zoo_dir) -> list[Hypothesis]:
             dead_classes=_dead_classes_for_themes(meta.get("theme")),
         ))
     return out
+
+
+# Academic seed hypotheses (agy 5b): a small, hand-picked set of well-known
+# executable-Python factor descriptors, distinct from the zoo (which sources
+# its LaTeX/NL descriptions from agent/src/factors/zoo/**).
+_ACADEMIC_SEED = (
+    ("acad_ts_mom", "close / close.shift(20) - 1"),
+    ("acad_lo_vol", "-1 * close.pct_change().rolling(20).std()"),
+)
+
+# Cheap transforms applied to each high-IC feature_key when deriving variants.
+_DERIVE_TRANSFORMS = ("zscore", "rank")
+
+
+def hypotheses_from_evidence_derivation(symbol: str, manifests_dir, top_k: int = 5) -> list[Hypothesis]:
+    """Derive variant descriptors from the top-IR^ features in evidence_<sym>.json.
+
+    Rows key on 'feature_key' (agy 5a — not 'factor'/'name').
+
+    ^ "top" here means "first top_k rows of the evidence list", not a re-sort
+    by any field on this side. stage0a_features.sort_evidence_by_ic() already
+    sorts entries by descending max|IC| across horizons before dump_evidence()
+    persists evidence_<sym>.json (research/pipeline/stage0a_features.py), so
+    the file's row order already is the intended high-IC ranking. Re-sorting
+    here (e.g. by the 'ir' field, which is mean-IR-across-horizons — a
+    different metric from the file's max|IC| sort key) would silently
+    override that intended ranking with a different one. Missing/absent
+    evidence (no stage0a run yet for this symbol) degrades to an empty list.
+    """
+    try:
+        ev = load_evidence(symbol, manifests_dir=manifests_dir)
+    except FileNotFoundError:
+        return []
+    rows = ev.get("evidence", []) if isinstance(ev, dict) else ev
+    out: list = []
+    for row in list(rows)[:top_k]:
+        base = row.get("feature_key")
+        if not base:
+            continue
+        for t in _DERIVE_TRANSFORMS:
+            out.append(Hypothesis(
+                id=f"der_{base}_{t}",
+                description=f"{t}({base})",
+                source=SOURCE_DERIVED,
+            ))
+    return out
+
+
+def hypotheses_from_academic() -> list[Hypothesis]:
+    """Fixed seed set of academic factor descriptors (agy 5b)."""
+    return [Hypothesis(id=i, description=d, source=SOURCE_ACADEMIC) for i, d in _ACADEMIC_SEED]
+
+
+def hypotheses_from_llm(raw: list) -> list[Hypothesis]:
+    """Wrap LLM-proposed ideas into Hypothesis objects (actual LLM generation
+    happens in 1C — this is just the adapter). `raw` entries must carry 'id'
+    and 'description' (fail fast via KeyError on malformed LLM output);
+    'dead_classes' is optional."""
+    return [
+        Hypothesis(
+            id=r["id"],
+            description=r["description"],
+            source=SOURCE_LLM,
+            dead_classes=tuple(r.get("dead_classes", ())),
+        )
+        for r in raw
+    ]
+
+
+def build_queue(symbol: str, manifests_dir, zoo_dir, llm_raw: list | None = None) -> list[Hypothesis]:
+    """Assemble the full Foundry hypothesis queue: zoo + evidence-derivation +
+    academic + LLM sources, then dedupe (string-fingerprint collision) and
+    filter_static (graveyard + constitution dead classes)."""
+    collected = (
+        hypotheses_from_zoo(zoo_dir)
+        + hypotheses_from_evidence_derivation(symbol, manifests_dir)
+        + hypotheses_from_academic()
+        + hypotheses_from_llm(llm_raw or [])
+    )
+    return filter_static(dedupe(collected), symbol, manifests_dir)

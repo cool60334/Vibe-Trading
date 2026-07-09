@@ -192,3 +192,27 @@ def test_zoo_adapter_real_zoo_directory_sanity():
 
     # at least one real gtja191 microstructure-themed factor got dead-class tagged
     assert any("intraday_ohlcv_price_derived" in h.dead_classes for h in hyps)
+
+
+def test_evidence_derivation_uses_feature_key(tmp_path, monkeypatch):
+    from research.hermes import hypothesis_queue as hq
+    monkeypatch.setattr(hq, "load_evidence", lambda symbol, manifests_dir=None: {
+        "evidence": [{"feature_key": "funding_z", "ir": 0.5},
+                     {"feature_key": "depeg", "ir": 0.4}]})
+    out = hq.hypotheses_from_evidence_derivation("eth", tmp_path, top_k=1)
+    assert out and all(h.source == "derived" for h in out)
+    assert any("funding_z" in h.description for h in out)      # feature_key read, not None
+
+
+def test_build_queue_assembles_dedupes_filters(tmp_path, monkeypatch):
+    from research.hermes import hypothesis_queue as hq
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ACADEMIC
+    monkeypatch.setattr(hq, "hypotheses_from_zoo", lambda d: [
+        Hypothesis("zoo_a", "close / close.shift(5) - 1", "zoo")])
+    monkeypatch.setattr(hq, "hypotheses_from_evidence_derivation", lambda s, m: [
+        Hypothesis("der_a", "close / close.shift(5) - 1", "derived")])   # dupe of zoo_a
+    monkeypatch.setattr(hq, "hypotheses_from_academic", lambda: [
+        Hypothesis("acad_a", "close.rolling(20).mean()", SOURCE_ACADEMIC)])
+    monkeypatch.setattr(hq, "_graveyard_fingerprints", lambda s, m: set())
+    q = {h.id for h in hq.build_queue("eth", tmp_path, zoo_dir=tmp_path, llm_raw=[])}
+    assert "acad_a" in q and len(q & {"zoo_a", "der_a"}) == 1    # one of the dupes kept
