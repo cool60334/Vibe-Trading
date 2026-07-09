@@ -75,6 +75,32 @@ def test_nonoverlap_ic_nan_when_too_few():
     assert np.isnan(nonoverlap_ic(f, f, horizon_bars=24))
 
 
+def test_nonoverlap_ic_strides_by_calendar_position_not_post_dropna_row_count():
+    # A dropna-before-stride implementation shrinks the frame first, so a
+    # later iloc[::horizon_bars] lands on whatever row ends up at that
+    # position post-shrink -- not the row horizon_bars calendar-bars away.
+    # Scattering NaN at positions that are NOT stride multiples must therefore
+    # be a no-op on the result once striding happens BEFORE dropna.
+    from research.hermes.gatekeeper import nonoverlap_ic
+    from scipy.stats import spearmanr
+    n = 300
+    idx = pd.date_range("2024-01-01", periods=n, freq="1h")
+    rng = np.random.default_rng(11)
+    factor = pd.Series(rng.normal(size=n), index=idx)
+    fwd = pd.Series(rng.normal(size=n), index=idx)
+    horizon_bars = 24
+
+    strided_first = pd.concat([factor, fwd], axis=1).iloc[::horizon_bars].dropna()
+    expected = float(spearmanr(strided_first.iloc[:, 0], strided_first.iloc[:, 1]).statistic)
+
+    factor_scattered = factor.copy()
+    scatter_positions = [1, 2, 3, 5, 7, 10, 13, 17, 19, 23]  # none are multiples of 24
+    factor_scattered.iloc[scatter_positions] = np.nan
+
+    actual = nonoverlap_ic(factor_scattered, fwd, horizon_bars=horizon_bars)
+    assert actual == pytest.approx(expected, abs=1e-9)
+
+
 def test_regime_ic_ffills_daily_labels_to_factor_freq():
     from research.hermes.gatekeeper import regime_ic
     # hourly factor, DAILY regime labels — must ffill, not drop 23/24 rows

@@ -81,10 +81,19 @@ def nonoverlap_ic(factor: pd.Series, fwd_ret: pd.Series, horizon_bars: int) -> f
     (n=300, horizon_bars=24) only survives striding with 13 rows, so 20 is
     infeasible here. 10 is the practical floor below which Spearman's
     significance cutoff is so high that |rho| near 1 is expected from pure
-    chance rather than signal (agy consult, 2026-07-09)."""
+    chance rather than signal (agy consult, 2026-07-09).
+
+    Strides BEFORE dropna, not after (post-implementation review fix,
+    2026-07-09): factor/fwd_ret share a common regular calendar grid, so
+    striding the raw frame by row position is striding by calendar time.
+    Dropping NaN first would shrink the frame and shift row positions,
+    so a later `.iloc[::horizon_bars]` no longer lands on true
+    horizon_bars-apart timestamps whenever NaN is scattered mid-series
+    (not just a contiguous EMA-warmup block) -- silently reintroducing the
+    overlapping-window autocorrelation this function exists to avoid."""
     if horizon_bars < 1:
         raise ValueError("horizon_bars must be >= 1")
-    paired = pd.concat([factor, fwd_ret], axis=1).dropna().iloc[::horizon_bars]
+    paired = pd.concat([factor, fwd_ret], axis=1).iloc[::horizon_bars].dropna()
     if len(paired) < 10:
         return float("nan")
     return float(spearmanr(paired.iloc[:, 0], paired.iloc[:, 1]).statistic)
