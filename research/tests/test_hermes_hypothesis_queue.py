@@ -18,3 +18,56 @@ def test_dedupe_distinct_fingerprints_all_kept():
     a = Hypothesis("a", "close.shift(5)", SOURCE_ZOO)
     b = Hypothesis("b", "close.shift(9)", SOURCE_ZOO)
     assert len(dedupe([a, b])) == 2
+
+
+def test_dedupe_tiebreak_deterministic_nonzoo_nonzoo_both_executable():
+    # Both non-zoo AND both executable-Python -> _priority ties on both of the
+    # first two axes. The winner must still be order-independent (id tiebreak).
+    a = Hypothesis("hyp_a", "close.shift(5)", SOURCE_LLM)
+    b = Hypothesis("hyp_b", "close.shift(5)", SOURCE_LLM)        # same fingerprint
+    out_ab = dedupe([a, b])
+    out_ba = dedupe([b, a])
+    assert len(out_ab) == 1 and len(out_ba) == 1
+    assert out_ab[0].id == out_ba[0].id == "hyp_b"  # greater id wins, both orders agree
+
+
+def test_dedupe_tiebreak_deterministic_zoo_zoo_both_nonexecutable():
+    # Both zoo AND both non-parseable (LaTeX-like) -> ties on both axes again.
+    latex = r"\frac{close}{shift(5)}"
+    a = Hypothesis("zoo_a2", latex, SOURCE_ZOO)
+    b = Hypothesis("zoo_b2", latex, SOURCE_ZOO)                  # same fingerprint
+    out_ab = dedupe([a, b])
+    out_ba = dedupe([b, a])
+    assert len(out_ab) == 1 and len(out_ba) == 1
+    assert out_ab[0].id == out_ba[0].id == "zoo_b2"
+
+
+def test_dedupe_merges_dead_classes_on_collision_zoo_loses():
+    # zoo hypothesis is tagged dead_classes; the non-zoo duplicate is untagged
+    # and wins selection on the source axis. The ban tag must not be dropped.
+    zoo = Hypothesis(
+        "zoo_x", "close.shift(5)", SOURCE_ZOO,
+        dead_classes=("intraday_ohlcv_price_derived",),
+    )
+    llm = Hypothesis("llm_x", "close.shift(5)", SOURCE_LLM)      # untagged, wins on source axis
+    out = dedupe([zoo, llm])
+    assert len(out) == 1
+    winner = out[0]
+    assert winner.id == "llm_x"  # non-zoo still wins selection
+    assert winner.dead_classes == ("intraday_ohlcv_price_derived",)  # tag preserved via union
+
+
+def test_dedupe_merges_dead_classes_partial_overlap():
+    a = Hypothesis("a1", "close.shift(5)", SOURCE_LLM, dead_classes=("class_x",))
+    b = Hypothesis("b1", "close.shift(5)", SOURCE_LLM, dead_classes=("class_y", "class_x"))
+    out = dedupe([a, b])
+    assert len(out) == 1
+    assert set(out[0].dead_classes) == {"class_x", "class_y"}
+
+
+def test_dedupe_preserves_fingerprint_after_dead_classes_merge():
+    zoo = Hypothesis("zoo_y", "close.shift(7)", SOURCE_ZOO, dead_classes=("tag1",))
+    llm = Hypothesis("llm_y", "close.shift(7)", SOURCE_LLM)
+    out = dedupe([zoo, llm])
+    assert len(out) == 1
+    assert out[0].fingerprint == llm.fingerprint  # replace() didn't corrupt the precomputed fingerprint
