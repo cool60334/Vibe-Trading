@@ -10,12 +10,16 @@ DSR trial distribution restricted to homogeneous same-interval ledger trials.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from research.lib.deflated_sharpe import deflated_sharpe
+from research.lib.deflated_sharpe import deflated_sharpe, bars_per_year
+from research.lib.factor_metrics import add_forward_returns
 from research.lib.research_ledger import read_events
+from research.lib.timeframe import bars_per_hour
 
 
 def factor_to_weights(factor: pd.Series, span: int = 168) -> pd.Series:
@@ -144,3 +148,76 @@ def foundry_dsr(best_sr_per_bar: float, symbol: str, interval: str,
     # correction (otherwise N is short by 1 and the current sample is missing).
     trials.append(best_sr_per_bar)
     return deflated_sharpe(best_sr_per_bar, trials, T=T)
+
+
+@dataclass(frozen=True)
+class GateConfig:
+    interval: str                       # "1H" / "1D"
+    horizon_h: int                      # forward-return horizon (hours)
+    entry_lag: int = 1                  # bars to shift the factor before eval (C-7)
+    cost_frac: float = 0.0006           # per-unit-turnover cost (taker+slippage)
+    gross_ic_min: float = 0.03
+    dsr_min: float = 0.5
+    redundant_abs_spearman: float = 0.7
+    max_turnover: float = 0.5           # mean per-bar turnover ceiling (untradeable above)
+
+
+@dataclass(frozen=True)
+class GatekeeperResult:
+    passed: bool
+    metrics: dict
+    rejection_reason: str = ""
+
+
+def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
+             manifests_dir, cfg: GateConfig) -> GatekeeperResult:
+    factor = factor.shift(cfg.entry_lag)               # agy #6c: gate self-enforces lag
+    ret_col = f"ret_{cfg.horizon_h}h"
+    if cfg.interval == "1D":
+        # Task 7 deviation (see self-review): research.lib.timeframe.bars_per_hour
+        # only supports 15m/30m/1H by contract (SUPPORTED_INTERVALS is asserted
+        # == {"15m","30m","1H"} in test_timeframe.py) — it cannot represent a 1D
+        # candle's 1/24 bars-per-hour without breaking that contract, so
+        # add_forward_returns(interval="1D") raises ValueError. 1D forward
+        # returns/horizon-bars are computed directly here instead; the formula
+        # matches add_forward_returns' internal one exactly for the 1H/sub-hour
+        # path below.
+        if cfg.horizon_h % 24 != 0:
+            raise ValueError(f"horizon_h={cfg.horizon_h} must be a multiple of 24 for a 1D interval")
+        horizon_bars = cfg.horizon_h // 24
+        fwd = ohlcv["close"].shift(-horizon_bars) / ohlcv["close"] - 1
+    else:
+        fwd = add_forward_returns(ohlcv[["close"]], "close", [cfg.horizon_h],
+                                  interval=cfg.interval)[ret_col]
+        horizon_bars = cfg.horizon_h * bars_per_hour(cfg.interval)
+    ret1 = ohlcv["close"].pct_change()
+    weights = factor_to_weights(factor)
+    mean_turnover = float(turnover_of(weights).fillna(0.0).mean())
+    sr_bar = net_ir(weights, ret1, cfg.cost_frac)
+    nearest, absrho = nearest_correlate(factor, existing_and_dead)
+
+    metrics = {
+        "gross_ic": gross_ic(factor, fwd),
+        "ic_nonoverlap": nonoverlap_ic(  # agy-3 #5-2: horizon_h is HOURS -> bars
+            factor, fwd, horizon_bars=max(1, horizon_bars)),
+        "ir": sr_bar,
+        "dsr": foundry_dsr(sr_bar if np.isfinite(sr_bar) else 0.0, symbol,
+                           cfg.interval, manifests_dir, T=bars_per_year(cfg.interval)),
+        "pbo": None,                    # reserved; CPCV-based PBO is a later task
+        "turnover": mean_turnover,
+        "n_samples": int(pd.concat([factor, fwd], axis=1).dropna().shape[0]),
+        "regime_ic": regime_ic(factor, fwd, daily_regime),
+        "yearly_ic": yearly_ic(factor, fwd),
+        "nearest_factor": nearest,
+        "nearest_abs_spearman": absrho,
+    }
+    gic = metrics["gross_ic"]
+    if absrho >= cfg.redundant_abs_spearman:
+        return GatekeeperResult(False, metrics, f"redundant: abs_spearman {absrho:.2f} vs {nearest}")
+    if mean_turnover > cfg.max_turnover:
+        return GatekeeperResult(False, metrics, f"turnover {mean_turnover:.2f} > {cfg.max_turnover}")
+    if np.isnan(gic) or abs(gic) < cfg.gross_ic_min:
+        return GatekeeperResult(False, metrics, f"weak gross_ic {gic:.4f} < {cfg.gross_ic_min}")
+    if metrics["dsr"] < cfg.dsr_min:
+        return GatekeeperResult(False, metrics, f"DSR {metrics['dsr']:.2f} < {cfg.dsr_min}")
+    return GatekeeperResult(True, metrics, "")

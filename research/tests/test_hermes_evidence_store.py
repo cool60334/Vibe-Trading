@@ -4,11 +4,11 @@ from research.hermes.evidence_card import EvidenceCard, VERDICT_CANDIDATE
 from research.hermes.evidence_store import upsert_card, load_cards, EVIDENCE_SUBDIR
 
 
-def _card(factor_id, net_ic=0.03):
+def _card(factor_id, gross_ic=0.03):
     return EvidenceCard(
         factor_id=factor_id, symbol="eth", source="llm", code_sha256="b" * 64,
         generated_at="2026-07-08T00:00:00+00:00", trial_step=1, interval="1H",
-        formula="f", rationale="r", net_ic=net_ic, ic_nonoverlap=0.02, ir=0.4,
+        formula="f", rationale="r", gross_ic=gross_ic, ic_nonoverlap=0.02, ir=0.4,
         dsr=0.1, pbo=0.3, regime_ic={}, yearly_ic={}, nearest_factor=None,
         nearest_abs_spearman=None, verdict=VERDICT_CANDIDATE, death_reason=None,
     )
@@ -17,10 +17,10 @@ def _card(factor_id, net_ic=0.03):
 def test_upsert_appends_then_updates_by_factor_id(tmp_path):
     upsert_card(_card("a"), "eth", manifests_dir=tmp_path)
     upsert_card(_card("b"), "eth", manifests_dir=tmp_path)
-    upsert_card(_card("a", net_ic=0.099), "eth", manifests_dir=tmp_path)  # update a
+    upsert_card(_card("a", gross_ic=0.099), "eth", manifests_dir=tmp_path)  # update a
     cards = load_cards("eth", manifests_dir=tmp_path)
     assert {c.factor_id for c in cards} == {"a", "b"}                     # no dup
-    assert next(c for c in cards if c.factor_id == "a").net_ic == 0.099   # updated
+    assert next(c for c in cards if c.factor_id == "a").gross_ic == 0.099   # updated
 
 
 def test_written_json_is_valid_and_under_evidence_subdir(tmp_path):

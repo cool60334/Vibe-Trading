@@ -13,7 +13,7 @@ def _seed(tmp_path, verdict=VERDICT_CANDIDATE):
     card = EvidenceCard(
         factor_id="mom5", symbol="eth", source="llm", code_sha256="c" * 64,
         generated_at="2026-07-08T00:00:00+00:00", trial_step=1, interval="1H",
-        formula="f", rationale="r", net_ic=0.03, ic_nonoverlap=0.02, ir=0.4,
+        formula="f", rationale="r", gross_ic=0.03, ic_nonoverlap=0.02, ir=0.4,
         dsr=0.1, pbo=0.3, regime_ic={}, yearly_ic={}, nearest_factor=None,
         nearest_abs_spearman=None,
         verdict=verdict, death_reason=("dead" if verdict == VERDICT_GRAVEYARD else None),

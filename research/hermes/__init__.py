@@ -9,6 +9,7 @@ from research.hermes.evidence_card import (
     EvidenceCard, CardValidationError, VERDICT_CANDIDATE, VERDICT_GRAVEYARD,
 )
 from research.hermes.evidence_store import upsert_card, load_cards
+from research.hermes.gatekeeper import evaluate, GateConfig, GatekeeperResult
 
 # NOTE: research.hermes.promote is deliberately NOT imported/exported here.
 # promote_candidate is the only Foundry path that writes production features;
@@ -25,4 +26,5 @@ __all__ = [
     "DockerSandbox", "SandboxExecutor", "SandboxError", "is_docker_available",
     "EvidenceCard", "CardValidationError", "VERDICT_CANDIDATE", "VERDICT_GRAVEYARD",
     "upsert_card", "load_cards",
+    "evaluate", "GateConfig", "GatekeeperResult",
 ]

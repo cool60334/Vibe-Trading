@@ -16,13 +16,13 @@ from research.hermes.errors import HermesGuardError
 VERDICT_CANDIDATE = "candidate"
 VERDICT_GRAVEYARD = "graveyard"
 _VERDICTS = {VERDICT_CANDIDATE, VERDICT_GRAVEYARD}
-# metrics a promotable candidate must carry: net_ic/ic_nonoverlap/pbo are the
+# metrics a promotable candidate must carry: gross_ic/ic_nonoverlap/pbo are the
 # quality gate itself and must be present *and finite* (None or nan/inf =>
 # rejected at construction -- a candidate can't clear the gate on an undefined
 # number). ir/dsr are excluded from this gate: they may legitimately be
 # non-finite (undefined for low trial counts) without blocking candidacy, and
 # are allowed to sanitize to null on to_dict() without issue.
-_CORE_METRICS = ("net_ic", "ic_nonoverlap", "pbo")
+_CORE_METRICS = ("gross_ic", "ic_nonoverlap", "pbo")
 
 
 class CardValidationError(HermesGuardError, ValueError):
@@ -57,12 +57,12 @@ class EvidenceCard:
     verdict: str
     # metrics + context (default None => forward-compatible: an older card
     # missing a later-added field still loads via from_dict, agy #7)
-    net_ic: Optional[float] = None
+    gross_ic: Optional[float] = None
     ic_nonoverlap: Optional[float] = None
     ir: Optional[float] = None
     dsr: Optional[float] = None
     pbo: Optional[float] = None
-    turnover: Optional[float] = None        # raw turnover behind net_ic (agy #6)
+    turnover: Optional[float] = None        # raw turnover behind gross_ic (agy #6)
     n_samples: Optional[int] = None         # sample count behind the IC (agy #6)
     regime_ic: dict = field(default_factory=dict)   # {"bull":..,"bear":..,"chop":..}
     yearly_ic: dict = field(default_factory=dict)   # {"2022":.., ...}

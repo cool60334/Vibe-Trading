@@ -9,7 +9,7 @@ def _candidate_kwargs(**over):
         factor_id="eth_mom5_ll01", symbol="eth", source="llm",
         code_sha256="a" * 64, generated_at="2026-07-08T00:00:00+00:00", trial_step=1,
         interval="1H", formula="close.pct_change(5)", rationale="5-bar momentum",
-        net_ic=0.031, ic_nonoverlap=0.028, ir=0.42, dsr=0.11, pbo=0.34,
+        gross_ic=0.031, ic_nonoverlap=0.028, ir=0.42, dsr=0.11, pbo=0.34,
         turnover=0.12, n_samples=8760,
         regime_ic={"bull": 0.05, "bear": 0.01, "chop": 0.02},
         yearly_ic={"2022": 0.04, "2023": 0.02},
@@ -63,7 +63,7 @@ def test_graveyard_card_requires_death_reason():
 
 def test_candidate_card_requires_core_metrics():
     with pytest.raises(CardValidationError):
-        EvidenceCard(**_candidate_kwargs(net_ic=None))
+        EvidenceCard(**_candidate_kwargs(gross_ic=None))
 
 
 def test_candidate_card_requires_ic_nonoverlap():
@@ -77,10 +77,10 @@ def test_candidate_card_requires_pbo():
 
 
 def test_candidate_card_rejects_non_finite_core_metric_at_construction():
-    # net_ic is a quality-gate metric: nan must be rejected immediately, not
+    # gross_ic is a quality-gate metric: nan must be rejected immediately, not
     # silently accepted then blow up later on from_dict() reload.
     with pytest.raises(CardValidationError):
-        EvidenceCard(**_candidate_kwargs(net_ic=float("nan")))
+        EvidenceCard(**_candidate_kwargs(gross_ic=float("nan")))
 
 
 def test_unknown_verdict_rejected():

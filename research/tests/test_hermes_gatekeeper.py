@@ -140,3 +140,55 @@ def test_dsr_safe_default_when_too_few(tmp_path, monkeypatch):
     from research.hermes import gatekeeper
     monkeypatch.setattr(gatekeeper, "read_events", lambda md: [])
     assert gatekeeper.foundry_dsr(0.004, "eth", "1H", tmp_path, 8760) == 1.0
+
+
+def test_evaluate_enforces_lag_internally(tmp_path, monkeypatch):
+    from research.hermes import gatekeeper
+    from research.hermes.gatekeeper import evaluate, GateConfig
+    n = 400
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    # factor == next-bar return (look-ahead if NOT lagged). Internal shift must
+    # break this perfect same-bar coupling so gross_ic is not a spurious ~1.
+    close = pd.Series(100 + np.cumsum(np.random.default_rng(0).normal(size=n)), index=idx)
+    ret1 = close.pct_change().shift(-1)
+    factor = ret1.copy()                                   # peeks unless lagged
+    ohlcv = pd.DataFrame({"close": close}, index=idx)
+    monkeypatch.setattr(gatekeeper, "read_events", lambda md: [])
+    res = evaluate(factor, ohlcv, daily_regime=pd.Series("bull", index=idx),
+                   existing_and_dead=pd.DataFrame(index=idx), symbol="eth",
+                   manifests_dir=tmp_path, cfg=GateConfig(interval="1D", horizon_h=24))
+    assert abs(res.metrics["gross_ic"]) < 0.99            # lag broke the peek
+
+
+def test_evaluate_rejects_high_turnover(tmp_path, monkeypatch):
+    from research.hermes import gatekeeper
+    from research.hermes.gatekeeper import evaluate, GateConfig
+    n = 400
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    close = pd.Series(100 + np.cumsum(np.random.default_rng(1).normal(size=n)), index=idx)
+    factor = pd.Series(np.random.default_rng(2).normal(size=n), index=idx)   # noisy -> churn
+    ohlcv = pd.DataFrame({"close": close}, index=idx)
+    monkeypatch.setattr(gatekeeper, "read_events", lambda md: [])
+    res = evaluate(factor, ohlcv, daily_regime=pd.Series("bull", index=idx),
+                   existing_and_dead=pd.DataFrame(index=idx), symbol="eth",
+                   manifests_dir=tmp_path,
+                   cfg=GateConfig(interval="1D", horizon_h=24, max_turnover=0.01))
+    assert res.passed is False and "turnover" in res.rejection_reason.lower()
+
+
+def test_evaluate_metrics_match_card_fields(tmp_path, monkeypatch):
+    from research.hermes import gatekeeper
+    from research.hermes.gatekeeper import evaluate, GateConfig
+    n = 400
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    close = pd.Series(100 + np.cumsum(np.random.default_rng(3).normal(size=n)), index=idx)
+    factor = pd.Series(np.random.default_rng(4).normal(size=n), index=idx)
+    ohlcv = pd.DataFrame({"close": close}, index=idx)
+    monkeypatch.setattr(gatekeeper, "read_events", lambda md: [])
+    res = evaluate(factor, ohlcv, daily_regime=pd.Series("bull", index=idx),
+                   existing_and_dead=pd.DataFrame(index=idx), symbol="eth",
+                   manifests_dir=tmp_path, cfg=GateConfig(interval="1D", horizon_h=24))
+    for k in ("gross_ic", "ic_nonoverlap", "ir", "dsr", "pbo", "turnover",
+              "n_samples", "regime_ic", "yearly_ic", "nearest_factor",
+              "nearest_abs_spearman"):
+        assert k in res.metrics
