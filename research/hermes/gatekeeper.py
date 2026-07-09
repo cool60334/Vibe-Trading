@@ -50,9 +50,12 @@ def net_ir(weights: pd.Series, ret_1period: pd.Series, cost_frac: float) -> floa
     """Per-bar IR/Sharpe of the net return of a 1-period rebalanced position.
 
     strat_ret_t = weights_t * ret1_{t+1} - turnover_t * cost_frac.
-    ret_1period MUST be a single-bar forward return (agy #1c: h-period overlap
-    would autocorrelate and inflate Sharpe). Cost is paid when the position is
-    set at t; the position earns the next bar's return."""
+    ret_1period MUST be a TRAILING single-bar return (e.g. close.pct_change(),
+    NOT pre-shifted forward) — this function shifts it forward internally.
+    Passing an already-forward return double-shifts and misaligns by one bar.
+    A single-bar series also avoids h-period overlap (agy #1c: overlap would
+    autocorrelate and inflate Sharpe). Cost is paid when the position is set
+    at t; the position earns the next bar's return."""
     fwd1 = ret_1period.shift(-1)                       # weights_t earn ret_{t+1}
     tau = turnover_of(weights)
     strat = (weights * fwd1) - tau.fillna(0.0) * cost_frac
