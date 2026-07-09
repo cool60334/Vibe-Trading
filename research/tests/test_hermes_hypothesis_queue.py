@@ -145,3 +145,50 @@ def test_graveyard_fingerprints_real_evidence_store_round_trip(tmp_path):
     fps = _graveyard_fingerprints(symbol, tmp_path)
     assert string_fingerprint(dead_formula) in fps
     assert string_fingerprint(alive_formula) not in fps
+
+
+def test_zoo_adapter_reads_meta_and_maps_dead_class(tmp_path):
+    from research.hermes.hypothesis_queue import hypotheses_from_zoo
+    zoo = tmp_path / "zoo"; zoo.mkdir()
+    (zoo / "micro.py").write_text(
+        "__alpha_meta__ = {'id': 'gtja_micro', 'theme': ['microstructure'],\n"
+        " 'formula_latex': 'foo'}\n"
+        "raise RuntimeError('compute must NOT run')\n", encoding="utf-8")
+    (zoo / "mom.py").write_text(
+        "__alpha_meta__ = {'id': 'q_roc5', 'theme': ['momentum'], 'formula_latex': 'bar'}\n",
+        encoding="utf-8")
+    hyps = {h.id: h for h in hypotheses_from_zoo(zoo)}
+    assert set(hyps) == {"zoo_gtja_micro", "zoo_q_roc5"}
+    assert "intraday_ohlcv_price_derived" in hyps["zoo_gtja_micro"].dead_classes  # theme mapped
+    assert hyps["zoo_q_roc5"].dead_classes == ()
+
+
+def test_zoo_adapter_real_zoo_directory_sanity():
+    """Regression guard on the real 452+ alpha zoo (agent/src/factors/zoo): the
+    naive non-greedy-regex approach to meta extraction silently truncates on
+    academic/*.py files whose formula_latex contains literal braces (e.g.
+    r'\\mathrm{zscore}_{x}...' in carhart_mom.py), so this exercises the
+    ast-based extractor against real files, not just the synthetic fixture
+    above."""
+    from pathlib import Path as _Path
+
+    from research.hermes.hypothesis import SOURCE_ZOO
+    from research.hermes.hypothesis_queue import hypotheses_from_zoo
+
+    repo_root = _Path(__file__).resolve().parents[2]
+    zoo_dir = repo_root / "agent" / "src" / "factors" / "zoo"
+    assert zoo_dir.is_dir(), f"real zoo dir missing at {zoo_dir}"
+
+    hyps = hypotheses_from_zoo(zoo_dir)
+    assert len(hyps) >= 450, f"expected ~450+ zoo hypotheses, got {len(hyps)}"
+    assert all(h.source == SOURCE_ZOO for h in hyps)
+    assert len({h.id for h in hyps}) == len(hyps)  # ids unique
+
+    # the LaTeX-brace file that breaks a non-greedy regex must survive intact,
+    # not get truncated at the first literal '}' inside \mathrm{zscore}...
+    carhart = next(h for h in hyps if h.id == "zoo_academic_carhart_mom")
+    assert r"\mathrm{zscore}" in carhart.description
+    assert carhart.description.count("close") >= 2  # both close_t terms present, not truncated
+
+    # at least one real gtja191 microstructure-themed factor got dead-class tagged
+    assert any("intraday_ohlcv_price_derived" in h.dead_classes for h in hyps)

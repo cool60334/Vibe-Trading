@@ -5,7 +5,9 @@ literally-repeated or already-buried/dead-class ideas. Numerical/semantic dedup
 is 1A (nearest_correlate)."""
 from __future__ import annotations
 
+import ast
 from dataclasses import replace
+from pathlib import Path
 
 from research.hermes.evidence_card import VERDICT_GRAVEYARD
 from research.hermes.evidence_store import load_cards
@@ -82,4 +84,63 @@ def filter_static(hypotheses: list[Hypothesis], symbol: str, manifests_dir) -> l
         if set(h.dead_classes) & DEAD_CLASSES:
             continue
         out.append(h)
+    return out
+
+
+# zoo theme -> constitution dead class (agy 4)
+_THEME_DEAD_CLASS = {"microstructure": "intraday_ohlcv_price_derived"}
+
+
+def _dead_classes_for_themes(themes) -> tuple:
+    return tuple(sorted({_THEME_DEAD_CLASS[t] for t in (themes or []) if t in _THEME_DEAD_CLASS}))
+
+
+def _extract_alpha_meta(source: str) -> dict | None:
+    """Parse `source` and pull the module-level `__alpha_meta__ = {...}` dict
+    without executing any code (agy 2c/4).
+
+    Uses ast.parse + a module-level Assign walk (not a brace-matching regex):
+    zoo files under agent/src/factors/zoo/academic/*.py embed raw LaTeX with
+    literal `{`/`}` inside formula_latex strings (e.g. r'\\mathrm{zscore}_{x}...'),
+    which breaks a non-greedy `\\{.*?\\}` regex — it stops at the first `}` it
+    finds, truncating the dict literal mid-string and raising SyntaxError from
+    ast.literal_eval on the truncated text. Walking the real AST and
+    literal-evaling only the matched assignment's value subtree handles
+    arbitrary nesting/braces-in-strings correctly, and never executes the
+    module body (parsing is not executing)."""
+    try:
+        tree = ast.parse(source, mode="exec")
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "__alpha_meta__" for t in node.targets):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, TypeError):
+            return None
+        return value if isinstance(value, dict) else None
+    return None
+
+
+def hypotheses_from_zoo(zoo_dir) -> list[Hypothesis]:
+    """Adapter: read `__alpha_meta__` from every zoo factor file (452+ under
+    agent/src/factors/zoo/**) without executing `compute()` or any module-level
+    side effects, and map each factor's theme(s) to constitution dead classes."""
+    out: list = []
+    for path in sorted(Path(zoo_dir).rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "__alpha_meta__" not in text:          # cheap skip before parsing
+            continue
+        meta = _extract_alpha_meta(text)
+        if not meta or "id" not in meta:
+            continue
+        out.append(Hypothesis(
+            id=f"zoo_{meta['id']}",
+            description=str(meta.get("formula_latex", meta["id"])),
+            source=SOURCE_ZOO,
+            dead_classes=_dead_classes_for_themes(meta.get("theme")),
+        ))
     return out
