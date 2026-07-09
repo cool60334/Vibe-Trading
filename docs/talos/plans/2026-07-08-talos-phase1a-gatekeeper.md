@@ -575,6 +575,7 @@ def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
 
 **已知界線：**
 - **PBO 暫 None**（schema slot 留）——需 CPCV（`research/lib/cpcv.py`），接線較重，拆後續增量，不阻塞 evaluate。
+  - **⚠️ 最終review發現的跨階段裂縫**：`EvidenceCard._CORE_METRICS`（`evidence_card.py`）含 `pbo`，`__post_init__` 對 `verdict=CANDIDATE` 強制核心指標 non-None/finite。`evaluate()` 目前恆回 `pbo=None`。結果：即使 `passed=True`，1D orchestrator 想把它轉成 CANDIDATE `EvidenceCard` 時會在建構期被 `CardValidationError` 擋下。1D orchestrator task 必須先做以下其一：①先出 CPCV/PBO 真實接線，②或把 `pbo` 從 `_CORE_METRICS` 移除（core-metric 定義改為 gross_ic/ic_nonoverlap only）。此裂縫不阻塞 1A（`evaluate()` 本身不建卡），但下一階段規劃必須排進去，別讓 orchestrator 現場撞到才發現。
 - **P2 依賴 1D 契約**：`foundry_dsr` 只讀；每 trial 記 `factor_trial` 事件（含 `sr_per_bar`+`interval`）由 1D orchestrator 寫。測試用 monkeypatch。
 - **Net IR 為 per-bar**，未年化；DSR 內部亦 per-bar，一致。
 
