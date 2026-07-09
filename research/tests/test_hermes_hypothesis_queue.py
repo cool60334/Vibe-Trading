@@ -93,3 +93,55 @@ def test_dead_classes_constant_covers_constitution():
     from research.hermes.hypothesis_queue import DEAD_CLASSES
     assert "intraday_ohlcv_price_derived" in DEAD_CLASSES
     assert "binance_orderflow" in DEAD_CLASSES
+
+
+def test_graveyard_fingerprints_real_evidence_store_round_trip(tmp_path):
+    """Real integration: write cards via the real evidence_store.upsert_card,
+    read them back through the real (unmocked) _graveyard_fingerprints, and
+    confirm graveyard formulas are fingerprinted while non-graveyard formulas
+    are excluded. The only other test covering _graveyard_fingerprints
+    monkeypatches it away entirely, leaving the real evidence-store
+    read/verdict-filter/formula round-trip with zero coverage."""
+    from research.hermes.evidence_card import EvidenceCard, VERDICT_GRAVEYARD, VERDICT_CANDIDATE
+    from research.hermes.evidence_store import upsert_card
+    from research.hermes.hypothesis import string_fingerprint
+    from research.hermes.hypothesis_queue import _graveyard_fingerprints
+
+    symbol = "eth"
+    dead_formula = "close / close.shift(3) - 1"
+    alive_formula = "volume / volume.shift(3) - 1"
+
+    dead_card = EvidenceCard(
+        factor_id="dead_1",
+        symbol=symbol,
+        source="zoo",
+        code_sha256="a" * 64,
+        generated_at="2026-07-01T00:00:00Z",
+        trial_step=1,
+        interval="1H",
+        formula=dead_formula,
+        rationale="buried in a prior trial",
+        verdict=VERDICT_GRAVEYARD,
+        death_reason="ic below gate",
+    )
+    alive_card = EvidenceCard(
+        factor_id="alive_1",
+        symbol=symbol,
+        source="zoo",
+        code_sha256="b" * 64,
+        generated_at="2026-07-01T00:00:00Z",
+        trial_step=1,
+        interval="1H",
+        formula=alive_formula,
+        rationale="promotable candidate",
+        verdict=VERDICT_CANDIDATE,
+        gross_ic=0.05,
+        ic_nonoverlap=0.04,
+        pbo=0.2,
+    )
+    upsert_card(dead_card, symbol, tmp_path)
+    upsert_card(alive_card, symbol, tmp_path)
+
+    fps = _graveyard_fingerprints(symbol, tmp_path)
+    assert string_fingerprint(dead_formula) in fps
+    assert string_fingerprint(alive_formula) not in fps
