@@ -14,6 +14,9 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+from research.lib.deflated_sharpe import deflated_sharpe
+from research.lib.research_ledger import read_events
+
 
 def factor_to_weights(factor: pd.Series, span: int = 168) -> pd.Series:
     """Map factor -> target weights in [-1,1] via causal EMA z-score.
@@ -120,3 +123,24 @@ def nearest_correlate(factor: pd.Series, others: pd.DataFrame) -> tuple:
     abs_corr = corr.abs()
     top = abs_corr.idxmax()
     return (str(top), float(abs_corr.loc[top]))
+
+
+def foundry_dsr(best_sr_per_bar: float, symbol: str, interval: str,
+                manifests_dir, T: int) -> float:
+    """Deflated Sharpe using the symbol's HISTORICAL trials at the SAME interval
+    (agy #3/P2): count comes from the ledger (multiple-testing debt persists
+    across nights), but the trial SR distribution is kept homogeneous — mixing
+    different-T / different-interval trials breaks the DSR variance math."""
+    trials = [
+        e["detail"]["sr_per_bar"]
+        for e in read_events(manifests_dir)
+        if e.get("kind") == "factor_trial" and e.get("symbol") == symbol
+        and isinstance(e.get("detail"), dict)
+        and e["detail"].get("interval") == interval
+        and "sr_per_bar" in e["detail"]
+    ]
+    # agy-3 #3: the current factor is NOT yet in the ledger; include it so the
+    # trial population N and its variance are complete for the multiple-testing
+    # correction (otherwise N is short by 1 and the current sample is missing).
+    trials.append(best_sr_per_bar)
+    return deflated_sharpe(best_sr_per_bar, trials, T=T)

@@ -117,3 +117,26 @@ def test_nearest_correlate_empty_matrix():
     idx = pd.date_range("2024-01-01", periods=50, freq="1h")
     base = pd.Series(np.arange(50, dtype="float64"), index=idx)
     assert nearest_correlate(base, pd.DataFrame(index=idx)) == (None, 0.0)
+
+
+def test_dsr_uses_only_same_interval_homogeneous_trials(tmp_path, monkeypatch):
+    from research.hermes import gatekeeper
+    events = (
+        [{"kind": "factor_trial", "symbol": "eth",
+          "detail": {"sr_per_bar": s, "interval": "1H"}} for s in [0.001, 0.002, 0.0015, 0.003]]
+        + [{"kind": "factor_trial", "symbol": "eth",       # WRONG interval — must be excluded
+            "detail": {"sr_per_bar": 9.9, "interval": "1D"}}]
+    )
+    monkeypatch.setattr(gatekeeper, "read_events", lambda md: events)
+    dsr = gatekeeper.foundry_dsr(0.004, "eth", "1H", manifests_dir=tmp_path, T=8760)
+    assert 0.0 <= dsr <= 1.0
+    # the 1D outlier (9.9) would blow up variance if wrongly included; exclude it
+    monkeypatch.setattr(gatekeeper, "read_events",
+                        lambda md: [e for e in events if e["detail"]["interval"] == "1H"])
+    assert gatekeeper.foundry_dsr(0.004, "eth", "1H", tmp_path, 8760) == pytest.approx(dsr, abs=1e-12)
+
+
+def test_dsr_safe_default_when_too_few(tmp_path, monkeypatch):
+    from research.hermes import gatekeeper
+    monkeypatch.setattr(gatekeeper, "read_events", lambda md: [])
+    assert gatekeeper.foundry_dsr(0.004, "eth", "1H", tmp_path, 8760) == 1.0
