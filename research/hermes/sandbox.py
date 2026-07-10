@@ -15,6 +15,7 @@ runner `exec`s — it cannot write anywhere but /out.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -57,6 +58,26 @@ class SandboxExecutor(ABC):
         ...
 
 
+_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+
+
+def _assert_image_pinned(image: str, allow_unpinned: bool) -> None:
+    """Refuse a mutable tag: the image must be pinned by digest.
+
+    A `:tag` can be re-pushed under you between the run that vetted a factor and
+    the run that is supposed to reproduce it, so a factor's evidence card would
+    describe code that no longer runs the same way. Callers that knowingly point
+    at a locally-built test image pass allow_unpinned=True — an explicit, visible
+    opt-out rather than a silent default.
+    """
+    if allow_unpinned or _DIGEST_RE.search(image):
+        return
+    raise SandboxError(
+        f"sandbox image {image!r} is not pinned by digest; use "
+        f"'name@sha256:<64-hex>' (or pass allow_unpinned=True for a local test image)"
+    )
+
+
 class DockerSandbox(SandboxExecutor):
     """Hardened container executor with AST gate + resource limits.
 
@@ -70,8 +91,9 @@ class DockerSandbox(SandboxExecutor):
     raising SandboxError.
     """
     def __init__(self, image: str = DEFAULT_IMAGE, memory: str = "1g",
-                 cpus: str = "1", timeout_s: int = 120):
+                 cpus: str = "1", timeout_s: int = 120, allow_unpinned: bool = False):
         self.image, self.memory, self.cpus, self.timeout_s = image, memory, cpus, timeout_s
+        self.allow_unpinned = allow_unpinned
 
     def _build_command(
         self,
@@ -123,6 +145,7 @@ class DockerSandbox(SandboxExecutor):
 
     def run(self, source: str, input_parquet, output_dir) -> str:
         check_source(source)  # layer-0 gate FIRST: untrusted source must never reach a subprocess call, even if docker itself is unavailable/misconfigured
+        _assert_image_pinned(self.image, self.allow_unpinned)
         if not is_docker_available():
             raise SandboxError("docker daemon unavailable; cannot run sandboxed ETL")
 

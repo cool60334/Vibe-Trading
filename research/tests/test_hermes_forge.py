@@ -184,3 +184,43 @@ def test_forge_buries_cleanly_when_run_sandbox_returns_non_series():
     res = forge(Hypothesis("h", "x", SOURCE_LLM), GoodLLM(), not_a_series, panel, max_retries=2)
     assert not res.success and res.death_reason is not None
     assert "index" in res.death_reason.lower() or "series" in res.death_reason.lower()
+
+
+# ── budget circuit breaker: must trip INSIDE the repair loop ────────────────
+#
+# agy pre-flight: the orchestrator's early-stop only fires between hypotheses.
+# A hypothesis whose code keeps failing burns one LLM call per retry, so a
+# nightly run can exhaust an API quota long before early-stop is consulted.
+# The budget is charged per llm.complete() and, once exhausted, propagates like
+# SandboxError -- it is infrastructure exhaustion, not a repairable code error.
+
+def test_forge_charges_budget_per_llm_call():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge, ForgeBudget
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    class GoodLLM:
+        def complete(self, p): return "```python\ndef compute(df):\n    return df['close'].pct_change(5)\n```"
+    run = lambda code, pnl: pnl["close"].pct_change(5)
+    b = ForgeBudget(max_llm_calls=10)
+    forge(Hypothesis("h", "x", SOURCE_LLM), GoodLLM(), run, panel, max_retries=3, budget=b)
+    assert b.used == 1                                   # one call, one charge
+
+
+def test_forge_budget_exhaustion_propagates_and_is_not_retried():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge, ForgeBudget, BudgetExhausted
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    calls = {"n": 0}
+    class BadLLM:
+        def complete(self, p):
+            calls["n"] += 1
+            return "```python\nimport socket\ndef compute(df):\n    return df['close']\n```"
+    run = lambda code, pnl: pnl["close"]
+    b = ForgeBudget(max_llm_calls=2)                      # trips on the 3rd attempt
+    with pytest.raises(BudgetExhausted):
+        forge(Hypothesis("h", "x", SOURCE_LLM), BadLLM(), run, panel, max_retries=5, budget=b)
+    assert calls["n"] == 2                               # never called a 3rd time

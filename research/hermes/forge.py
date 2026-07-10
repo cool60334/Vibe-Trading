@@ -14,6 +14,7 @@ from typing import Optional, Protocol
 import numpy as np
 import pandas as pd
 
+from research.hermes.errors import HermesGuardError
 from research.hermes.hypothesis import Hypothesis
 from research.hermes.pit import LookaheadError, PROBE_FROM_DEFAULT, PERTURB_GAP
 from research.hermes.sandbox import SandboxError
@@ -94,6 +95,37 @@ def pit_check_via_sandbox(code: str, panel, baseline, run, atol=1e-9, rtol=1e-9)
         raise LookaheadError(f"factor peeks into the future via sandbox: drift {drift:.3e}")
 
 
+class BudgetExhausted(HermesGuardError, RuntimeError):
+    """Raised when the run's LLM-call budget is spent.
+
+    Like SandboxError this is INFRASTRUCTURE exhaustion, not a repairable code
+    error: it must propagate out of the repair loop rather than burn a retry.
+    """
+
+
+@dataclass
+class ForgeBudget:
+    """Run-wide circuit breaker, charged once per llm.complete() call.
+
+    The orchestrator's early-stop only fires BETWEEN hypotheses; a hypothesis
+    whose code keeps failing spends one LLM call per retry, so a nightly sweep
+    can drain an API quota long before early-stop is ever consulted. Counting
+    calls (not tokens) is what the LLMCoder protocol can honestly report today:
+    `.complete(prompt) -> str` carries no usage. Swap in token/USD accounting
+    once the client reports it; the trip point stays here.
+    """
+    max_llm_calls: int = 60
+    used: int = 0
+
+    def charge_call(self) -> None:
+        if self.used >= self.max_llm_calls:
+            raise BudgetExhausted(
+                f"LLM call budget exhausted after {self.used} calls "
+                f"(max_llm_calls={self.max_llm_calls})"
+            )
+        self.used += 1
+
+
 @dataclass(frozen=True)
 class ForgeResult:
     """Outcome of a bounded forge() repair loop.
@@ -110,7 +142,8 @@ class ForgeResult:
     death_reason: Optional[str] = None
 
 
-def forge(hypothesis: Hypothesis, llm: LLMCoder, run_sandbox, panel, max_retries: int = 3) -> ForgeResult:
+def forge(hypothesis: Hypothesis, llm: LLMCoder, run_sandbox, panel,
+          max_retries: int = 3, budget: "ForgeBudget | None" = None) -> ForgeResult:
     """Bounded repair loop: generate -> sandbox-run -> index-contract check ->
     PIT-at-boundary check, retrying on code errors with prior-attempt feedback.
 
@@ -128,6 +161,8 @@ def forge(hypothesis: Hypothesis, llm: LLMCoder, run_sandbox, panel, max_retries
     prior_code, prior_error = None, None
     last_error, last_code = "no attempt ran", None
     for attempt in range(1, max_retries + 1):
+        if budget is not None:
+            budget.charge_call()          # trips BEFORE spending the call; propagates
         prompt = build_prompt(hypothesis, prior_code, prior_error)
         code = extract_code(llm.complete(prompt))
         last_code = code                             # agy 5c: keep even if this attempt fails

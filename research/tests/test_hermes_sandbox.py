@@ -42,7 +42,9 @@ def test_causal_feature_executes_in_container(tmp_path):
     src = "import pandas as pd\n\ndef compute(df):\n    return df['close'].pct_change(1)\n"
     inp = tmp_path / "in.parquet"
     pd.DataFrame({"close": [1.0, 2, 3]}).to_parquet(inp)
-    DockerSandbox(image=SANDBOX_TEST_IMAGE, memory="512m", timeout_s=90).run(
+    # local, hand-built test image: opting out of the digest pin is explicit
+    DockerSandbox(image=SANDBOX_TEST_IMAGE, memory="512m", timeout_s=90,
+                  allow_unpinned=True).run(
         src, input_parquet=str(inp), output_dir=str(tmp_path)
     )
     result = pd.read_parquet(tmp_path / "candidate.parquet")["candidate"].tolist()
@@ -112,3 +114,29 @@ def test_runner_template_execs_with_single_shared_namespace():
         "not (source, globals_dict, locals_dict), which triggers class-body "
         "scoping and hides sibling imports/helpers from compute()"
     )
+
+
+# ── image must be pinned by digest before it ever runs real LLM code ────────
+#
+# agy pre-flight: a mutable :tag can be re-pushed under you between the run that
+# vetted a factor and the run that reproduces it. Require image@sha256:... unless
+# a caller explicitly opts out (local test images).
+
+def test_run_refuses_unpinned_image(tmp_path, monkeypatch):
+    from research.hermes.sandbox import DockerSandbox, SandboxError
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    sb = DockerSandbox(image="python:3.11-slim", memory="256m", timeout_s=10)
+    safe = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
+    with pytest.raises(SandboxError, match="pinned|digest|sha256"):
+        sb.run(safe, input_parquet="x.parquet", output_dir=str(tmp_path))
+
+
+def test_allow_unpinned_opt_out_is_explicit(tmp_path, monkeypatch):
+    from research.hermes.sandbox import DockerSandbox
+    sb = DockerSandbox(image="talos-sandbox:test", allow_unpinned=True)
+    assert sb.allow_unpinned is True          # opting out must be a visible choice
+
+
+def test_digest_pinned_image_passes_validation():
+    from research.hermes.sandbox import DockerSandbox, _assert_image_pinned
+    _assert_image_pinned("python@sha256:" + "a" * 64, allow_unpinned=False)   # no raise

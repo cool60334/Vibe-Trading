@@ -20,7 +20,7 @@ import pandas as pd
 from research.hermes.candidate_store import CANDIDATE_SUBDIR, _candidate_path, write_candidate
 from research.hermes.evidence_card import EvidenceCard, VERDICT_CANDIDATE, VERDICT_GRAVEYARD
 from research.hermes.evidence_store import upsert_card
-from research.hermes.forge import forge
+from research.hermes.forge import forge, BudgetExhausted, ForgeBudget
 from research.hermes.gatekeeper import evaluate, forward_returns, gross_ic, GateConfig
 from research.hermes.hypothesis_queue import build_queue
 from research.hermes.sandbox import SandboxExecutor
@@ -113,7 +113,8 @@ def _merge_into_graveyard(symbol, manifests_dir, factor_id, series) -> None:
 
 
 def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
-                       symbol, manifests_dir, cfg, llm, run_sandbox) -> str:
+                       symbol, manifests_dir, cfg, llm, run_sandbox,
+                       forge_budget=None) -> str:
     """Run one hypothesis through forge -> evaluate -> ledger -> EvidenceCard,
     merging the outcome into the candidate or graveyard parquet.
 
@@ -132,7 +133,8 @@ def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
                        nearest_correlate dedup can compare against it) and its
                        card is upserted with verdict=graveyard.
     """
-    fr = forge(hyp, llm, run_sandbox, panel, max_retries=MAX_FORGE_RETRIES)
+    fr = forge(hyp, llm, run_sandbox, panel, max_retries=MAX_FORGE_RETRIES,
+               budget=forge_budget)
     code_sha = hashlib.sha256((fr.code or "").encode()).hexdigest()
     common = dict(factor_id=hyp.id, symbol=symbol, source=hyp.source,
                   code_sha256=code_sha, generated_at=_now(), trial_step=fr.attempts,
@@ -174,6 +176,10 @@ def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
 class Budget:
     max_factors: int = 50           # per-run cap on hypotheses tried
     early_stop_after: int = 8       # consecutive non-candidate outcomes -> stop the night
+    # early_stop_after only fires BETWEEN hypotheses; a single hypothesis whose
+    # code keeps failing spends one LLM call per retry. max_llm_calls is the
+    # run-wide circuit breaker charged inside forge()'s repair loop.
+    max_llm_calls: int = 60
 
 
 def should_early_stop(outcomes: list, budget: Budget) -> bool:
@@ -327,13 +333,25 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
     queue = build_queue(symbol=symbol, manifests_dir=manifests_dir, zoo_dir=zoo_dir,
                         llm_raw=[], derived_bases=derived_bases)[: budget.max_factors]
     outcomes: list = []
+    # One breaker for the whole sweep, charged inside forge()'s repair loop.
+    forge_budget = ForgeBudget(max_llm_calls=budget.max_llm_calls)
+    budget_exhausted = False
     # `existing` is captured once above and never updated per-iteration: a factor
     # that passes/fails mid-sweep is NOT deduped against by later factors in the
     # SAME run. Deliberate choice (plan Task 4) to keep the loop simple; same-night
     # self-dedup is deferred to the next run, which reloads candidates+graveyard.
     for hyp in queue:
-        outcomes.append(process_hypothesis(hyp, panel, ohlcv, daily_regime, existing,
-                                           symbol, manifests_dir, cfg, llm, run_sb))
+        try:
+            outcomes.append(process_hypothesis(hyp, panel, ohlcv, daily_regime, existing,
+                                               symbol, manifests_dir, cfg, llm, run_sb,
+                                               forge_budget=forge_budget))
+        except BudgetExhausted as exc:
+            # not a factor verdict: the run ran out of LLM calls. Stop cleanly and
+            # say so in the summary rather than crashing a nightly cron.
+            log.warning("%s: %s — stopping the sweep after %d hypotheses",
+                        symbol, exc, len(outcomes))
+            budget_exhausted = True
+            break
         if should_early_stop(outcomes, budget):
             break
     # seed all three outcome literals at 0 so callers/tests can always index
@@ -341,7 +359,11 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
     # even on a night where one outcome never occurred.
     summary = Counter({OUTCOME_FORGE_FAILED: 0, OUTCOME_CANDIDATE: 0, OUTCOME_REJECTED: 0})
     summary.update(outcomes)
-    return dict(summary)
+    summary = dict(summary)
+    summary["llm_calls_used"] = forge_budget.used
+    if budget_exhausted:
+        summary["budget_exhausted"] = True
+    return summary
 
 
 def _write_job_json(path, data: dict) -> None:

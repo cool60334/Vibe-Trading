@@ -528,3 +528,74 @@ def test_run_foundry_rejects_ohlcv_that_does_not_cover_features(tmp_path, monkey
         run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                     llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path,
                     oos_start=_TEST_OOS, ohlcv=ohlcv, run_sandbox=object())
+
+
+# ── the budget breaker must actually be CALLED from the production path ─────
+#
+# Five bugs this session were all "guard exists, guard is tested, guard is never
+# invoked". A circuit breaker that run_foundry forgets to pass to forge() is the
+# same bug wearing a new hat.
+
+def test_run_foundry_passes_a_budget_into_forge(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.forge import ForgeBudget
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = pd.date_range("2022-01-01", periods=100, freq="1D")
+    feats = pd.DataFrame({"funding_z": np.arange(100.0)}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: feats)
+    monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h1", "x", SOURCE_ZOO)])
+
+    seen = {}
+    def fake_forge(hyp, llm, run_sandbox, panel, max_retries=3, budget=None):
+        seen["budget"] = budget
+        from research.hermes.forge import ForgeResult
+        return ForgeResult(False, 1, code="c", death_reason="x")
+    monkeypatch.setattr(orch, "forge", fake_forge)
+    monkeypatch.setattr(orch, "append_event", lambda md, **kw: None)
+
+    run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                llm=object(), sandbox=object(), budget=Budget(max_llm_calls=7),
+                zoo_dir=tmp_path, oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx),
+                run_sandbox=object())
+    assert isinstance(seen["budget"], ForgeBudget)
+    assert seen["budget"].max_llm_calls == 7      # run-wide cap reached forge()
+
+
+def test_run_foundry_stops_the_sweep_when_budget_trips(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = pd.date_range("2022-01-01", periods=100, freq="1D")
+    feats = pd.DataFrame({"funding_z": np.arange(100.0)}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: feats)
+    monkeypatch.setattr(orch, "build_queue",
+                        lambda **k: [Hypothesis(f"h{i}", f"x{i}", SOURCE_ZOO) for i in range(10)])
+
+    tried = []
+    def spy(hyp, *a, **k):
+        tried.append(hyp.id)
+        return "forge_failed"
+    monkeypatch.setattr(orch, "process_hypothesis", spy)
+    # trip on the 3rd hypothesis
+    real_charge = None
+    def budget_tripping_process(hyp, *a, **k):
+        tried.append(hyp.id)
+        if len(tried) > 2:
+            from research.hermes.forge import BudgetExhausted
+            raise BudgetExhausted("LLM call budget exhausted after 2 calls")
+        return "forge_failed"
+    monkeypatch.setattr(orch, "process_hypothesis", budget_tripping_process)
+
+    summary = run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                          llm=object(), sandbox=object(), budget=Budget(max_factors=10),
+                          zoo_dir=tmp_path, oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx),
+                          run_sandbox=object())
+    assert len(tried) == 3                       # stopped, did not grind through all 10
+    assert summary.get("budget_exhausted") is True

@@ -4,7 +4,7 @@ from research.hermes.sandbox import DockerSandbox, SandboxError
 
 
 def test_timeout_kills_container_not_just_cli(monkeypatch):
-    sb = DockerSandbox(memory="256m", timeout_s=1)
+    sb = DockerSandbox(memory="256m", timeout_s=1, allow_unpinned=True)
     killed = {}
     # simulate the run exceeding its wall-clock budget
     def fake_run(cmd, **kw):
@@ -31,7 +31,7 @@ def test_real_container_is_gone_after_timeout(tmp_path, monkeypatch):
     import os, pandas as pd
     img = os.environ["TALOS_SANDBOX_TEST_IMAGE"]
     inp = tmp_path / "in.parquet"; pd.DataFrame({"close": [1.0, 2, 3]}).to_parquet(inp)
-    sb = DockerSandbox(image=img, memory="256m", timeout_s=2)
+    sb = DockerSandbox(image=img, memory="256m", timeout_s=2, allow_unpinned=True)
     # an infinite loop the AST gate allows (no banned calls) -> must be reaped
     infinite = "import pandas as pd\ndef compute(df):\n    while True:\n        pass\n"
     with pytest.raises(SandboxError):
