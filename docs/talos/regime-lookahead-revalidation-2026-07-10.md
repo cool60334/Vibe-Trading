@@ -94,7 +94,7 @@
 
 - 只重驗了 OOS 窗，未重跑 train 窗（train sharpe 是否也被灌水未測）。
 - 未檢查 `eth_s4_regime_filtered`（同樣受影響，但未部署）。
-- 未檢查其他 ffill 消費點：`signal_engine` 內對 `funding_z` / `stablecoin_supply_z` / `ls_divergence` 也做 `reindex(..., method="ffill")`。這些是**因子序列**不是 regime label，是否有同類 bin-label 洩漏**尚未稽核**——建議列為後續。
+- ~~未檢查其他 ffill 消費點~~ → **已稽核，見 §8。結論：沒有第二個 regime 級 bug。**
 - 兩個存檔 OOS run 的窗（`2026-06-02` / `2026-06-18`）都超過 `final_holdout_start`，早於 A2 憲法落地。本次重驗已 cap。
 
 ---
@@ -105,3 +105,32 @@
 2. **resample + label 語意是 look-ahead 的經典藏身處。** `.last()` 取 bin 末值卻掛 bin 首戳，任何 ffill 消費端都會偷看。
 3. **少量 bar 的洩漏不等於少量影響。** 3.5% 的 bar 就足以把 sharpe 從閘下推到閘上；4.85% 足以隱藏一半的回撤。
 4. **A/B 必須從同一份現行碼構造**（只回退目標那行），不可拿歷史快照當對照組——快照挾帶其他世代差異。
+
+---
+
+## 8. 因子 ffill 稽核（同類 bin-label 風險）
+
+`signal_engine` 對 `funding_z` / `stablecoin_supply_z` / `ls_divergence` 也做 `reindex(..., method="ffill")`。但 `factor_values_<sym>.parquet` **本身已是 hourly**，那個 reindex 只是對齊 no-op —— 洩漏（若有）會烘焙在**建構期**。逐一稽核建構端：
+
+| 因子 | 建構語意 | 判定 |
+|---|---|---|
+| `funding_rate_raw` / `funding_z` / `funding_mom` | OKX `fundingTime` = **結算時戳的點事件**（`okx_data.py:54`），`stage0a:262` ffill 向前 | ✅ **無洩漏**。實證：階梯只出現在結算時 `{0,8,16}`（696/689/683 次）或結算+1h `{1,9,17}`（486/472/490 次），**從不早於結算**。方向保守（偶爾晚 1 小時） |
+| `stablecoin_supply_z` | CoinGecko `market_chart` 的 `ts_ms` 原樣（`coingecko_data.py:53`）＝**點快照**，非聚合；`stage0a:291` ffill 向前 | ✅ **無 bin-label 錯配**。⚠️ 原始 `stablecoin_supply` 未落地 parquet（只存 z），**無法從資料實證階梯邊界**，判定依 CoinGecko `interval=daily` 的 00:00 UTC 快照語意 |
+| `ls_divergence` / `global_ls_acct_z` / `toptrader_ls_z` / `oi_*` | Binance archive：`normalize_create_time()` 先把每筆 5min snapshot 蓋在**視窗收盤**戳，再 `aggregate_to_interval` 以 `resample(freq, label="left", closed="left")` + snapshots 取 `last` | ⚠️ **是同型聚合**：`factor[H]` 實際是 **H:55 的值，掛在 H:00 戳**。安全性**完全依賴引擎的 `shift(1)`** |
+
+### 為什麼 funding / stablecoin 不是 regime bug 的翻版
+
+regime 的病灶是 **`resample("1D").last()` —— 取 bin 的末值，卻掛 bin 的首戳**（`label="left"`）。funding 與 stablecoin 是**點事件 / 點快照**，時戳即該值成立的時刻，不存在 bin 首尾錯配。
+
+### `ls`/`oi` 的殘留脆弱點（潛在，非現存 bug）
+
+`ls`/`oi` **確實是**同型聚合，但其前瞻內容只在**小時內（≤55 分鐘）**，而回測引擎 `agent/backtest/engines/base.py:125` 的 `_align()` 做 `raw.shift(1)`（next-bar-open 語意，已實證），把訊號推到下一根開盤成交 —— H:55 的資訊在 H+1:00 成交時早已可知，故**回測無洩漏**。
+
+但這是一個**未被文件化、也未被斷言保護的不變式**：任何**繞過 `shift(1)` 的消費端**都會洩漏最多 55 分鐘。例如 live trader 若在 H:05 直接讀 `factor[H]`、或新因子在評估時未加 entry lag。
+
+**Talos 1A 的 `gatekeeper.evaluate()` 內建 `factor.shift(cfg.entry_lag)`（守門員自持、不信任呼叫端）正是針對這一類危害** —— 設計方向一致。
+
+**建議（未做）**：
+- 把 `stablecoin_supply` 原始序列一併落地進 features parquet，讓階梯邊界可被實證與回歸測試。
+- 對 `aggregate_to_interval` 的 `label="left"` + `last` 語意加註解 + 契約測試，明寫「輸出 `factor[H]` 含 H 小時內至 H:55 的資訊，消費端必須 lag ≥1 根」。
+- Binance archive 的**可得性延遲**（day-D 檔案 D+1 才發布）是另一個獨立議題，已由 `FACTOR_LAG_HOURS` + `research/scripts/phase0_lag_gate.py` 稽核過（見 memory `project_live_ls_freshness_result`），不在本節範圍。
