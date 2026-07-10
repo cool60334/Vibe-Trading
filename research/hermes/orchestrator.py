@@ -61,7 +61,13 @@ def _graveyard_path(symbol, manifests_dir) -> Path:
 
 
 def _merge_column(existing: "pd.DataFrame | None", name: str, series) -> pd.DataFrame:
-    """Add/replace one column, aligning on the union of indexes."""
+    """Add/replace one column, aligning on the union of indexes.
+
+    Read-then-write, no lock: assumes a single-writer nightly-batch model
+    (one process, one factor at a time) — same pre-existing pattern as
+    evidence_store.upsert_card, not a new risk. A concurrent writer to the
+    same candidate/graveyard parquet would race; Task 5's job enqueueing
+    should keep foundry runs serialized per symbol."""
     frame = pd.DataFrame({name: series})
     if existing is None or existing.empty:
         return frame
@@ -87,6 +93,24 @@ def _merge_into_graveyard(symbol, manifests_dir, factor_id, series) -> None:
 
 def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
                        symbol, manifests_dir, cfg, llm, run_sandbox) -> str:
+    """Run one hypothesis through forge -> evaluate -> ledger -> EvidenceCard,
+    merging the outcome into the candidate or graveyard parquet.
+
+    Returns one of three outcome strings (Task 4's run_foundry/should_early_stop
+    compare against these exact literals for budget + early-stop bookkeeping):
+      "forge_failed" - forge() exhausted its repair retries; no clean series was
+                       ever produced, so only a graveyard EvidenceCard is written
+                       (nothing to persist numerically for nearest_correlate).
+      "candidate"    - forge succeeded and evaluate() passed the statistical
+                       gate; the factor's series is merged into
+                       candidate_features/cand_<sym>.parquet and its card is
+                       upserted with verdict=candidate.
+      "rejected"     - forge succeeded but evaluate() failed the gate; the
+                       factor's series is merged into
+                       candidate_features/graveyard_<sym>.parquet (so future
+                       nearest_correlate dedup can compare against it) and its
+                       card is upserted with verdict=graveyard.
+    """
     fr = forge(hyp, llm, run_sandbox, panel, max_retries=MAX_FORGE_RETRIES)
     code_sha = hashlib.sha256((fr.code or "").encode()).hexdigest()
     common = dict(factor_id=hyp.id, symbol=symbol, source=hyp.source,
