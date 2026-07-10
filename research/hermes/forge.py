@@ -17,7 +17,7 @@ import pandas as pd
 from research.hermes.errors import HermesGuardError
 from research.hermes.hypothesis import Hypothesis
 from research.hermes.pit import LookaheadError, PROBE_FROM_DEFAULT, PERTURB_GAP
-from research.hermes.sandbox import SandboxError
+from research.hermes.sandbox import SandboxError, SandboxRunFailed
 from research.hermes.sandbox_ast import check_source, UnsafeCodeError
 
 _FENCE = re.compile(r"```(?:python|py)?\s*(.*?)```", re.DOTALL)
@@ -180,6 +180,11 @@ def forge(hypothesis: Hypothesis, llm: LLMCoder, run_sandbox, panel,
                 )
             pit_check_via_sandbox(code, panel, series, run_sandbox)
             return ForgeResult(True, attempt, code=code, series=series)
+        except SandboxRunFailed as exc:
+            # the container ran; the LLM's code is what failed. Feed the container's
+            # stderr back verbatim -- it is the most useful repair signal we have.
+            last_error = f"SandboxRunFailed: {exc}"
+            prior_code, prior_error = code, last_error
         except SandboxError:
             raise                                    # agy 5a: infra error, not repairable, don't retry
         except (UnsafeCodeError, LookaheadError, ValueError, KeyError, TypeError) as exc:

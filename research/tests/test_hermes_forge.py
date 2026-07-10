@@ -224,3 +224,66 @@ def test_forge_budget_exhaustion_propagates_and_is_not_retried():
     with pytest.raises(BudgetExhausted):
         forge(Hypothesis("h", "x", SOURCE_LLM), BadLLM(), run, panel, max_retries=5, budget=b)
     assert calls["n"] == 2                               # never called a 3rd time
+
+
+# ── SandboxRunFailed: container ran, LLM's code is what failed ─────────────
+#
+# Distinct from a bare SandboxError (docker daemon down, image not pinned):
+# those are infrastructure faults that must abort the sweep. SandboxRunFailed
+# is caused by the code under test and is exactly what the bounded repair
+# loop exists for -- before this split every bad LLM factor killed the
+# entire nightly run.
+
+def test_container_runtime_error_is_repaired_not_propagated():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.sandbox import SandboxRunFailed
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    calls = {"n": 0}
+    class LLM:
+        def complete(self, p):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                assert "KeyError" not in p                  # first attempt has no feedback
+                return "```python\ndef compute(df):\n    return df['nope']\n```"
+            assert "KeyError" in p                          # container stderr fed back
+            return "```python\ndef compute(df):\n    return df['close'].pct_change(3)\n```"
+    def run(code, pnl):
+        if "nope" in code:
+            raise SandboxRunFailed("sandbox run failed (exit 1)\nKeyError: 'nope'", exit_code=1)
+        return pnl["close"].pct_change(3)
+    res = forge(Hypothesis("h", "x", SOURCE_LLM), LLM(), run, panel, max_retries=3)
+    assert res.success and res.attempts == 2               # repaired; the sweep survives
+
+
+def test_oom_is_buried_after_retries_not_propagated():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.sandbox import SandboxRunFailed
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    seq = iter(["a", "b"])                                 # distinct code each attempt
+    class LLM:
+        def complete(self, p):
+            return f"```python\nimport numpy as np\ndef compute(df):\n    x = '{next(seq)}'\n    return df['close']\n```"
+    def run(code, pnl):
+        raise SandboxRunFailed("looks OOM-killed (exit 137)", exit_code=137, oom=True)
+    res = forge(Hypothesis("h", "x", SOURCE_LLM), LLM(), run, panel, max_retries=2)
+    assert not res.success and "OOM" in res.death_reason   # buried, not raised
+
+
+def test_infra_error_still_propagates():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.sandbox import SandboxError
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    class LLM:
+        def complete(self, p): return "```python\ndef compute(df):\n    return df['close']\n```"
+    def run(code, pnl): raise SandboxError("docker daemon unavailable")
+    with pytest.raises(SandboxError):
+        forge(Hypothesis("h", "x", SOURCE_LLM), LLM(), run, panel, max_retries=3)
