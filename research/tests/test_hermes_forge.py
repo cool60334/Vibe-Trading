@@ -133,8 +133,14 @@ def test_forge_buries_after_max_retries():
     from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
     idx = pd.date_range("2024-01-01", periods=200, freq="1h")
     panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    calls = {"n": 0}
     class BadLLM:
-        def complete(self, p): return "```python\nimport socket\ndef compute(df):\n    return df['close']\n```"
+        # Task 3: distinct code per attempt -- identical code across attempts
+        # now short-circuits (see below), which would exhaust the retry
+        # budget after 2 attempts instead of the 3 this test exercises.
+        def complete(self, p):
+            calls["n"] += 1
+            return f"```python\nimport socket\ndef compute(df):\n    x = {calls['n']}\n    return df['close']\n```"
     run = lambda code, pnl: pnl["close"]
     res = forge(Hypothesis("h", "x", SOURCE_LLM), BadLLM(), run, panel, max_retries=3)
     assert not res.success and res.attempts == 3 and res.death_reason
@@ -216,9 +222,13 @@ def test_forge_budget_exhaustion_propagates_and_is_not_retried():
     panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
     calls = {"n": 0}
     class BadLLM:
+        # Task 3: distinct code per attempt -- identical code would bury the
+        # hypothesis via the short-circuit before a 3rd llm.complete() call
+        # is ever attempted, so BudgetExhausted would never get the chance
+        # to trip and this test would falsely pass for the wrong reason.
         def complete(self, p):
             calls["n"] += 1
-            return "```python\nimport socket\ndef compute(df):\n    return df['close']\n```"
+            return f"```python\nimport socket\ndef compute(df):\n    x = {calls['n']}\n    return df['close']\n```"
     run = lambda code, pnl: pnl["close"]
     b = ForgeBudget(max_llm_calls=2)                      # trips on the 3rd attempt
     with pytest.raises(BudgetExhausted):
@@ -287,3 +297,49 @@ def test_infra_error_still_propagates():
     def run(code, pnl): raise SandboxError("docker daemon unavailable")
     with pytest.raises(SandboxError):
         forge(Hypothesis("h", "x", SOURCE_LLM), LLM(), run, panel, max_retries=3)
+
+
+# ── identical-repeat short-circuit: no repair feedback can change the code ──
+#
+# If the LLM emits byte-for-byte the same code after a repair-feedback
+# message, another sandbox run cannot produce a different outcome -- it's
+# wasted LLM calls and container time. The sha check must run AFTER
+# extract_code() but BEFORE check_source(): an AST-illegal repeat (import
+# socket) proves the ordering, since if the check ran after check_source()
+# the UnsafeCodeError would be swallowed by the repairable branch first and
+# the short-circuit would never fire.
+
+def test_identical_repeated_code_short_circuits_before_the_ast_gate():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    calls = {"n": 0}
+    class StubbornLLM:
+        def complete(self, p):
+            calls["n"] += 1
+            # AST-illegal: if the sha check ran AFTER check_source this would just
+            # loop max_retries times through the repairable branch.
+            return "```python\nimport socket\ndef compute(df):\n    return df['close']\n```"
+    res = forge(Hypothesis("h", "x", SOURCE_LLM), StubbornLLM(), lambda c, p: p["close"],
+                panel, max_retries=5)
+    assert not res.success
+    assert calls["n"] == 2                      # 2nd attempt repeated verbatim -> bury
+    assert "identical" in res.death_reason.lower()
+
+
+def test_distinct_code_each_attempt_uses_the_full_retry_budget():
+    import numpy as np, pandas as pd
+    from research.hermes.forge import forge
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    idx = pd.date_range("2024-01-01", periods=200, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    calls = {"n": 0}
+    class VariedLLM:
+        def complete(self, p):
+            calls["n"] += 1
+            return f"```python\nimport socket\ndef compute(df):\n    x = {calls['n']}\n    return df['close']\n```"
+    res = forge(Hypothesis("h", "x", SOURCE_LLM), VariedLLM(), lambda c, p: p["close"],
+                panel, max_retries=3)
+    assert not res.success and calls["n"] == 3   # short-circuit must not fire on distinct code

@@ -7,6 +7,7 @@ feedback, then buried. 1C forges only; scoring (1A) + ledger + evidence card are
 wired by 1D."""
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Optional, Protocol
@@ -160,12 +161,22 @@ def forge(hypothesis: Hypothesis, llm: LLMCoder, run_sandbox, panel,
     """
     prior_code, prior_error = None, None
     last_error, last_code = "no attempt ran", None
+    seen_shas: set = set()
     for attempt in range(1, max_retries + 1):
         if budget is not None:
             budget.charge_call()          # trips BEFORE spending the call; propagates
         prompt = build_prompt(hypothesis, prior_code, prior_error)
         code = extract_code(llm.complete(prompt))
         last_code = code                             # agy 5c: keep even if this attempt fails
+        code_sha = hashlib.sha256(code.encode()).hexdigest()
+        if code_sha in seen_shas:
+            # the repair feedback produced no change; another sandbox run cannot
+            # produce a different outcome, and another LLM call costs budget.
+            # NOTE: this check must sit BEFORE check_source() -- an AST-illegal
+            # repeat would otherwise be swallowed by the repairable branch.
+            return ForgeResult(False, attempt, code=code,
+                               death_reason=f"LLM repeated identical code after: {last_error}")
+        seen_shas.add(code_sha)
         try:
             check_source(code)                       # layer-0 AST gate; raises UnsafeCodeError
             series = run_sandbox(code, panel)
