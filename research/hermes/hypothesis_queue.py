@@ -15,7 +15,6 @@ from research.hermes.hypothesis import (
     SOURCE_ACADEMIC, SOURCE_DERIVED, SOURCE_LLM, SOURCE_ZOO,
     Hypothesis, is_python_expr, string_fingerprint,
 )
-from research.lib.factor_io import load_evidence
 
 # Constitution dead classes (already-buried families; never re-propose).
 # See talos-design.md §5 + memory project_intraday_ohlcv_class_dead / orderflow_poc.
@@ -162,29 +161,21 @@ _ACADEMIC_SEED = (
 _DERIVE_TRANSFORMS = ("zscore", "rank")
 
 
-def hypotheses_from_evidence_derivation(symbol: str, manifests_dir, top_k: int = 5) -> list[Hypothesis]:
-    """Derive variant descriptors from the top-IR^ features in evidence_<sym>.json.
+def hypotheses_from_derivation(base_features) -> list[Hypothesis]:
+    """Derive variant descriptors from an ALREADY-RANKED list of base feature names.
 
-    Rows key on 'feature_key' (agy 5a — not 'factor'/'name').
+    Pure: no IO, no compute — 1B stays a descriptor layer. The caller (1D) ranks
+    the bases, because only it knows the pre-oos window.
 
-    ^ "top" here means "first top_k rows of the evidence list", not a re-sort
-    by any field on this side. stage0a_features.sort_evidence_by_ic() already
-    sorts entries by descending max|IC| across horizons before dump_evidence()
-    persists evidence_<sym>.json (research/pipeline/stage0a_features.py), so
-    the file's row order already is the intended high-IC ranking. Re-sorting
-    here (e.g. by the 'ir' field, which is mean-IR-across-horizons — a
-    different metric from the file's max|IC| sort key) would silently
-    override that intended ranking with a different one. Missing/absent
-    evidence (no stage0a run yet for this symbol) degrades to an empty list.
+    This replaces the old hypotheses_from_evidence_derivation(), which read the
+    top-K rows of evidence_<sym>.json. stage0a_features computes that file's IC
+    over the FULL history — including the reserved walk-forward OOS window and
+    the final holdout — so it biased WHICH hypotheses Foundry chose to try, even
+    once the evaluation window itself was locked to pre-oos rows. Selection on
+    OOS-informed IC makes the eventual promote-time OOS check less independent.
     """
-    try:
-        ev = load_evidence(symbol, manifests_dir=manifests_dir)
-    except FileNotFoundError:
-        return []
-    rows = ev.get("evidence", []) if isinstance(ev, dict) else ev
     out: list = []
-    for row in list(rows)[:top_k]:
-        base = row.get("feature_key")
+    for base in base_features or ():
         if not base:
             continue
         for t in _DERIVE_TRANSFORMS:
@@ -224,13 +215,19 @@ def hypotheses_from_llm(raw: list) -> list[Hypothesis]:
     ]
 
 
-def build_queue(symbol: str, manifests_dir, zoo_dir, llm_raw: list | None = None) -> list[Hypothesis]:
-    """Assemble the full Foundry hypothesis queue: zoo + evidence-derivation +
-    academic + LLM sources, then dedupe (string-fingerprint collision) and
-    filter_static (graveyard + constitution dead classes)."""
+def build_queue(symbol: str, manifests_dir, zoo_dir, llm_raw: list | None = None,
+                derived_bases=()) -> list[Hypothesis]:
+    """Assemble the full Foundry hypothesis queue: zoo + derivation + academic +
+    LLM sources, then dedupe (string-fingerprint collision) and filter_static
+    (graveyard + constitution dead classes).
+
+    `derived_bases` is a caller-ranked list of base feature names. It is NOT read
+    from evidence_<sym>.json: that file's IC spans the reserved OOS window, so
+    selecting from it leaks OOS information into what Foundry chooses to try.
+    """
     collected = (
         hypotheses_from_zoo(zoo_dir)
-        + hypotheses_from_evidence_derivation(symbol, manifests_dir)
+        + hypotheses_from_derivation(derived_bases)
         + hypotheses_from_academic()
         + hypotheses_from_llm(llm_raw or [])
     )

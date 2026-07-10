@@ -192,18 +192,6 @@ def test_zoo_adapter_real_zoo_directory_sanity():
 
     # at least one real gtja191 microstructure-themed factor got dead-class tagged
     assert any("intraday_ohlcv_price_derived" in h.dead_classes for h in hyps)
-
-
-def test_evidence_derivation_uses_feature_key(tmp_path, monkeypatch):
-    from research.hermes import hypothesis_queue as hq
-    monkeypatch.setattr(hq, "load_evidence", lambda symbol, manifests_dir=None: {
-        "evidence": [{"feature_key": "funding_z", "ir": 0.5},
-                     {"feature_key": "depeg", "ir": 0.4}]})
-    out = hq.hypotheses_from_evidence_derivation("eth", tmp_path, top_k=1)
-    assert out and all(h.source == "derived" for h in out)
-    assert any("funding_z" in h.description for h in out)      # feature_key read, not None
-
-
 def test_llm_adapter_namespaces_ids():
     from research.hermes.hypothesis_queue import hypotheses_from_llm
     hyps = hypotheses_from_llm([{"id": "ts_mom_2", "description": "close.shift(2)"}])
@@ -244,10 +232,46 @@ def test_build_queue_assembles_dedupes_filters(tmp_path, monkeypatch):
     from research.hermes.hypothesis import Hypothesis, SOURCE_ACADEMIC
     monkeypatch.setattr(hq, "hypotheses_from_zoo", lambda d: [
         Hypothesis("zoo_a", "close / close.shift(5) - 1", "zoo")])
-    monkeypatch.setattr(hq, "hypotheses_from_evidence_derivation", lambda s, m: [
+    monkeypatch.setattr(hq, "hypotheses_from_derivation", lambda bases: [
         Hypothesis("der_a", "close / close.shift(5) - 1", "derived")])   # dupe of zoo_a
     monkeypatch.setattr(hq, "hypotheses_from_academic", lambda: [
         Hypothesis("acad_a", "close.rolling(20).mean()", SOURCE_ACADEMIC)])
     monkeypatch.setattr(hq, "_graveyard_fingerprints", lambda s, m: set())
-    q = {h.id for h in hq.build_queue("eth", tmp_path, zoo_dir=tmp_path, llm_raw=[])}
+    q = {h.id for h in hq.build_queue("eth", tmp_path, zoo_dir=tmp_path, llm_raw=[],
+                                      derived_bases=["close"])}
     assert "acad_a" in q and len(q & {"zoo_a", "der_a"}) == 1    # one of the dupes kept
+
+
+# ── selection-bias fix: derived hypotheses must not be picked using evidence_<sym>.json ──
+#
+# stage0a_features computes evidence_<sym>.json's IC over the FULL history,
+# including the reserved walk-forward OOS window and the final holdout. Picking
+# the top-K features from it biased WHICH hypotheses Foundry tries, even after
+# the evaluation window was locked to pre-oos. 1B now takes the ranked base
+# feature names as data (1D ranks them on the pre-oos panel it already holds),
+# keeping 1B a pure descriptor layer with no IO and no compute.
+
+def test_derivation_is_pure_and_takes_base_features():
+    from research.hermes.hypothesis_queue import hypotheses_from_derivation
+    out = hypotheses_from_derivation(["funding_z"])
+    assert {h.id for h in out} == {"der_funding_z_zscore", "der_funding_z_rank"}
+    assert all(h.source == "derived" for h in out)
+    assert hypotheses_from_derivation([]) == []
+
+
+def test_build_queue_never_reads_evidence_json(tmp_path, monkeypatch):
+    from research.hermes import hypothesis_queue as hq
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+    monkeypatch.setattr(hq, "hypotheses_from_zoo", lambda d: [Hypothesis("zoo_a", "a", SOURCE_ZOO)])
+    monkeypatch.setattr(hq, "hypotheses_from_academic", lambda: [])
+    monkeypatch.setattr(hq, "_graveyard_fingerprints", lambda s, m: set())
+    # evidence must never be consulted — blow up if anything tries
+    def boom(*a, **k):
+        raise AssertionError("build_queue must not read evidence_<sym>.json (OOS-contaminated IC)")
+    monkeypatch.setattr(hq, "load_evidence", boom, raising=False)
+
+    q = hq.build_queue(symbol="eth", manifests_dir=tmp_path, zoo_dir=tmp_path,
+                       llm_raw=[], derived_bases=["funding_z"])
+    ids = {h.id for h in q}
+    assert "zoo_a" in ids
+    assert "der_funding_z_zscore" in ids     # derived came from the caller, not the manifest

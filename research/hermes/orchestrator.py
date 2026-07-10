@@ -14,13 +14,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from research.hermes.candidate_store import CANDIDATE_SUBDIR, _candidate_path, write_candidate
 from research.hermes.evidence_card import EvidenceCard, VERDICT_CANDIDATE, VERDICT_GRAVEYARD
 from research.hermes.evidence_store import upsert_card
 from research.hermes.forge import forge
-from research.hermes.gatekeeper import evaluate, GateConfig
+from research.hermes.gatekeeper import evaluate, forward_returns, gross_ic, GateConfig
 from research.hermes.hypothesis_queue import build_queue
 from research.hermes.sandbox import SandboxExecutor
 from research.hermes.split import foundry_split
@@ -210,8 +211,32 @@ def _load_daily_regime(symbol, manifests_dir) -> "pd.Series | None":
         return None
 
 
+def _preoos_top_features(panel, ohlcv, cfg, top_k: int = 5) -> list:
+    """Rank the panel's feature columns by |gross IC| at the gate's own horizon
+    and entry lag, and return the top_k names.
+
+    Foundry must NOT pick its derived-hypothesis bases from evidence_<sym>.json:
+    stage0a computes that file's IC over the full history, including the reserved
+    OOS window, so choosing from it leaks OOS information into the search itself.
+    `panel` here is already pre-oos (see the OOS lock in run_foundry).
+    """
+    feature_cols = [c for c in panel.columns
+                    if c not in _OHLCV_COLS and pd.api.types.is_numeric_dtype(panel[c])]
+    if not feature_cols:
+        return []                                   # nothing to rank; skip the fwd-return compute
+    fwd, _ = forward_returns(ohlcv, cfg)            # shared with evaluate(); handles the 1D case
+    scored: list = []
+    for col in feature_cols:
+        ic = gross_ic(panel[col].shift(cfg.entry_lag), fwd)   # same lag the gate applies
+        if np.isfinite(ic):
+            scored.append((abs(ic), col))
+    scored.sort(key=lambda t: (-t[0], t[1]))                  # deterministic tie-break
+    return [col for _, col in scored[:top_k]]
+
+
 def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
-                oos_start, val_frac=0.2, daily_regime=None, run_sandbox=None) -> dict:
+                oos_start, val_frac=0.2, derived_top_k=5,
+                daily_regime=None, run_sandbox=None) -> dict:
     """Sweep the hypothesis queue for one symbol under Budget + early stopping.
 
     zoo_dir is REQUIRED (agy 4c: build_queue does Path(zoo_dir).rglob -> Path(None)
@@ -260,8 +285,11 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
             daily_idx = panel.index.normalize().unique()
             daily_regime = pd.Series("neutral", index=daily_idx)
 
-    queue = build_queue(symbol=symbol, manifests_dir=manifests_dir,
-                        zoo_dir=zoo_dir, llm_raw=[])[: budget.max_factors]
+    derived_bases = _preoos_top_features(panel, ohlcv, cfg, top_k=derived_top_k)
+    log.info("%s: derived bases ranked on pre-oos data: %s", symbol, derived_bases)
+
+    queue = build_queue(symbol=symbol, manifests_dir=manifests_dir, zoo_dir=zoo_dir,
+                        llm_raw=[], derived_bases=derived_bases)[: budget.max_factors]
     outcomes: list = []
     # `existing` is captured once above and never updated per-iteration: a factor
     # that passes/fails mid-sweep is NOT deduped against by later factors in the

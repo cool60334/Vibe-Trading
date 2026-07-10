@@ -184,27 +184,35 @@ class GatekeeperResult:
     rejection_reason: str = ""
 
 
-def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
-             manifests_dir, cfg: GateConfig) -> GatekeeperResult:
-    factor = factor.shift(cfg.entry_lag)               # agy #6c: gate self-enforces lag
-    ret_col = f"ret_{cfg.horizon_h}h"
+def forward_returns(ohlcv, cfg: GateConfig):
+    """(fwd_return_series, horizon_bars) for the gate's horizon at cfg.interval.
+
+    Shared by evaluate() and by 1D's pre-oos feature ranking so the two can never
+    drift apart on the 1D special case below.
+
+    research.lib.timeframe.bars_per_hour only supports 15m/30m/1H by contract
+    (SUPPORTED_INTERVALS is asserted == {"15m","30m","1H"} in test_timeframe.py)
+    — it cannot represent a 1D candle's 1/24 bars-per-hour without breaking that
+    contract, so add_forward_returns(interval="1D") raises ValueError. The 1D
+    forward return is computed directly here; the formula matches
+    add_forward_returns' internal one exactly.
+    """
     if cfg.interval == "1D":
-        # Task 7 deviation (see self-review): research.lib.timeframe.bars_per_hour
-        # only supports 15m/30m/1H by contract (SUPPORTED_INTERVALS is asserted
-        # == {"15m","30m","1H"} in test_timeframe.py) — it cannot represent a 1D
-        # candle's 1/24 bars-per-hour without breaking that contract, so
-        # add_forward_returns(interval="1D") raises ValueError. 1D forward
-        # returns/horizon-bars are computed directly here instead; the formula
-        # matches add_forward_returns' internal one exactly for the 1H/sub-hour
-        # path below.
         if cfg.horizon_h % 24 != 0:
             raise ValueError(f"horizon_h={cfg.horizon_h} must be a multiple of 24 for a 1D interval")
         horizon_bars = cfg.horizon_h // 24
         fwd = ohlcv["close"].shift(-horizon_bars) / ohlcv["close"] - 1
-    else:
-        fwd = add_forward_returns(ohlcv[["close"]], "close", [cfg.horizon_h],
-                                  interval=cfg.interval)[ret_col]
-        horizon_bars = cfg.horizon_h * bars_per_hour(cfg.interval)
+        return fwd, horizon_bars
+    ret_col = f"ret_{cfg.horizon_h}h"
+    fwd = add_forward_returns(ohlcv[["close"]], "close", [cfg.horizon_h],
+                              interval=cfg.interval)[ret_col]
+    return fwd, cfg.horizon_h * bars_per_hour(cfg.interval)
+
+
+def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
+             manifests_dir, cfg: GateConfig) -> GatekeeperResult:
+    factor = factor.shift(cfg.entry_lag)               # agy #6c: gate self-enforces lag
+    fwd, horizon_bars = forward_returns(ohlcv, cfg)
     ret1 = ohlcv["close"].pct_change()
     weights = factor_to_weights(factor)
     mean_turnover = float(turnover_of(weights).fillna(0.0).mean())
