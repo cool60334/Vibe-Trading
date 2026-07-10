@@ -16,13 +16,19 @@ from research.hermes.errors import HermesGuardError
 VERDICT_CANDIDATE = "candidate"
 VERDICT_GRAVEYARD = "graveyard"
 _VERDICTS = {VERDICT_CANDIDATE, VERDICT_GRAVEYARD}
-# metrics a promotable candidate must carry: gross_ic/ic_nonoverlap/pbo are the
+# metrics a promotable candidate must carry: gross_ic/ic_nonoverlap are the
 # quality gate itself and must be present *and finite* (None or nan/inf =>
 # rejected at construction -- a candidate can't clear the gate on an undefined
 # number). ir/dsr are excluded from this gate: they may legitimately be
 # non-finite (undefined for low trial counts) without blocking candidacy, and
-# are allowed to sanitize to null on to_dict() without issue.
-_CORE_METRICS = ("gross_ic", "ic_nonoverlap", "pbo")
+# are allowed to sanitize to null on to_dict() without issue. pbo is ALSO
+# excluded (Phase 1D orchestrator wiring, agy 1D self-review "PBO 仍
+# None"): gatekeeper.evaluate() hardcodes metrics["pbo"] = None until CPCV-based
+# PBO lands in a later task, so requiring it finite here would make every
+# real candidate construction raise -- a total, silent deadlock of the
+# candidate pipeline (caught while wiring 1A's evaluate() output into 1E's
+# EvidenceCard for the first time in process_hypothesis).
+_CORE_METRICS = ("gross_ic", "ic_nonoverlap")
 
 
 class CardValidationError(HermesGuardError, ValueError):

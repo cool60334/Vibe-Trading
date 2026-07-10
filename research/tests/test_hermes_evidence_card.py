@@ -71,9 +71,15 @@ def test_candidate_card_requires_ic_nonoverlap():
         EvidenceCard(**_candidate_kwargs(ic_nonoverlap=None))
 
 
-def test_candidate_card_requires_pbo():
-    with pytest.raises(CardValidationError):
-        EvidenceCard(**_candidate_kwargs(pbo=None))
+def test_candidate_card_allows_none_pbo():
+    # Phase 1D orchestrator wiring resolved the pbo/_CORE_METRICS crack left
+    # open by 1A: gatekeeper.evaluate() hardcodes metrics["pbo"] = None until
+    # CPCV-based PBO lands in a later task ("PBO 仍 None（1A 留）：不阻塞" per
+    # the 1D plan). Requiring pbo finite here would make every real candidate
+    # construction raise -- so pbo is exempted from _CORE_METRICS just like
+    # ir/dsr, and a None pbo must NOT block candidacy.
+    card = EvidenceCard(**_candidate_kwargs(pbo=None))
+    assert card.pbo is None
 
 
 def test_candidate_card_rejects_non_finite_core_metric_at_construction():
