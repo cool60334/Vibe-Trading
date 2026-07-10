@@ -139,3 +139,16 @@ def test_rejected_factor_series_lands_in_graveyard_parquet(tmp_path, monkeypatch
     assert out == "rejected"
     grave = pd.read_parquet(_graveyard_path("eth", tmp_path))
     assert "dead1" in grave.columns                   # values persisted for C-6 dedup
+
+
+def test_early_stop_after_consecutive_failures():
+    from research.hermes.orchestrator import Budget, should_early_stop
+    b = Budget(max_factors=100, early_stop_after=3)
+    assert should_early_stop(["forge_failed", "rejected", "forge_failed"], b) is True
+    assert should_early_stop(["forge_failed", "candidate", "forge_failed"], b) is False  # a win resets
+    assert should_early_stop(["forge_failed", "rejected"], b) is False                    # under threshold
+
+
+def test_budget_caps_factor_count():
+    from research.hermes.orchestrator import Budget
+    assert Budget(max_factors=2, early_stop_after=99).max_factors == 2

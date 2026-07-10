@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -147,3 +148,21 @@ def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
         _merge_into_graveyard(symbol, manifests_dir, hyp.id, fr.series)
     upsert_card(card, symbol, manifests_dir)
     return "candidate" if res.passed else "rejected"
+
+
+@dataclass(frozen=True)
+class Budget:
+    max_factors: int = 50           # per-run cap on hypotheses tried
+    early_stop_after: int = 8       # consecutive non-candidate outcomes -> stop the night
+
+
+def should_early_stop(outcomes: list, budget: Budget) -> bool:
+    """True once the tail has `early_stop_after` consecutive non-candidate results
+    (P5: don't burn the nightly budget once the run is clearly diverging). A
+    candidate resets the streak."""
+    streak = 0
+    for o in reversed(outcomes):
+        if o == "candidate":
+            break
+        streak += 1
+    return streak >= budget.early_stop_after
