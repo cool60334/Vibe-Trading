@@ -279,3 +279,27 @@ def test_enqueue_writes_job_and_runner_reconciles(tmp_path, monkeypatch):
                               sandbox=object(), zoo_dir=tmp_path)
     assert called["symbol"] == "eth" and summary["candidate"] == 1
     assert json.loads(job_path.read_text())["status"] == "done"     # reconciled
+
+
+def test_run_foundry_job_marks_failed_on_exception(tmp_path, monkeypatch):
+    """A crashed run_foundry must not leave the job stuck at status="queued"
+    forever -- rewrite status="failed"+error+finished_at, then re-raise."""
+    import json
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import enqueue_foundry_job, run_foundry_job
+
+    job_path = enqueue_foundry_job("eth", runs_dir=tmp_path,
+                                   params={"interval": "1D", "horizon_h": 24})
+
+    def _boom(symbol, *a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(orch, "run_foundry", _boom)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_foundry_job(job_path, manifests_dir=tmp_path, llm=object(),
+                        sandbox=object(), zoo_dir=tmp_path)
+
+    job = json.loads(job_path.read_text())
+    assert job["status"] == "failed"
+    assert "boom" in job["error"]
+    assert "finished_at" in job

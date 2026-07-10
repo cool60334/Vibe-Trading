@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import tempfile
 import uuid
 from collections import Counter
@@ -19,7 +20,7 @@ from research.hermes.candidate_store import CANDIDATE_SUBDIR, _candidate_path, w
 from research.hermes.evidence_card import EvidenceCard, VERDICT_CANDIDATE, VERDICT_GRAVEYARD
 from research.hermes.evidence_store import upsert_card
 from research.hermes.forge import forge
-from research.hermes.gatekeeper import evaluate
+from research.hermes.gatekeeper import evaluate, GateConfig
 from research.hermes.hypothesis_queue import build_queue
 from research.hermes.sandbox import SandboxExecutor
 from research.lib.factor_io import _atomic_to_parquet, _symbol_short, load_features
@@ -225,6 +226,15 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
     return dict(summary)
 
 
+def _write_job_json(path, data: dict) -> None:
+    """Atomic write (mirrors dashboard/server/pipeline_jobs.write_job): a reader
+    polling job.json must never observe a partially-written file."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def enqueue_foundry_job(symbol, runs_dir, params: dict) -> Path:
     """Write a queued foundry job (write-file->reconcile). Talos NEVER inline-runs;
     a separate foundry runner picks this up. Called by nightly cron / on-demand."""
@@ -232,20 +242,29 @@ def enqueue_foundry_job(symbol, runs_dir, params: dict) -> Path:
     job_dir = Path(runs_dir) / "foundry_jobs" / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     job_path = job_dir / "job.json"
-    job_path.write_text(json.dumps(
-        {"job_id": job_id, "symbol": symbol, "params": params,
-         "status": "queued", "created_at": _now()}, indent=2), encoding="utf-8")
+    _write_job_json(job_path, {"job_id": job_id, "symbol": symbol, "params": params,
+                               "status": "queued", "created_at": _now()})
     return job_path
 
 
 def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, budget=None) -> dict:
-    """Foundry runner reconcile: read job.json, run_foundry, mark done."""
-    from research.hermes.gatekeeper import GateConfig
-    job = json.loads(Path(job_path).read_text(encoding="utf-8"))
+    """Foundry runner reconcile: read job.json, run_foundry, mark done.
+
+    On any exception from run_foundry, the job file is rewritten with
+    status="failed" + error + finished_at (mirroring pipeline_manager.py's
+    convention) BEFORE the exception is re-raised, so a crashed run leaves a
+    diagnostic trail instead of sitting at status="queued" forever."""
+    job_path = Path(job_path)
+    job = json.loads(job_path.read_text(encoding="utf-8"))
     p = job["params"]
     cfg = GateConfig(interval=p.get("interval", "1H"), horizon_h=p.get("horizon_h", 24))
-    summary = run_foundry(job["symbol"], manifests_dir, cfg, llm, sandbox,
-                          budget or Budget(), zoo_dir=zoo_dir)
+    try:
+        summary = run_foundry(job["symbol"], manifests_dir, cfg, llm, sandbox,
+                              budget or Budget(), zoo_dir=zoo_dir)
+    except Exception as e:
+        job["status"] = "failed"; job["error"] = str(e); job["finished_at"] = _now()
+        _write_job_json(job_path, job)
+        raise
     job["status"] = "done"; job["summary"] = summary; job["finished_at"] = _now()
-    Path(job_path).write_text(json.dumps(job, indent=2), encoding="utf-8")
+    _write_job_json(job_path, job)
     return summary
