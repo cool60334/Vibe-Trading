@@ -4,8 +4,10 @@ early stopping, triggered write-file->reconcile (never inline)."""
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import tempfile
+import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -221,3 +223,29 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
     summary = Counter({OUTCOME_FORGE_FAILED: 0, OUTCOME_CANDIDATE: 0, OUTCOME_REJECTED: 0})
     summary.update(outcomes)
     return dict(summary)
+
+
+def enqueue_foundry_job(symbol, runs_dir, params: dict) -> Path:
+    """Write a queued foundry job (write-file->reconcile). Talos NEVER inline-runs;
+    a separate foundry runner picks this up. Called by nightly cron / on-demand."""
+    job_id = f"foundry_{symbol}_{uuid.uuid4().hex[:8]}"
+    job_dir = Path(runs_dir) / "foundry_jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    job_path = job_dir / "job.json"
+    job_path.write_text(json.dumps(
+        {"job_id": job_id, "symbol": symbol, "params": params,
+         "status": "queued", "created_at": _now()}, indent=2), encoding="utf-8")
+    return job_path
+
+
+def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, budget=None) -> dict:
+    """Foundry runner reconcile: read job.json, run_foundry, mark done."""
+    from research.hermes.gatekeeper import GateConfig
+    job = json.loads(Path(job_path).read_text(encoding="utf-8"))
+    p = job["params"]
+    cfg = GateConfig(interval=p.get("interval", "1H"), horizon_h=p.get("horizon_h", 24))
+    summary = run_foundry(job["symbol"], manifests_dir, cfg, llm, sandbox,
+                          budget or Budget(), zoo_dir=zoo_dir)
+    job["status"] = "done"; job["summary"] = summary; job["finished_at"] = _now()
+    Path(job_path).write_text(json.dumps(job, indent=2), encoding="utf-8")
+    return summary

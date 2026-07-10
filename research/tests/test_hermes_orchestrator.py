@@ -256,3 +256,26 @@ def test_run_foundry_daily_regime_fallback_is_neutral_and_daily_indexed(tmp_path
     assert (dr == "neutral").all()
     assert len(dr) < len(panel)                        # daily, not hourly, granularity
     assert (dr.index == dr.index.normalize()).all()     # every stamp is midnight
+
+
+def test_enqueue_writes_job_and_runner_reconciles(tmp_path, monkeypatch):
+    import json
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import enqueue_foundry_job, run_foundry_job
+
+    job_path = enqueue_foundry_job("eth", runs_dir=tmp_path,
+                                   params={"interval": "1D", "horizon_h": 24})
+    assert job_path.exists()
+    job = json.loads(job_path.read_text())
+    assert job["symbol"] == "eth" and job["status"] == "queued"
+
+    called = {}
+
+    def _fake_run_foundry(symbol, *a, **k):
+        called["symbol"] = symbol
+        return {"candidate": 1}
+    monkeypatch.setattr(orch, "run_foundry", _fake_run_foundry)
+    summary = run_foundry_job(job_path, manifests_dir=tmp_path, llm=object(),
+                              sandbox=object(), zoo_dir=tmp_path)
+    assert called["symbol"] == "eth" and summary["candidate"] == 1
+    assert json.loads(job_path.read_text())["status"] == "done"     # reconciled

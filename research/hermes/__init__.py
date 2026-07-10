@@ -13,6 +13,7 @@ from research.hermes.gatekeeper import evaluate, GateConfig, GatekeeperResult
 from research.hermes.hypothesis import Hypothesis
 from research.hermes.hypothesis_queue import build_queue
 from research.hermes.forge import forge, ForgeResult, LLMCoder
+from research.hermes.orchestrator import run_foundry, enqueue_foundry_job, run_foundry_job, Budget
 
 # NOTE: research.hermes.promote is deliberately NOT imported/exported here.
 # promote_candidate is the only Foundry path that writes production features;
@@ -33,4 +34,5 @@ __all__ = [
     "Hypothesis",
     "build_queue",
     "forge", "ForgeResult", "LLMCoder",
+    "run_foundry", "enqueue_foundry_job", "run_foundry_job", "Budget",
 ]
