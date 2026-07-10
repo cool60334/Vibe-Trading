@@ -3,7 +3,8 @@
 SandboxExecutor is the stable interface; DockerSandbox is the only impl.
 Every run passes the layer-0 AST gate first, then executes inside a locked
 container: --network=none (offline), --memory (OOM cap), --read-only rootfs
-with a single writable /out mount, hard timeout via subprocess.
+with a single writable /out mount, hard wall-clock timeout that reaps the
+container itself (DockerSandbox._run_container).
 
 Task 6 materialisation: the AST-checked `source` is written to a private temp
 file and mounted read-only at /app/user_source.py; the fixed runner template
@@ -14,6 +15,7 @@ runner `exec`s — it cannot write anywhere but /out.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -25,6 +27,8 @@ from pathlib import Path
 
 from research.hermes.errors import HermesGuardError
 from research.hermes.sandbox_ast import check_source
+
+log = logging.getLogger(__name__)
 
 # NON-FUNCTIONAL PLACEHOLDER: bare python:3.11-slim has no pandas/numpy/scipy/ta,
 # so any real compute() the AST gate allows (sandbox_ast.ALLOWED_IMPORTS) will
@@ -44,6 +48,9 @@ class SandboxError(HermesGuardError, RuntimeError):
 
 _OOM_EXIT_CODE = 137          # 128 + SIGKILL(9): what the cgroup OOM killer leaves behind
 _OOM_STDERR_MARKERS = ("MemoryError", "Killed")
+
+_REAP_TIMEOUT_S = 15          # `docker kill` on a spinning container measures ~0.5s
+_DRAIN_TIMEOUT_S = 15         # reading back stderr once the container is dead
 
 
 class SandboxRunFailed(SandboxError):
@@ -123,12 +130,10 @@ class DockerSandbox(SandboxExecutor):
 
     Container-lifecycle-safe timeout: every `docker run` is given a fixed
     `--name talos_sbx_<uuid>`. The run stays synchronous/blocking (no `-d`) so
-    `capture_output` can still read stdout/stderr back on the happy path. If
-    `subprocess.run(..., timeout=...)` raises `TimeoutExpired` — which only
-    kills the docker CLI client, not the container itself, since moby doesn't
-    propagate SIGKILL from CLI to daemon — `run()` follows up with `docker
-    kill` + `docker rm -f` (best-effort) to reap the orphaned container before
-    raising SandboxError.
+    stdout/stderr can still be read back on the happy path. When the wall clock
+    expires, `_run_container` reaps the container by that name *before* draining
+    the CLI's pipes — see its docstring for why the order is load-bearing and
+    why `subprocess.run(timeout=)` cannot be used.
     """
     def __init__(self, image: str = DEFAULT_IMAGE, memory: str = "1g",
                  cpus: str = "1", timeout_s: int = 120, allow_unpinned: bool = False):
@@ -183,6 +188,77 @@ class DockerSandbox(SandboxExecutor):
         ]
         return cmd
 
+    def _is_running(self, name: str) -> bool:
+        """Ask the daemon whether the container is still up. False if we can't tell."""
+        try:
+            out = subprocess.run(["docker", "ps", "-q", "-f", f"name={name}"],
+                                 capture_output=True, text=True, timeout=_REAP_TIMEOUT_S)
+        except Exception:
+            return False          # cannot verify; do not cry wolf
+        return bool((out.stdout or "").strip())
+
+    def _reap(self, name: str) -> bool:
+        """Kill the container by its fixed --name, then verify it is really gone.
+
+        `docker kill`/`docker rm` are best-effort (with --rm the container may
+        already have been removed, making `rm` fail harmlessly), so a swallowed
+        error tells us nothing. Ask the daemon instead. A container that outlives
+        its reap burns a core in the background with nothing in the logs to
+        explain it, which is the failure mode this module keeps rediscovering.
+        """
+        for verb in (["docker", "kill", name], ["docker", "rm", "-f", name]):
+            try:
+                subprocess.run(verb, capture_output=True, timeout=_REAP_TIMEOUT_S)
+            except Exception:
+                pass
+        if self._is_running(name):
+            log.warning("sandbox container %s survived `docker kill`; orphan left running", name)
+            return False
+        return True
+
+    def _run_container(self, cmd: list, name: str) -> tuple[int, str, str]:
+        """Run `docker run` under a wall clock that actually bounds the call.
+
+        `subprocess.run(timeout=)` cannot be used here. When it fires it kills
+        the process it launched -- the docker CLI client -- and then drains that
+        client's pipes with `communicate()` and NO timeout (CPython
+        Lib/subprocess.py, `_mswindows` branch). But the container is a child of
+        dockerd, not of the CLI: killing the client neither stops the container
+        nor closes the pipe it is still writing to, so the unbounded drain never
+        returns and the caller's `except TimeoutExpired` never executes. An
+        LLM's `while True` wedged an entire sweep this way.
+
+        So: kill the CONTAINER first, by name. That makes the CLI exit on its
+        own, which closes the pipes and lets the drain finish. Only if the CLI
+        is itself wedged do we kill it, and then we give up on its stderr.
+
+        The bare `except` mirrors stdlib subprocess.run(): `Popen.__exit__` ends
+        in an unbounded `self.wait()` for every exception but KeyboardInterrupt,
+        and on KeyboardInterrupt it kills nothing at all. Either way a Ctrl-C
+        mid-sweep would strand the container and then block on it forever.
+        """
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True) as proc:
+            try:
+                stdout, stderr = proc.communicate(timeout=self.timeout_s)
+            except subprocess.TimeoutExpired as exc:
+                fate = "reaped" if self._reap(name) else "SURVIVED the reap"
+                try:
+                    _, stderr = proc.communicate(timeout=_DRAIN_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stderr = ""
+                raise SandboxRunFailed(
+                    f"sandbox timed out after {self.timeout_s}s; container {name} {fate}"
+                    + (f"\n{stderr[-800:]}" if stderr else ""),
+                    exit_code=None,
+                ) from exc
+            except BaseException:
+                self._reap(name)
+                proc.kill()
+                raise
+        return proc.returncode, stdout or "", stderr or ""
+
     def run(self, source: str, input_parquet, output_dir) -> str:
         check_source(source)  # layer-0 gate FIRST: untrusted source must never reach a subprocess call, even if docker itself is unavailable/misconfigured
         _assert_image_pinned(self.image, self.allow_unpinned)
@@ -209,30 +285,14 @@ class DockerSandbox(SandboxExecutor):
                 input_mount=(str(input_path), container_input_path),
                 name=name,
             )
-            try:
-                proc = subprocess.run(cmd, capture_output=True, timeout=self.timeout_s, text=True)
-            except subprocess.TimeoutExpired as exc:
-                # subprocess.run(timeout=) only kills the docker CLI client; the
-                # container itself keeps running (--rm only fires on the
-                # container's own exit). Hunt it down by its fixed --name,
-                # best-effort, before surfacing the timeout as a hard failure.
-                for verb in (["docker", "kill", name], ["docker", "rm", "-f", name]):
-                    try:
-                        subprocess.run(verb, capture_output=True, timeout=15)
-                    except Exception:
-                        pass
-                raise SandboxRunFailed(
-                    f"sandbox timed out after {self.timeout_s}s; container {name} reaped",
-                    exit_code=None,
-                ) from exc
-            if proc.returncode != 0:
-                stderr = proc.stderr or ""
-                oom = _looks_like_oom(proc.returncode, stderr)
+            returncode, _stdout, stderr = self._run_container(cmd, name)
+            if returncode != 0:
+                oom = _looks_like_oom(returncode, stderr)
                 hint = (f"; looks OOM-killed — the code exceeded --memory={self.memory}"
                         if oom else "")
                 raise SandboxRunFailed(
-                    f"sandbox run failed (exit {proc.returncode}){hint}\n{stderr[-800:]}",
-                    exit_code=proc.returncode, oom=oom,
+                    f"sandbox run failed (exit {returncode}){hint}\n{stderr[-800:]}",
+                    exit_code=returncode, oom=oom,
                 )
             return str(Path(output_dir) / "candidate.parquet")
         finally:
