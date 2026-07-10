@@ -234,8 +234,31 @@ def _preoos_top_features(panel, ohlcv, cfg, top_k: int = 5) -> list:
     return [col for _, col in scored[:top_k]]
 
 
+def _align_ohlcv(ohlcv, feature_index, min_coverage: float = 0.95):
+    """Reindex the price table onto the feature index — features are ground truth.
+
+    agy: features_<sym>.parquet is written by stage0a and deliberately holds no
+    OHLCV; candles come from a separate source (lib.okx_data.fetch_candles), so
+    the two tables can differ in length, tail, and missing bars. Letting a
+    misaligned price table into the engine produces NaN forward returns, which
+    turnover_of() then reads as flat->position->flat churn and max_turnover
+    wrongly rejects the factor. Align first, and refuse a price table that does
+    not actually cover the features.
+    """
+    if "close" not in ohlcv.columns:
+        raise ValueError("injected ohlcv has no 'close' column; cannot evaluate")
+    aligned = ohlcv.reindex(feature_index)
+    coverage = float(aligned["close"].notna().mean())
+    if coverage < min_coverage:
+        raise ValueError(
+            f"ohlcv coverage {coverage:.1%} of the feature index is below "
+            f"{min_coverage:.0%}; the price table does not align with the features"
+        )
+    return aligned
+
+
 def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
-                oos_start, val_frac=0.2, derived_top_k=5,
+                oos_start, ohlcv, val_frac=0.2, derived_top_k=5,
                 daily_regime=None, run_sandbox=None) -> dict:
     """Sweep the hypothesis queue for one symbol under Budget + early stopping.
 
@@ -245,24 +268,36 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
     evaluate() see index >= oos_start. Passing it explicitly (dependency
     injection) keeps run_foundry a pure function of its inputs; the caller reads
     research_config.yaml.
+
+    ohlcv is REQUIRED and keyword-only: features_<sym>.parquet holds features
+    only (stage0a keeps price data in the candle source), so a price table must
+    be injected by the caller. It is NOT sliced out of the feature panel.
     """
-    panel_full = load_features(symbol, manifests_dir=manifests_dir)
+    features_full = load_features(symbol, manifests_dir=manifests_dir)
+    ohlcv_full = _align_ohlcv(ohlcv, features_full.index)
 
     # OOS lock. foundry_split slices to pre-oos rows and returns (train, val);
     # we hand the gate the whole pre-oos window (the LLM never sees gate metrics,
     # so there is nothing to overfit to train -- see the note below). The second,
     # strict call is defence-in-depth: it raises OOSLeakError if a single row
     # >= oos_start somehow survived the cut.
-    train, val = foundry_split(panel_full, oos_start, val_frac=val_frac)
-    panel = pd.concat([train, val])
-    foundry_split(panel, oos_start, val_frac=val_frac, strict=True)
+    train, val = foundry_split(features_full, oos_start, val_frac=val_frac)
+    features = pd.concat([train, val])
+    foundry_split(features, oos_start, val_frac=val_frac, strict=True)
+    ohlcv = ohlcv_full.loc[features.index]        # same cut, already aligned
     log.info("%s: OOS lock -> %d/%d bars kept (< %s); train=%d val=%d",
-             symbol, len(panel), len(panel_full), oos_start, len(train), len(val))
+             symbol, len(features), len(features_full), oos_start, len(train), len(val))
 
-    ohlcv = panel[[c for c in _OHLCV_COLS if c in panel.columns]]
-    if "close" not in ohlcv.columns:                # agy 4a: evaluate hard-depends on close
-        raise ValueError(f"feature panel for {symbol} has no 'close' column; cannot evaluate")
-    existing = panel.drop(columns=list(ohlcv.columns), errors="ignore")
+    # forge's panel = features + price. 258/301 zoo alphas require `close` and
+    # 171 require `volume`, so hiding OHLCV from the sandbox would kill the zoo
+    # source outright. The constitution bans the INTRADAY price-derived class
+    # (sub-1H microstructure artefacts, enforced by 1B's theme->dead_class map
+    # and by cfg.interval's 1H floor), not price-derived factors as such.
+    panel = features.join(ohlcv, how="left")
+
+    # dedup correlates are computed against FEATURES only: price columns are
+    # context, not rival factors.
+    existing = features
 
     # agy 3c: include buried factor VALUES so nearest_correlate can dedup vs the graveyard
     gpath = _graveyard_path(symbol, manifests_dir)
@@ -270,7 +305,7 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
         # reindex onto the pre-oos index: a dedup correlate must not be computed
         # over rows the gate is forbidden to look at.
         existing = existing.join(
-            pd.read_parquet(gpath).reindex(panel.index), how="outer", rsuffix="_dead")
+            pd.read_parquet(gpath).reindex(features.index), how="outer", rsuffix="_dead")
 
     run_sb = run_sandbox or make_run_sandbox(sandbox, Path(manifests_dir) / "_foundry_scratch")
     if daily_regime is None:
@@ -285,7 +320,8 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
             daily_idx = panel.index.normalize().unique()
             daily_regime = pd.Series("neutral", index=daily_idx)
 
-    derived_bases = _preoos_top_features(panel, ohlcv, cfg, top_k=derived_top_k)
+    # rank FEATURES only (never the injected price columns) on the pre-oos window
+    derived_bases = _preoos_top_features(features, ohlcv, cfg, top_k=derived_top_k)
     log.info("%s: derived bases ranked on pre-oos data: %s", symbol, derived_bases)
 
     queue = build_queue(symbol=symbol, manifests_dir=manifests_dir, zoo_dir=zoo_dir,
@@ -329,7 +365,7 @@ def enqueue_foundry_job(symbol, runs_dir, params: dict) -> Path:
     return job_path
 
 
-def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, budget=None) -> dict:
+def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, ohlcv, budget=None) -> dict:
     """Foundry runner reconcile: read job.json, run_foundry, mark done.
 
     On any exception from run_foundry, the job file is rewritten with
@@ -346,7 +382,7 @@ def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, budget=None)
         raise KeyError(f"foundry job {job.get('job_id')} params missing 'oos_start' (OOS lock)")
     try:
         summary = run_foundry(job["symbol"], manifests_dir, cfg, llm, sandbox,
-                              budget or Budget(), zoo_dir=zoo_dir,
+                              budget or Budget(), zoo_dir=zoo_dir, ohlcv=ohlcv,
                               oos_start=p["oos_start"], val_frac=p.get("val_frac", 0.2))
     except Exception as e:
         job["status"] = "failed"; job["error"] = str(e); job["finished_at"] = _now()

@@ -167,8 +167,8 @@ def test_run_foundry_respects_budget_and_early_stop(tmp_path, monkeypatch):
     from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
 
     idx = pd.date_range("2022-01-01", periods=100, freq="1D")
-    panel = pd.DataFrame({"close": np.arange(100.0)}, index=idx)
-    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
+    feats = pd.DataFrame({"funding_z": np.arange(100.0)}, index=idx)   # no close: real schema
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: feats)
     monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis(f"h{i}", f"x{i}", SOURCE_ZOO) for i in range(20)])
     # every hypothesis fails -> early stop should fire before all 20 processed
     seen = []
@@ -177,12 +177,13 @@ def test_run_foundry_respects_budget_and_early_stop(tmp_path, monkeypatch):
     summary = run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                           llm=object(), sandbox=object(),
                           budget=Budget(max_factors=20, early_stop_after=3),
-                          zoo_dir=tmp_path, run_sandbox=object(), oos_start=_TEST_OOS)
+                          zoo_dir=tmp_path, run_sandbox=object(), oos_start=_TEST_OOS,
+                          ohlcv=_ohlcv_for(idx))
     assert len(seen) == 3                             # stopped after 3 consecutive fails
     assert summary["forge_failed"] == 3 and summary["candidate"] == 0
 
 
-def test_run_foundry_raises_when_panel_has_no_close(tmp_path, monkeypatch):
+def test_run_foundry_raises_when_injected_ohlcv_has_no_close(tmp_path, monkeypatch):
     import pandas as pd, numpy as np
     from research.hermes import orchestrator as orch
     from research.hermes.orchestrator import run_foundry, Budget
@@ -190,10 +191,11 @@ def test_run_foundry_raises_when_panel_has_no_close(tmp_path, monkeypatch):
     idx = pd.date_range("2022-01-01", periods=50, freq="1D")
     monkeypatch.setattr(orch, "load_features",
                         lambda s, manifests_dir=None: pd.DataFrame({"funding_z": np.arange(50.0)}, index=idx))
-    with pytest.raises(ValueError, match="close"):      # agy 4a
+    priceless = pd.DataFrame({"volume": np.ones(50)}, index=idx)     # no close column
+    with pytest.raises(ValueError, match="close"):
         run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                     llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path,
-                    oos_start=_TEST_OOS)
+                    oos_start=_TEST_OOS, ohlcv=priceless)
 
 
 def test_run_foundry_wires_graveyard_values_into_existing_and_dead(tmp_path, monkeypatch):
@@ -206,8 +208,9 @@ def test_run_foundry_wires_graveyard_values_into_existing_and_dead(tmp_path, mon
     from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
 
     idx = pd.date_range("2022-01-01", periods=60, freq="1D")
-    panel = pd.DataFrame({"close": np.arange(60.0), "some_factor": np.arange(60.0) * 2}, index=idx)
-    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
+    # features-only: the real features_<sym>.parquet carries no OHLCV
+    feats = pd.DataFrame({"funding_z": np.arange(60.0), "some_factor": np.arange(60.0) * 2}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: feats)
     monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h0", "x0", SOURCE_ZOO)])
 
     # pre-seed a graveyard parquet with a dead factor's values, same helper the
@@ -226,7 +229,7 @@ def test_run_foundry_wires_graveyard_values_into_existing_and_dead(tmp_path, mon
     run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                llm=object(), sandbox=object(),
                budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
-               oos_start=_TEST_OOS)
+               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx))
 
     cols = captured["existing_and_dead"].columns
     assert "dead_factor_x" in cols            # came from the graveyard parquet
@@ -245,7 +248,7 @@ def test_run_foundry_daily_regime_fallback_is_neutral_and_daily_indexed(tmp_path
     # hourly panel: finer than daily, so a panel-frequency fallback would be
     # distinguishable from a correctly daily-normalized one by row count/index.
     idx = pd.date_range("2022-01-01", periods=72, freq="1h")
-    panel = pd.DataFrame({"close": np.arange(72.0)}, index=idx)
+    panel = pd.DataFrame({"funding_z": np.arange(72.0)}, index=idx)   # features-only: real parquet has no close
     monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
     monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h0", "x0", SOURCE_ZOO)])
 
@@ -258,7 +261,7 @@ def test_run_foundry_daily_regime_fallback_is_neutral_and_daily_indexed(tmp_path
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                llm=object(), sandbox=object(),
                budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
-               oos_start=_TEST_OOS)
+               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx))
 
     dr = captured["daily_regime"]
     assert (dr == "neutral").all()
@@ -277,7 +280,7 @@ def test_run_foundry_loads_daily_regime_from_regime_manifest_when_present(tmp_pa
     from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
 
     idx = pd.date_range("2022-01-01", periods=72, freq="1h")
-    panel = pd.DataFrame({"close": np.arange(72.0)}, index=idx)
+    panel = pd.DataFrame({"funding_z": np.arange(72.0)}, index=idx)   # features-only: real parquet has no close
     monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
     monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h0", "x0", SOURCE_ZOO)])
 
@@ -303,7 +306,7 @@ def test_run_foundry_loads_daily_regime_from_regime_manifest_when_present(tmp_pa
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                llm=object(), sandbox=object(),
                budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
-               oos_start=_TEST_OOS)
+               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx))
 
     dr = captured["daily_regime"]
     assert len(dr) == 3
@@ -321,7 +324,7 @@ def test_run_foundry_falls_back_to_neutral_when_regime_manifest_malformed(tmp_pa
     from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
 
     idx = pd.date_range("2022-01-01", periods=72, freq="1h")
-    panel = pd.DataFrame({"close": np.arange(72.0)}, index=idx)
+    panel = pd.DataFrame({"funding_z": np.arange(72.0)}, index=idx)   # features-only: real parquet has no close
     monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
     monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h0", "x0", SOURCE_ZOO)])
 
@@ -336,7 +339,7 @@ def test_run_foundry_falls_back_to_neutral_when_regime_manifest_malformed(tmp_pa
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                llm=object(), sandbox=object(),
                budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
-               oos_start=_TEST_OOS)
+               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx))
 
     dr = captured["daily_regime"]
     assert (dr == "neutral").all()
@@ -362,7 +365,7 @@ def test_enqueue_writes_job_and_runner_reconciles(tmp_path, monkeypatch):
         return {"candidate": 1}
     monkeypatch.setattr(orch, "run_foundry", _fake_run_foundry)
     summary = run_foundry_job(job_path, manifests_dir=tmp_path, llm=object(),
-                              sandbox=object(), zoo_dir=tmp_path)
+                              sandbox=object(), zoo_dir=tmp_path, ohlcv=None)
     assert called["symbol"] == "eth" and summary["candidate"] == 1
     assert json.loads(job_path.read_text())["status"] == "done"     # reconciled
 
@@ -384,7 +387,7 @@ def test_run_foundry_job_marks_failed_on_exception(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="boom"):
         run_foundry_job(job_path, manifests_dir=tmp_path, llm=object(),
-                        sandbox=object(), zoo_dir=tmp_path)
+                        sandbox=object(), zoo_dir=tmp_path, ohlcv=None)
 
     job = json.loads(job_path.read_text())
     assert job["status"] == "failed"
@@ -410,10 +413,10 @@ def test_run_foundry_never_feeds_oos_rows_to_forge_or_evaluate(tmp_path, monkeyp
 
     oos_start = "2025-01-01"
     idx = pd.date_range("2024-06-01", "2026-06-01", freq="1D", tz="UTC")
-    panel = pd.DataFrame({"close": np.arange(float(len(idx)))}, index=idx)
+    feats = pd.DataFrame({"funding_z": np.arange(float(len(idx)))}, index=idx)
     assert (idx >= pd.Timestamp(oos_start, tz="UTC")).any(), "fixture must span the OOS boundary"
 
-    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: feats)
     monkeypatch.setattr(orch, "build_queue",
                         lambda **k: [Hypothesis("h1", "x", SOURCE_ZOO)])
 
@@ -426,7 +429,8 @@ def test_run_foundry_never_feeds_oos_rows_to_forge_or_evaluate(tmp_path, monkeyp
 
     run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                 llm=object(), sandbox=object(), budget=Budget(),
-                zoo_dir=tmp_path, run_sandbox=object(), oos_start=oos_start)
+                zoo_dir=tmp_path, run_sandbox=object(), oos_start=oos_start,
+                ohlcv=_ohlcv_for(idx))
 
     cutoff = pd.Timestamp(oos_start, tz="UTC")
     assert seen["panel_max"] < cutoff, f"forge saw OOS data up to {seen['panel_max']}"
@@ -444,3 +448,83 @@ def test_run_foundry_requires_oos_start(tmp_path, monkeypatch):
     with pytest.raises(TypeError):        # oos_start is a required keyword-only arg
         run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                     llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path)
+
+
+# ── OHLCV must be injected, never sliced out of the feature panel ──────────
+#
+# agy: features_<sym>.parquet deliberately holds only features -- OHLCV lives in
+# the candle source (stage0a fetches it via lib.okx_data.fetch_candles). The old
+# `ohlcv = panel[[c for c in _OHLCV_COLS if c in panel.columns]]` sliced columns
+# off a table that never had them, so run_foundry raised on every real manifest.
+# Every unit test hid this by hand-building a DataFrame that happened to carry
+# "close" -- "Fixture Schema Divergence". These tests build the fixture through
+# the REAL dump_features/load_features round-trip so the schema cannot diverge.
+
+def _write_real_features(tmp_path, n=400):
+    """Schema-enforced fixture: goes through production dump_features()."""
+    import numpy as np, pandas as pd
+    from research.lib.factor_io import dump_features
+    idx = pd.date_range("2022-01-01", periods=n, freq="1h", tz="UTC")
+    rng = np.random.default_rng(0)
+    dump_features("eth", {"rsi_14": pd.Series(rng.normal(size=n), index=idx),
+                          "funding_z": pd.Series(rng.normal(size=n), index=idx)},
+                  manifests_dir=tmp_path)
+    return idx
+
+
+def _ohlcv_for(idx):
+    import numpy as np, pandas as pd
+    close = 100 + np.cumsum(np.random.default_rng(1).normal(size=len(idx)))
+    return pd.DataFrame({"open": close, "high": close, "low": close,
+                         "close": close, "volume": np.ones(len(idx))}, index=idx)
+
+
+def test_real_features_parquet_carries_no_ohlcv(tmp_path):
+    # documents WHY ohlcv must be injected: the production schema has no close
+    from research.lib.factor_io import load_features
+    idx = _write_real_features(tmp_path)
+    feats = load_features("eth", manifests_dir=tmp_path)
+    assert "close" not in feats.columns
+
+
+def test_run_foundry_smoke_on_real_feature_schema(tmp_path, monkeypatch):
+    """E2E artifact smoke test (agy #4): real features parquet + injected ohlcv.
+    Any regression in the data seam blows up here instead of at 3am in prod."""
+    import pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = _write_real_features(tmp_path)
+    ohlcv = _ohlcv_for(idx)
+    monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h1", "x", SOURCE_ZOO)])
+
+    seen = {}
+    def spy(hyp, panel_arg, ohlcv_arg, *a, **k):
+        seen["panel_cols"] = set(panel_arg.columns)
+        seen["ohlcv_cols"] = set(ohlcv_arg.columns)
+        return "forge_failed"
+    monkeypatch.setattr(orch, "process_hypothesis", spy)
+
+    run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
+                llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path,
+                oos_start=_TEST_OOS, ohlcv=ohlcv, run_sandbox=object())
+
+    # forge's panel carries BOTH: 258/301 zoo alphas require close, 171 require volume
+    assert {"rsi_14", "funding_z", "close", "volume"} <= seen["panel_cols"]
+    # the gate gets its own ohlcv object, not a slice of the feature table
+    assert "close" in seen["ohlcv_cols"]
+
+
+def test_run_foundry_rejects_ohlcv_that_does_not_cover_features(tmp_path, monkeypatch):
+    import pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    idx = _write_real_features(tmp_path)
+    ohlcv = _ohlcv_for(idx).iloc[:50]           # agy #3: short/misaligned price table
+    with pytest.raises(ValueError, match="coverage|align"):
+        run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
+                    llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path,
+                    oos_start=_TEST_OOS, ohlcv=ohlcv, run_sandbox=object())
