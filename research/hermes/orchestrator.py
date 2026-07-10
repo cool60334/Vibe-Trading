@@ -4,6 +4,7 @@ early stopping, triggered write-file->reconcile (never inline)."""
 from __future__ import annotations
 
 import hashlib
+import logging
 import tempfile
 from collections import Counter
 from dataclasses import dataclass
@@ -22,9 +23,19 @@ from research.hermes.sandbox import SandboxExecutor
 from research.lib.factor_io import _atomic_to_parquet, _symbol_short, load_features
 from research.lib.research_ledger import append_event
 
+log = logging.getLogger(__name__)
+
 _OHLCV_COLS = ("open", "high", "low", "close", "volume")
 
 MAX_FORGE_RETRIES = 3          # P5: bounded repair, then bury
+
+# process_hypothesis's return literals / should_early_stop's comparison /
+# run_foundry's Counter seed all reference these constants (not bare string
+# literals) so a future rename is a one-place edit that fails loudly
+# (NameError) instead of drifting silently across three call sites.
+OUTCOME_FORGE_FAILED = "forge_failed"
+OUTCOME_CANDIDATE = "candidate"
+OUTCOME_REJECTED = "rejected"
 
 
 def make_run_sandbox(sandbox: SandboxExecutor, scratch_dir: str | Path):
@@ -128,7 +139,7 @@ def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
         upsert_card(EvidenceCard(**common, verdict=VERDICT_GRAVEYARD,
                                  death_reason=fr.death_reason or "forge failed"),
                     symbol, manifests_dir)
-        return "forge_failed"
+        return OUTCOME_FORGE_FAILED
 
     res = evaluate(fr.series, ohlcv, daily_regime, existing_and_dead, symbol, manifests_dir, cfg)
     # write factor_trial AFTER evaluate: foundry_dsr already appends the CURRENT
@@ -151,7 +162,7 @@ def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
     else:
         _merge_into_graveyard(symbol, manifests_dir, hyp.id, fr.series)
     upsert_card(card, symbol, manifests_dir)
-    return "candidate" if res.passed else "rejected"
+    return OUTCOME_CANDIDATE if res.passed else OUTCOME_REJECTED
 
 
 @dataclass(frozen=True)
@@ -166,7 +177,7 @@ def should_early_stop(outcomes: list, budget: Budget) -> bool:
     candidate resets the streak."""
     streak = 0
     for o in reversed(outcomes):
-        if o == "candidate":
+        if o == OUTCOME_CANDIDATE:
             break
         streak += 1
     return streak >= budget.early_stop_after
@@ -192,6 +203,7 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
     if daily_regime is None:
         # agy 4b: regime_ic expects DAILY labels (it ffills onto the factor index);
         # a panel-frequency fallback would violate that contract.
+        log.warning("daily_regime not supplied for %s; falling back to all-neutral", symbol)
         daily_idx = panel.index.normalize().unique()
         daily_regime = pd.Series("neutral", index=daily_idx)
 
@@ -206,6 +218,6 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
     # seed all three outcome literals at 0 so callers/tests can always index
     # summary["candidate"]/["rejected"]/["forge_failed"] without a KeyError,
     # even on a night where one outcome never occurred.
-    summary = Counter({"forge_failed": 0, "candidate": 0, "rejected": 0})
+    summary = Counter({OUTCOME_FORGE_FAILED: 0, OUTCOME_CANDIDATE: 0, OUTCOME_REJECTED: 0})
     summary.update(outcomes)
     return dict(summary)

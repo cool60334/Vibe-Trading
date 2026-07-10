@@ -188,3 +188,71 @@ def test_run_foundry_raises_when_panel_has_no_close(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="close"):      # agy 4a
         run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                     llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path)
+
+
+def test_run_foundry_wires_graveyard_values_into_existing_and_dead(tmp_path, monkeypatch):
+    """agy 3c: existing.join(pd.read_parquet(gpath), ...) must actually surface
+    buried-factor VALUES to process_hypothesis, not merely avoid crashing."""
+    import pandas as pd, numpy as np
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget, _graveyard_path, _merge_column
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = pd.date_range("2022-01-01", periods=60, freq="1D")
+    panel = pd.DataFrame({"close": np.arange(60.0), "some_factor": np.arange(60.0) * 2}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
+    monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h0", "x0", SOURCE_ZOO)])
+
+    # pre-seed a graveyard parquet with a dead factor's values, same helper the
+    # orchestrator itself uses to write it (_merge_into_graveyard's building block)
+    gpath = _graveyard_path("eth", tmp_path)
+    gpath.parent.mkdir(parents=True, exist_ok=True)
+    dead_series = pd.Series(np.arange(60.0) * 3, index=idx)
+    _merge_column(None, "dead_factor_x", dead_series).to_parquet(gpath)
+
+    captured = {}
+    def fake_process(hyp, panel_, ohlcv_, daily_regime_, existing_and_dead, *rest, **kw):
+        captured["existing_and_dead"] = existing_and_dead
+        return "candidate"
+    monkeypatch.setattr(orch, "process_hypothesis", fake_process)
+
+    run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+               llm=object(), sandbox=object(),
+               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path)
+
+    cols = captured["existing_and_dead"].columns
+    assert "dead_factor_x" in cols            # came from the graveyard parquet
+    assert "some_factor" in cols              # came from the live feature panel
+
+
+def test_run_foundry_daily_regime_fallback_is_neutral_and_daily_indexed(tmp_path, monkeypatch):
+    """agy 4b: the fallback must ffill from a DAILY-normalized index, not the
+    panel's own (finer) frequency."""
+    import pandas as pd, numpy as np
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    # hourly panel: finer than daily, so a panel-frequency fallback would be
+    # distinguishable from a correctly daily-normalized one by row count/index.
+    idx = pd.date_range("2022-01-01", periods=72, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(72.0)}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
+    monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h0", "x0", SOURCE_ZOO)])
+
+    captured = {}
+    def fake_process(hyp, panel_, ohlcv_, daily_regime_, *rest, **kw):
+        captured["daily_regime"] = daily_regime_
+        return "candidate"
+    monkeypatch.setattr(orch, "process_hypothesis", fake_process)
+
+    run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
+               llm=object(), sandbox=object(),
+               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path)
+
+    dr = captured["daily_regime"]
+    assert (dr == "neutral").all()
+    assert len(dr) < len(panel)                        # daily, not hourly, granularity
+    assert (dr.index == dr.index.normalize()).all()     # every stamp is midnight
