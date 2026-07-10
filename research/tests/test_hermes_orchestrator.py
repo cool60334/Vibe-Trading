@@ -4,6 +4,11 @@ import pytest
 from research.hermes.orchestrator import make_run_sandbox
 
 
+# Foundry's OOS lock is mandatory. Fixtures predate this cutoff, so the whole
+# fixture panel survives the split while the guard itself still runs.
+_TEST_OOS = "2030-01-01"
+
+
 class _FakeSandbox:
     """Stands in for DockerSandbox: 'runs' by writing a candidate parquet."""
     def __init__(self, fn): self.fn = fn
@@ -172,7 +177,7 @@ def test_run_foundry_respects_budget_and_early_stop(tmp_path, monkeypatch):
     summary = run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                           llm=object(), sandbox=object(),
                           budget=Budget(max_factors=20, early_stop_after=3),
-                          zoo_dir=tmp_path, run_sandbox=object())
+                          zoo_dir=tmp_path, run_sandbox=object(), oos_start=_TEST_OOS)
     assert len(seen) == 3                             # stopped after 3 consecutive fails
     assert summary["forge_failed"] == 3 and summary["candidate"] == 0
 
@@ -187,7 +192,8 @@ def test_run_foundry_raises_when_panel_has_no_close(tmp_path, monkeypatch):
                         lambda s, manifests_dir=None: pd.DataFrame({"funding_z": np.arange(50.0)}, index=idx))
     with pytest.raises(ValueError, match="close"):      # agy 4a
         run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
-                    llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path)
+                    llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path,
+                    oos_start=_TEST_OOS)
 
 
 def test_run_foundry_wires_graveyard_values_into_existing_and_dead(tmp_path, monkeypatch):
@@ -219,7 +225,8 @@ def test_run_foundry_wires_graveyard_values_into_existing_and_dead(tmp_path, mon
 
     run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                llm=object(), sandbox=object(),
-               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path)
+               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
+               oos_start=_TEST_OOS)
 
     cols = captured["existing_and_dead"].columns
     assert "dead_factor_x" in cols            # came from the graveyard parquet
@@ -250,7 +257,8 @@ def test_run_foundry_daily_regime_fallback_is_neutral_and_daily_indexed(tmp_path
 
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                llm=object(), sandbox=object(),
-               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path)
+               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
+               oos_start=_TEST_OOS)
 
     dr = captured["daily_regime"]
     assert (dr == "neutral").all()
@@ -294,7 +302,8 @@ def test_run_foundry_loads_daily_regime_from_regime_manifest_when_present(tmp_pa
 
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                llm=object(), sandbox=object(),
-               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path)
+               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
+               oos_start=_TEST_OOS)
 
     dr = captured["daily_regime"]
     assert len(dr) == 3
@@ -326,7 +335,8 @@ def test_run_foundry_falls_back_to_neutral_when_regime_manifest_malformed(tmp_pa
 
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                llm=object(), sandbox=object(),
-               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path)
+               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
+               oos_start=_TEST_OOS)
 
     dr = captured["daily_regime"]
     assert (dr == "neutral").all()
@@ -339,7 +349,8 @@ def test_enqueue_writes_job_and_runner_reconciles(tmp_path, monkeypatch):
     from research.hermes.orchestrator import enqueue_foundry_job, run_foundry_job
 
     job_path = enqueue_foundry_job("eth", runs_dir=tmp_path,
-                                   params={"interval": "1D", "horizon_h": 24})
+                                   params={"interval": "1D", "horizon_h": 24,
+                                           "oos_start": _TEST_OOS})
     assert job_path.exists()
     job = json.loads(job_path.read_text())
     assert job["symbol"] == "eth" and job["status"] == "queued"
@@ -364,7 +375,8 @@ def test_run_foundry_job_marks_failed_on_exception(tmp_path, monkeypatch):
     from research.hermes.orchestrator import enqueue_foundry_job, run_foundry_job
 
     job_path = enqueue_foundry_job("eth", runs_dir=tmp_path,
-                                   params={"interval": "1D", "horizon_h": 24})
+                                   params={"interval": "1D", "horizon_h": 24,
+                                           "oos_start": _TEST_OOS})
 
     def _boom(symbol, *a, **k):
         raise RuntimeError("boom")
@@ -378,3 +390,57 @@ def test_run_foundry_job_marks_failed_on_exception(tmp_path, monkeypatch):
     assert job["status"] == "failed"
     assert "boom" in job["error"]
     assert "finished_at" in job
+
+
+# ── OOS lock: foundry_split must actually gate what reaches forge/evaluate ──
+#
+# Phase 0 built foundry_split ("pipeline walk-forward OOS is reserved; Foundry
+# must never see index >= oos_start") but nothing in the production path ever
+# called it: run_foundry fed load_features()'s FULL history straight to forge()
+# and evaluate(). 37% of the ETH panel sits at/after oos_start, 5.8% at/after
+# final_holdout_start. No real run had happened yet (LLMCoder was never wired),
+# so nothing was contaminated -- this is a pre-flight guard.
+
+def test_run_foundry_never_feeds_oos_rows_to_forge_or_evaluate(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    oos_start = "2025-01-01"
+    idx = pd.date_range("2024-06-01", "2026-06-01", freq="1D", tz="UTC")
+    panel = pd.DataFrame({"close": np.arange(float(len(idx)))}, index=idx)
+    assert (idx >= pd.Timestamp(oos_start, tz="UTC")).any(), "fixture must span the OOS boundary"
+
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
+    monkeypatch.setattr(orch, "build_queue",
+                        lambda **k: [Hypothesis("h1", "x", SOURCE_ZOO)])
+
+    seen = {}
+    def spy(hyp, panel_arg, ohlcv_arg, *a, **k):
+        seen["panel_max"] = panel_arg.index.max()
+        seen["ohlcv_max"] = ohlcv_arg.index.max()
+        return "forge_failed"
+    monkeypatch.setattr(orch, "process_hypothesis", spy)
+
+    run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                llm=object(), sandbox=object(), budget=Budget(),
+                zoo_dir=tmp_path, run_sandbox=object(), oos_start=oos_start)
+
+    cutoff = pd.Timestamp(oos_start, tz="UTC")
+    assert seen["panel_max"] < cutoff, f"forge saw OOS data up to {seen['panel_max']}"
+    assert seen["ohlcv_max"] < cutoff, f"evaluate saw OOS data up to {seen['ohlcv_max']}"
+
+
+def test_run_foundry_requires_oos_start(tmp_path, monkeypatch):
+    import numpy as np, pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    idx = pd.date_range("2024-06-01", periods=50, freq="1D", tz="UTC")
+    monkeypatch.setattr(orch, "load_features",
+                        lambda s, manifests_dir=None: pd.DataFrame({"close": np.arange(50.0)}, index=idx))
+    with pytest.raises(TypeError):        # oos_start is a required keyword-only arg
+        run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                    llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path)

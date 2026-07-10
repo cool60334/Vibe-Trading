@@ -23,6 +23,7 @@ from research.hermes.forge import forge
 from research.hermes.gatekeeper import evaluate, GateConfig
 from research.hermes.hypothesis_queue import build_queue
 from research.hermes.sandbox import SandboxExecutor
+from research.hermes.split import foundry_split
 from research.lib.factor_io import _atomic_to_parquet, _symbol_short, load_features
 from research.lib.research_ledger import append_event
 
@@ -209,12 +210,30 @@ def _load_daily_regime(symbol, manifests_dir) -> "pd.Series | None":
         return None
 
 
-def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
-                daily_regime=None, run_sandbox=None) -> dict:
+def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
+                oos_start, val_frac=0.2, daily_regime=None, run_sandbox=None) -> dict:
     """Sweep the hypothesis queue for one symbol under Budget + early stopping.
+
     zoo_dir is REQUIRED (agy 4c: build_queue does Path(zoo_dir).rglob -> Path(None)
-    raises TypeError)."""
-    panel = load_features(symbol, manifests_dir=manifests_dir)
+    raises TypeError). oos_start is REQUIRED and keyword-only: the pipeline's
+    walk-forward OOS window is reserved, so Foundry must never let forge() or
+    evaluate() see index >= oos_start. Passing it explicitly (dependency
+    injection) keeps run_foundry a pure function of its inputs; the caller reads
+    research_config.yaml.
+    """
+    panel_full = load_features(symbol, manifests_dir=manifests_dir)
+
+    # OOS lock. foundry_split slices to pre-oos rows and returns (train, val);
+    # we hand the gate the whole pre-oos window (the LLM never sees gate metrics,
+    # so there is nothing to overfit to train -- see the note below). The second,
+    # strict call is defence-in-depth: it raises OOSLeakError if a single row
+    # >= oos_start somehow survived the cut.
+    train, val = foundry_split(panel_full, oos_start, val_frac=val_frac)
+    panel = pd.concat([train, val])
+    foundry_split(panel, oos_start, val_frac=val_frac, strict=True)
+    log.info("%s: OOS lock -> %d/%d bars kept (< %s); train=%d val=%d",
+             symbol, len(panel), len(panel_full), oos_start, len(train), len(val))
+
     ohlcv = panel[[c for c in _OHLCV_COLS if c in panel.columns]]
     if "close" not in ohlcv.columns:                # agy 4a: evaluate hard-depends on close
         raise ValueError(f"feature panel for {symbol} has no 'close' column; cannot evaluate")
@@ -223,7 +242,10 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
     # agy 3c: include buried factor VALUES so nearest_correlate can dedup vs the graveyard
     gpath = _graveyard_path(symbol, manifests_dir)
     if gpath.exists():
-        existing = existing.join(pd.read_parquet(gpath), how="outer", rsuffix="_dead")
+        # reindex onto the pre-oos index: a dedup correlate must not be computed
+        # over rows the gate is forbidden to look at.
+        existing = existing.join(
+            pd.read_parquet(gpath).reindex(panel.index), how="outer", rsuffix="_dead")
 
     run_sb = run_sandbox or make_run_sandbox(sandbox, Path(manifests_dir) / "_foundry_scratch")
     if daily_regime is None:
@@ -290,9 +312,14 @@ def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, budget=None)
     job = json.loads(job_path.read_text(encoding="utf-8"))
     p = job["params"]
     cfg = GateConfig(interval=p.get("interval", "1H"), horizon_h=p.get("horizon_h", 24))
+    # oos_start has no default: a job that forgets it must fail loudly rather
+    # than silently let Foundry evaluate factors on the reserved OOS window.
+    if "oos_start" not in p:
+        raise KeyError(f"foundry job {job.get('job_id')} params missing 'oos_start' (OOS lock)")
     try:
         summary = run_foundry(job["symbol"], manifests_dir, cfg, llm, sandbox,
-                              budget or Budget(), zoo_dir=zoo_dir)
+                              budget or Budget(), zoo_dir=zoo_dir,
+                              oos_start=p["oos_start"], val_frac=p.get("val_frac", 0.2))
     except Exception as e:
         job["status"] = "failed"; job["error"] = str(e); job["finished_at"] = _now()
         _write_job_json(job_path, job)
