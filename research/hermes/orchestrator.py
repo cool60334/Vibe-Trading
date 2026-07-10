@@ -213,6 +213,10 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
     queue = build_queue(symbol=symbol, manifests_dir=manifests_dir,
                         zoo_dir=zoo_dir, llm_raw=[])[: budget.max_factors]
     outcomes: list = []
+    # `existing` is captured once above and never updated per-iteration: a factor
+    # that passes/fails mid-sweep is NOT deduped against by later factors in the
+    # SAME run. Deliberate choice (plan Task 4) to keep the loop simple; same-night
+    # self-dedup is deferred to the next run, which reloads candidates+graveyard.
     for hyp in queue:
         outcomes.append(process_hypothesis(hyp, panel, ohlcv, daily_regime, existing,
                                            symbol, manifests_dir, cfg, llm, run_sb))
