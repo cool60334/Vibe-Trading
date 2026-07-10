@@ -42,6 +42,46 @@ class SandboxError(HermesGuardError, RuntimeError):
     """Raised when the Docker sandbox is unavailable or a sandboxed run fails."""
 
 
+_OOM_EXIT_CODE = 137          # 128 + SIGKILL(9): what the cgroup OOM killer leaves behind
+_OOM_STDERR_MARKERS = ("MemoryError", "Killed")
+
+
+class SandboxRunFailed(SandboxError):
+    """The container ran, but the LLM's code failed inside it.
+
+    Distinct from a bare SandboxError (docker daemon down, image not pinned):
+    those are infrastructure faults that must abort the sweep, whereas a
+    non-zero exit, an OOM kill, or a wall-clock timeout are caused by the code
+    under test and are exactly what forge()'s bounded repair loop exists for.
+    Before this split every bad LLM factor killed the entire nightly run.
+
+    Timeout is classified here too, and that is a deliberate trade-off: the
+    wall clock covers the whole `docker run`, so a wedged daemon or a saturated
+    host can trip it and get blamed on the LLM. The bound on that mistake is
+    forge()'s max_retries plus run_foundry()'s should_early_stop -- a wedged
+    host burns a few retries and then the sweep stops. The common case, by far,
+    is an LLM writing `while True`.
+    """
+    def __init__(self, message: str, *, exit_code: int | None = None, oom: bool = False):
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.oom = oom
+
+
+def _looks_like_oom(exit_code: int, stderr: str) -> bool:
+    """Exit code 137 OR a MemoryError/Killed marker in stderr.
+
+    Exit-code-only detection misses the common case: CPython raises MemoryError
+    and exits 1 long before the cgroup OOM killer fires. `docker inspect
+    .State.OOMKilled` is not available to us -- `--rm` has already reaped the
+    container by the time we look. This is a heuristic; the message says
+    "looks OOM-killed", never asserts it as the sole cause.
+    """
+    if exit_code == _OOM_EXIT_CODE:
+        return True
+    return any(m in stderr for m in _OOM_STDERR_MARKERS)
+
+
 def is_docker_available() -> bool:
     if shutil.which("docker") is None:
         return False
@@ -181,11 +221,19 @@ class DockerSandbox(SandboxExecutor):
                         subprocess.run(verb, capture_output=True, timeout=15)
                     except Exception:
                         pass
-                raise SandboxError(
-                    f"sandbox timed out after {self.timeout_s}s; container {name} reaped"
+                raise SandboxRunFailed(
+                    f"sandbox timed out after {self.timeout_s}s; container {name} reaped",
+                    exit_code=None,
                 ) from exc
             if proc.returncode != 0:
-                raise SandboxError(f"sandbox run failed: {proc.stderr[-500:]}")
+                stderr = proc.stderr or ""
+                oom = _looks_like_oom(proc.returncode, stderr)
+                hint = (f"; looks OOM-killed — the code exceeded --memory={self.memory}"
+                        if oom else "")
+                raise SandboxRunFailed(
+                    f"sandbox run failed (exit {proc.returncode}){hint}\n{stderr[-800:]}",
+                    exit_code=proc.returncode, oom=oom,
+                )
             return str(Path(output_dir) / "candidate.parquet")
         finally:
             if tmp_source_path is not None:

@@ -140,3 +140,85 @@ def test_allow_unpinned_opt_out_is_explicit(tmp_path, monkeypatch):
 def test_digest_pinned_image_passes_validation():
     from research.hermes.sandbox import DockerSandbox, _assert_image_pinned
     _assert_image_pinned("python@sha256:" + "a" * 64, allow_unpinned=False)   # no raise
+
+
+# ── Task 1: SandboxRunFailed classification (container ran, code failed) ─────
+
+def test_nonzero_exit_is_run_failed_not_infra(tmp_path, monkeypatch):
+    import subprocess
+    from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    class R: returncode = 1; stdout = ""; stderr = "KeyError: 'nonexistent'"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    sb = DockerSandbox(allow_unpinned=True, timeout_s=5)
+    safe = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
+    with pytest.raises(SandboxRunFailed, match="nonexistent"):
+        sb.run(safe, input_parquet="x.parquet", output_dir=str(tmp_path))
+    assert issubclass(SandboxRunFailed, SandboxError)      # still a SandboxError
+
+
+def test_oom_detected_by_exit_137(tmp_path, monkeypatch):
+    import subprocess
+    from research.hermes.sandbox import DockerSandbox, SandboxRunFailed
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    class R: returncode = 137; stdout = ""; stderr = ""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    sb = DockerSandbox(allow_unpinned=True, memory="256m", timeout_s=5)
+    safe = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
+    with pytest.raises(SandboxRunFailed) as ei:
+        sb.run(safe, input_parquet="x.parquet", output_dir=str(tmp_path))
+    assert ei.value.oom is True and ei.value.exit_code == 137
+
+
+def test_oom_detected_by_memoryerror_on_exit_1(tmp_path, monkeypatch):
+    # agy 3b: CPython raises MemoryError and exits 1 -- the cgroup OOM killer
+    # never fires, so exit-code-only detection misses this entirely.
+    import subprocess
+    from research.hermes.sandbox import DockerSandbox, SandboxRunFailed
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    class R: returncode = 1; stdout = ""; stderr = "Traceback...\nMemoryError\n"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    sb = DockerSandbox(allow_unpinned=True, memory="256m", timeout_s=5)
+    safe = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
+    with pytest.raises(SandboxRunFailed) as ei:
+        sb.run(safe, input_parquet="x.parquet", output_dir=str(tmp_path))
+    assert ei.value.oom is True and ei.value.exit_code == 1
+
+
+def test_ordinary_error_is_not_flagged_as_oom(tmp_path, monkeypatch):
+    import subprocess
+    from research.hermes.sandbox import DockerSandbox, SandboxRunFailed
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    class R: returncode = 1; stdout = ""; stderr = "KeyError: 'nope'"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    sb = DockerSandbox(allow_unpinned=True, timeout_s=5)
+    safe = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
+    with pytest.raises(SandboxRunFailed) as ei:
+        sb.run(safe, input_parquet="x.parquet", output_dir=str(tmp_path))
+    assert ei.value.oom is False
+
+
+def test_timeout_is_run_failed_not_infra(tmp_path, monkeypatch):
+    import subprocess
+    from research.hermes.sandbox import DockerSandbox, SandboxRunFailed
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(cmd, 1)
+        class R: returncode = 0; stdout = ""; stderr = ""
+        return R()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    sb = DockerSandbox(allow_unpinned=True, timeout_s=1)
+    safe = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
+    with pytest.raises(SandboxRunFailed, match="timed out"):   # usually the LLM's infinite loop
+        sb.run(safe, input_parquet="x.parquet", output_dir=str(tmp_path))
+
+
+def test_daemon_down_stays_infra(monkeypatch, tmp_path):
+    from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: False)
+    sb = DockerSandbox(allow_unpinned=True)
+    safe = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
+    with pytest.raises(SandboxError) as ei:
+        sb.run(safe, input_parquet="x", output_dir=str(tmp_path))
+    assert not isinstance(ei.value, SandboxRunFailed)      # infra: must abort the sweep
