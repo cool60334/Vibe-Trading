@@ -24,3 +24,13 @@ def test_run_sandbox_roundtrips_panel_to_series(tmp_path):
     assert isinstance(s, pd.Series)
     assert s.index.equals(panel.index)               # index restored from panel
     pd.testing.assert_series_equal(s, panel["close"].pct_change(3), check_names=False)
+
+
+def test_run_sandbox_raises_on_length_mismatch(tmp_path):
+    idx = pd.date_range("2024-01-01", periods=50, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(50.0)}, index=idx)
+    # sandboxed compute() returns a shorter series than the input panel
+    sb = _FakeSandbox(lambda p: p["close"].iloc[:-5].reset_index(drop=True))
+    run = make_run_sandbox(sb, scratch_dir=tmp_path)
+    with pytest.raises(ValueError, match="sandbox output length"):
+        run("def compute(df): ...", panel)
