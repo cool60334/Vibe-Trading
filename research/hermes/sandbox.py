@@ -39,7 +39,7 @@ RUNNER_TEMPLATE_PATH = Path(__file__).resolve().parent / "_runner_template.py"
 
 
 class SandboxError(HermesGuardError, RuntimeError):
-    """Raised when the Docker sandbox is unavailable or a sandboxed run fails."""
+    """Raised when the Docker sandbox itself is unavailable (daemon down, image not pinned by digest)."""
 
 
 _OOM_EXIT_CODE = 137          # 128 + SIGKILL(9): what the cgroup OOM killer leaves behind

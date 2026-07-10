@@ -167,8 +167,14 @@ def test_forge_buries_on_stripped_index_with_clear_reason():
     from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
     idx = pd.date_range("2024-01-01", periods=200, freq="1h")
     panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    calls = {"n": 0}
     class GoodLLM:
-        def complete(self, p): return "```python\ndef compute(df):\n    return df['close']\n```"
+        # Task 3: distinct code per attempt -- identical code across attempts
+        # now short-circuits, which would bury before max_retries is
+        # exhausted via the contract-violation branch this test exercises.
+        def complete(self, p):
+            calls["n"] += 1
+            return f"```python\ndef compute(df):\n    x = {calls['n']}\n    return df['close']\n```"
     strip = lambda code, pnl: pnl["close"].reset_index(drop=True)   # index stripped
     res = forge(Hypothesis("h", "x", SOURCE_LLM), GoodLLM(), strip, panel, max_retries=2)
     assert not res.success and "index" in res.death_reason.lower()  # clear contract msg
@@ -184,8 +190,14 @@ def test_forge_buries_cleanly_when_run_sandbox_returns_non_series():
     from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
     idx = pd.date_range("2024-01-01", periods=200, freq="1h")
     panel = pd.DataFrame({"close": np.arange(200.0)}, index=idx)
+    calls = {"n": 0}
     class GoodLLM:
-        def complete(self, p): return "```python\ndef compute(df):\n    return df['close']\n```"
+        # Task 3: distinct code per attempt -- identical code across attempts
+        # now short-circuits, which would bury before max_retries is
+        # exhausted via the contract-violation branch this test exercises.
+        def complete(self, p):
+            calls["n"] += 1
+            return f"```python\ndef compute(df):\n    x = {calls['n']}\n    return df['close']\n```"
     not_a_series = lambda code, pnl: pnl["close"].tolist()   # returns list, not Series
     res = forge(Hypothesis("h", "x", SOURCE_LLM), GoodLLM(), not_a_series, panel, max_retries=2)
     assert not res.success and res.death_reason is not None
