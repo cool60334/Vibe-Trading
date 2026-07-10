@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,9 +17,12 @@ from research.hermes.evidence_card import EvidenceCard, VERDICT_CANDIDATE, VERDI
 from research.hermes.evidence_store import upsert_card
 from research.hermes.forge import forge
 from research.hermes.gatekeeper import evaluate
+from research.hermes.hypothesis_queue import build_queue
 from research.hermes.sandbox import SandboxExecutor
-from research.lib.factor_io import _atomic_to_parquet, _symbol_short
+from research.lib.factor_io import _atomic_to_parquet, _symbol_short, load_features
 from research.lib.research_ledger import append_event
+
+_OHLCV_COLS = ("open", "high", "low", "close", "volume")
 
 MAX_FORGE_RETRIES = 3          # P5: bounded repair, then bury
 
@@ -166,3 +170,42 @@ def should_early_stop(outcomes: list, budget: Budget) -> bool:
             break
         streak += 1
     return streak >= budget.early_stop_after
+
+
+def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
+                daily_regime=None, run_sandbox=None) -> dict:
+    """Sweep the hypothesis queue for one symbol under Budget + early stopping.
+    zoo_dir is REQUIRED (agy 4c: build_queue does Path(zoo_dir).rglob -> Path(None)
+    raises TypeError)."""
+    panel = load_features(symbol, manifests_dir=manifests_dir)
+    ohlcv = panel[[c for c in _OHLCV_COLS if c in panel.columns]]
+    if "close" not in ohlcv.columns:                # agy 4a: evaluate hard-depends on close
+        raise ValueError(f"feature panel for {symbol} has no 'close' column; cannot evaluate")
+    existing = panel.drop(columns=list(ohlcv.columns), errors="ignore")
+
+    # agy 3c: include buried factor VALUES so nearest_correlate can dedup vs the graveyard
+    gpath = _graveyard_path(symbol, manifests_dir)
+    if gpath.exists():
+        existing = existing.join(pd.read_parquet(gpath), how="outer", rsuffix="_dead")
+
+    run_sb = run_sandbox or make_run_sandbox(sandbox, Path(manifests_dir) / "_foundry_scratch")
+    if daily_regime is None:
+        # agy 4b: regime_ic expects DAILY labels (it ffills onto the factor index);
+        # a panel-frequency fallback would violate that contract.
+        daily_idx = panel.index.normalize().unique()
+        daily_regime = pd.Series("neutral", index=daily_idx)
+
+    queue = build_queue(symbol=symbol, manifests_dir=manifests_dir,
+                        zoo_dir=zoo_dir, llm_raw=[])[: budget.max_factors]
+    outcomes: list = []
+    for hyp in queue:
+        outcomes.append(process_hypothesis(hyp, panel, ohlcv, daily_regime, existing,
+                                           symbol, manifests_dir, cfg, llm, run_sb))
+        if should_early_stop(outcomes, budget):
+            break
+    # seed all three outcome literals at 0 so callers/tests can always index
+    # summary["candidate"]/["rejected"]/["forge_failed"] without a KeyError,
+    # even on a night where one outcome never occurred.
+    summary = Counter({"forge_failed": 0, "candidate": 0, "rejected": 0})
+    summary.update(outcomes)
+    return dict(summary)

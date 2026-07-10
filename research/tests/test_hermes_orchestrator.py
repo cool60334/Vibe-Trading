@@ -152,3 +152,39 @@ def test_early_stop_after_consecutive_failures():
 def test_budget_caps_factor_count():
     from research.hermes.orchestrator import Budget
     assert Budget(max_factors=2, early_stop_after=99).max_factors == 2
+
+
+def test_run_foundry_respects_budget_and_early_stop(tmp_path, monkeypatch):
+    import pandas as pd, numpy as np
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = pd.date_range("2022-01-01", periods=100, freq="1D")
+    panel = pd.DataFrame({"close": np.arange(100.0)}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
+    monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis(f"h{i}", f"x{i}", SOURCE_ZOO) for i in range(20)])
+    # every hypothesis fails -> early stop should fire before all 20 processed
+    seen = []
+    def fake_process(hyp, *a, **k): seen.append(hyp.id); return "forge_failed"
+    monkeypatch.setattr(orch, "process_hypothesis", fake_process)
+    summary = run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                          llm=object(), sandbox=object(),
+                          budget=Budget(max_factors=20, early_stop_after=3),
+                          zoo_dir=tmp_path, run_sandbox=object())
+    assert len(seen) == 3                             # stopped after 3 consecutive fails
+    assert summary["forge_failed"] == 3 and summary["candidate"] == 0
+
+
+def test_run_foundry_raises_when_panel_has_no_close(tmp_path, monkeypatch):
+    import pandas as pd, numpy as np
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    idx = pd.date_range("2022-01-01", periods=50, freq="1D")
+    monkeypatch.setattr(orch, "load_features",
+                        lambda s, manifests_dir=None: pd.DataFrame({"funding_z": np.arange(50.0)}, index=idx))
+    with pytest.raises(ValueError, match="close"):      # agy 4a
+        run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                    llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path)
