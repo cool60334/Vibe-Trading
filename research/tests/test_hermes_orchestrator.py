@@ -258,6 +258,81 @@ def test_run_foundry_daily_regime_fallback_is_neutral_and_daily_indexed(tmp_path
     assert (dr.index == dr.index.normalize()).all()     # every stamp is midnight
 
 
+def test_run_foundry_loads_daily_regime_from_regime_manifest_when_present(tmp_path, monkeypatch):
+    """regime_<sym>.json (stage 2.5 output) should be used in preference to the
+    all-neutral fallback when it exists and is well-formed."""
+    import json
+    import pandas as pd, numpy as np
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = pd.date_range("2022-01-01", periods=72, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(72.0)}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
+    monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h0", "x0", SOURCE_ZOO)])
+
+    manifest = {
+        "schema_version": 1, "symbol": "ETH", "generated_at": "2022-01-01T00:00:00+00:00",
+        "detector_params": {}, "current_regime": "bull",
+        "distribution": {"bull": 0.67, "bear": 0.0, "neutral": 0.33},
+        "period_days": 3, "total_daily_bars": 3,
+        "breakdown": [
+            {"date": "2022-01-01", "regime": "bull"},
+            {"date": "2022-01-02", "regime": "bull"},
+            {"date": "2022-01-03", "regime": "neutral"},
+        ],
+    }
+    (tmp_path / "regime_eth.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    captured = {}
+    def fake_process(hyp, panel_, ohlcv_, daily_regime_, *rest, **kw):
+        captured["daily_regime"] = daily_regime_
+        return "candidate"
+    monkeypatch.setattr(orch, "process_hypothesis", fake_process)
+
+    run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
+               llm=object(), sandbox=object(),
+               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path)
+
+    dr = captured["daily_regime"]
+    assert len(dr) == 3
+    assert list(dr.values) == ["bull", "bull", "neutral"]     # real labels, not all-neutral
+    assert (dr.index == dr.index.normalize()).all()           # daily-normalized index
+
+
+def test_run_foundry_falls_back_to_neutral_when_regime_manifest_malformed(tmp_path, monkeypatch):
+    """A present-but-broken regime_<sym>.json must degrade to the neutral
+    fallback, not crash the foundry run (regime_ic is informational only)."""
+    import pandas as pd, numpy as np
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = pd.date_range("2022-01-01", periods=72, freq="1h")
+    panel = pd.DataFrame({"close": np.arange(72.0)}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: panel)
+    monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h0", "x0", SOURCE_ZOO)])
+
+    (tmp_path / "regime_eth.json").write_text("{not valid json", encoding="utf-8")
+
+    captured = {}
+    def fake_process(hyp, panel_, ohlcv_, daily_regime_, *rest, **kw):
+        captured["daily_regime"] = daily_regime_
+        return "candidate"
+    monkeypatch.setattr(orch, "process_hypothesis", fake_process)
+
+    run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
+               llm=object(), sandbox=object(),
+               budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path)
+
+    dr = captured["daily_regime"]
+    assert (dr == "neutral").all()
+    assert (dr.index == dr.index.normalize()).all()
+
+
 def test_enqueue_writes_job_and_runner_reconciles(tmp_path, monkeypatch):
     import json
     from research.hermes import orchestrator as orch

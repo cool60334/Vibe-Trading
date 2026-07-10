@@ -186,6 +186,29 @@ def should_early_stop(outcomes: list, budget: Budget) -> bool:
     return streak >= budget.early_stop_after
 
 
+def _load_daily_regime(symbol, manifests_dir) -> "pd.Series | None":
+    """Load a precomputed daily regime series from regime_<sym>.json (stage 2.5
+    output), if present and well-formed. Returns None (caller falls back to an
+    all-neutral series) rather than raising — regime_ic is informational only
+    in gatekeeper.evaluate, so a missing/malformed regime file should degrade
+    gracefully, not crash a foundry run."""
+    path = Path(manifests_dir) / f"regime_{_symbol_short(symbol)}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        breakdown = data["breakdown"]
+        if not breakdown:
+            return None
+        dates = pd.to_datetime([row["date"] for row in breakdown])
+        labels = [row["regime"] for row in breakdown]
+        return pd.Series(labels, index=dates).sort_index()
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+        log.warning("failed to parse regime manifest for %s (%s); falling back to neutral",
+                    symbol, e)
+        return None
+
+
 def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
                 daily_regime=None, run_sandbox=None) -> dict:
     """Sweep the hypothesis queue for one symbol under Budget + early stopping.
@@ -204,11 +227,16 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir,
 
     run_sb = run_sandbox or make_run_sandbox(sandbox, Path(manifests_dir) / "_foundry_scratch")
     if daily_regime is None:
-        # agy 4b: regime_ic expects DAILY labels (it ffills onto the factor index);
-        # a panel-frequency fallback would violate that contract.
-        log.warning("daily_regime not supplied for %s; falling back to all-neutral", symbol)
-        daily_idx = panel.index.normalize().unique()
-        daily_regime = pd.Series("neutral", index=daily_idx)
+        daily_regime = _load_daily_regime(symbol, manifests_dir)
+        if daily_regime is not None:
+            log.info("loaded daily_regime for %s from regime_%s.json (%d bars)",
+                     symbol, _symbol_short(symbol), len(daily_regime))
+        else:
+            # agy 4b: regime_ic expects DAILY labels (it ffills onto the factor index);
+            # a panel-frequency fallback would violate that contract.
+            log.warning("daily_regime not supplied for %s; falling back to all-neutral", symbol)
+            daily_idx = panel.index.normalize().unique()
+            daily_regime = pd.Series("neutral", index=daily_idx)
 
     queue = build_queue(symbol=symbol, manifests_dir=manifests_dir,
                         zoo_dir=zoo_dir, llm_raw=[])[: budget.max_factors]
