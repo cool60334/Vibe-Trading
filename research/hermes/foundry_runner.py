@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from research.hermes.forge import ForgeBudget
-from research.hermes.llm_client import LLMUnavailable
+from research.hermes.llm_client import build_openrouter_coder, LLMUnavailable
 from research.hermes.orchestrator import (
     _now, _write_job_json, enqueue_foundry_job, run_foundry_job)
 from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
@@ -140,14 +140,15 @@ def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir,
     return summaries
 
 
-def build_llm(spec: str):
-    """Construct the LLM client named by `spec`. The real OpenRouter client is
-    the next spec; this seam exists so `run` has one place to wire it. Fails
-    loudly rather than returning a silent stub."""
+def build_llm(spec: str, *, model: str | None = None, max_tokens: int = 2048):
+    """Construct the LLM client named by `spec`. For openrouter, the model is
+    pinned explicitly (a paid run must never inherit an expensive model from a
+    stray LANGCHAIN_MODEL_NAME)."""
     if spec == "openrouter":
-        raise NotImplementedError(
-            "the real openrouter LLM client is the next spec; "
-            "the dry-run uses ScriptedLLM injected directly by the test")
+        if not model:
+            raise ValueError("openrouter requires an explicit model (a paid run "
+                             "must not read the model from the environment)")
+        return build_openrouter_coder(model=model, max_tokens=max_tokens)
     raise ValueError(f"unknown llm spec {spec!r}")
 
 
@@ -170,6 +171,11 @@ def main(argv=None) -> int:
     r.add_argument("--image", required=True, help="sandbox image tag; resolved to an immutable id")
     r.add_argument("--llm", default="openrouter")
     r.add_argument("--timeout-s", type=int, default=120)
+    r.add_argument("--model", required=True, help="explicit OpenRouter model id (pinned)")
+    r.add_argument("--i-will-spend-real-money", action="store_true",
+                   help="required to actually call the paid LLM; without it, run refuses")
+    r.add_argument("--batch-max-llm-calls", type=int, default=6)
+    r.add_argument("--max-tokens", type=int, default=2048)
 
     args = ap.parse_args(argv)
     if args.cmd == "enqueue":
@@ -178,10 +184,17 @@ def main(argv=None) -> int:
             "horizon_h": args.horizon_h, "ohlcv_path": args.ohlcv_path})
         return 0
 
+    if not args.i_will_spend_real_money:
+        print("refusing: a real run spends money. Re-run with "
+              "--i-will-spend-real-money once you have set OPENROUTER_API_KEY.")
+        return 2
     image_id = resolve_image_id(args.image)          # infra pre-check; raises to abort
     sandbox = DockerSandbox(image=image_id, timeout_s=args.timeout_s, allow_unpinned=False)
-    llm = build_llm(args.llm)                         # NotImplementedError until the next spec
-    reconcile_foundry_jobs(args.runs_dir, args.manifests_dir, llm, sandbox, args.zoo_dir)
+    llm = build_llm(args.llm, model=args.model, max_tokens=args.max_tokens)
+    reconcile_foundry_jobs(args.runs_dir, args.manifests_dir, llm, sandbox, args.zoo_dir,
+                           batch_max_llm_calls=args.batch_max_llm_calls)
+    used = getattr(llm, "total_tokens", 0)
+    print(f"foundry run complete. tokens used (reported): {used}")
     return 0
 
 

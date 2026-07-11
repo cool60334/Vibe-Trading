@@ -137,10 +137,19 @@ def test_bad_ohlcv_path_is_job_level_not_infra(tmp_path, monkeypatch):
     assert "finished_at" in eth_job
 
 
-def test_build_llm_openrouter_is_not_yet_implemented():
+def test_build_llm_openrouter_returns_a_coder(monkeypatch):
+    from research.hermes import foundry_runner as fr
+    sentinel = object()
+    monkeypatch.setattr(fr, "build_openrouter_coder",
+                        lambda *, model, max_tokens: sentinel)
+    assert fr.build_llm("openrouter", model="x/y", max_tokens=1000) is sentinel
+
+
+def test_build_llm_openrouter_requires_a_model():
     from research.hermes.foundry_runner import build_llm
-    with pytest.raises(NotImplementedError, match="openrouter|next spec"):
-        build_llm("openrouter")
+    with pytest.raises(ValueError, match="model"):
+        build_llm("openrouter", model=None)
+
 
 def test_batch_cap_is_a_shared_counter_across_jobs(tmp_path, monkeypatch):
     import pandas as pd
@@ -211,3 +220,32 @@ def test_main_enqueue_writes_a_queued_job(tmp_path):
     job = json.loads(jobs[0].read_text())
     assert job["status"] == "queued" and job["symbol"] == "eth"
     assert job["params"]["oos_start"] == "2025-01-01"
+
+
+def test_run_without_spend_flag_refuses_and_never_builds_llm(tmp_path, monkeypatch):
+    from research.hermes import foundry_runner as fr
+    called = {"build": False}
+    monkeypatch.setattr(fr, "build_llm", lambda *a, **k: called.__setitem__("build", True))
+    rc = fr.main(["run", "--runs-dir", str(tmp_path), "--manifests-dir", str(tmp_path),
+                  "--zoo-dir", str(tmp_path), "--image", "talos-sandbox:test",
+                  "--model", "x/y"])            # no --i-will-spend-real-money
+    assert rc != 0                              # refused
+    assert called["build"] is False            # never built the client
+
+
+def test_run_with_spend_flag_builds_llm_and_reconciles(tmp_path, monkeypatch):
+    from research.hermes import foundry_runner as fr
+    calls = {}
+    monkeypatch.setattr(fr, "resolve_image_id", lambda tag: "sha256:" + "e" * 64)
+    monkeypatch.setattr(fr, "DockerSandbox", lambda **k: object())
+    fake_coder = object()
+    monkeypatch.setattr(fr, "build_llm", lambda *a, **k: (calls.__setitem__("model", k.get("model")), fake_coder)[1])
+    def fake_reconcile(runs_dir, manifests_dir, llm, sandbox, zoo_dir, **k):
+        calls["reconciled"] = True; calls["batch"] = k.get("batch_max_llm_calls"); return []
+    monkeypatch.setattr(fr, "reconcile_foundry_jobs", fake_reconcile)
+    rc = fr.main(["run", "--runs-dir", str(tmp_path), "--manifests-dir", str(tmp_path),
+                  "--zoo-dir", str(tmp_path), "--image", "talos-sandbox:test",
+                  "--model", "deepseek/deepseek-chat", "--i-will-spend-real-money",
+                  "--batch-max-llm-calls", "4"])
+    assert rc == 0 and calls["reconciled"] is True
+    assert calls["model"] == "deepseek/deepseek-chat" and calls["batch"] == 4
