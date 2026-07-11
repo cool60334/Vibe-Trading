@@ -197,15 +197,26 @@ def test_batch_max_llm_calls_zero_means_spend_nothing(tmp_path, monkeypatch):
     # BudgetExhausted -- a generic (non-infra, non-LLMUnavailable) exception,
     # so reconcile buries it as a job-level failure and the batch continues,
     # exactly like test_job_level_failure_continues_queue's non-infra case.
+    #
+    # Asserting only on ran/summaries doesn't distinguish the fix from the old
+    # bug: under the old code batch_max_llm_calls=0 fell through to
+    # forge_budget=None, and fake_run_job's forge_budget.charge_call() call
+    # then raised AttributeError on None -- buried by the same except Exception
+    # -- producing the identical ran == ["eth"] / summaries == [] outcome. So
+    # assert directly on the forge_budget object handed to run_foundry_job:
+    # it must be a real ForgeBudget(max_llm_calls=0), not None.
     import pandas as pd
     from research.hermes import foundry_runner as fr
+    from research.hermes.forge import ForgeBudget
     idx = pd.date_range("2024-01-01", periods=3, freq="1h", tz="UTC")
     op = tmp_path / "o.parquet"; pd.DataFrame({"close": [1.0, 2, 3]}, index=idx).to_parquet(op)
     _queue_job(tmp_path, "eth", op, "2026-01-01T00:00:00+00:00")
     ran = []
+    captured = {}
     def fake_run_job(job_path, *, forge_budget=None, **k):
         import json
         ran.append(json.loads(Path(job_path).read_text())["symbol"])
+        captured["forge_budget"] = forge_budget
         forge_budget.charge_call()          # must raise before any spend happens
         return {"candidate": 0}             # never reached if the fix holds
     monkeypatch.setattr(fr, "run_foundry_job", fake_run_job)
@@ -214,6 +225,8 @@ def test_batch_max_llm_calls_zero_means_spend_nothing(tmp_path, monkeypatch):
     assert ran == ["eth"]           # job was entered (to prove it wasn't just skipped)
     assert summaries == []          # charge_call() raised before run_foundry_job could return
                                      # a summary -- proving no spend happened past the cap
+    assert isinstance(captured["forge_budget"], ForgeBudget)   # not None -- the actual regression
+    assert captured["forge_budget"].max_llm_calls == 0
 
 
 def test_llm_unavailable_aborts_whole_batch(tmp_path, monkeypatch):
