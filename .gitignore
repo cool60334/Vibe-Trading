@@ -60,9 +60,11 @@ data/.duckdb_tmp/
 data/parquet/
 data/backup/
 
-# Internal docs (plans, specs) — ignore all EXCEPT docs/talos/ (Talos agent specs, tracked)
+# Internal docs (plans, specs) — ignore all EXCEPT docs/talos/ and
+# docs/superpowers/ (brainstormed specs, tracked)
 docs/*
 !docs/talos/
+!docs/superpowers/
 !wiki/docs/
 !wiki/docs/**
 docs/screenshots/agent-run.png
