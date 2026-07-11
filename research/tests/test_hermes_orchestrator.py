@@ -183,6 +183,33 @@ def test_run_foundry_respects_budget_and_early_stop(tmp_path, monkeypatch):
     assert summary["forge_failed"] == 3 and summary["candidate"] == 0
 
 
+def test_run_foundry_summary_reports_queue_composition_and_ohlcv_range(tmp_path, monkeypatch):
+    """N4: the foundry e2e asserts these keys so a caller (dashboard / cron log)
+    can see what the sweep actually tried and over what window, without having
+    to re-derive it from the queue/panel after the fact."""
+    import pandas as pd, numpy as np
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO, SOURCE_DERIVED
+
+    idx = pd.date_range("2022-01-01", periods=100, freq="1D")
+    feats = pd.DataFrame({"funding_z": np.arange(100.0)}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: feats)
+    monkeypatch.setattr(orch, "build_queue", lambda **k: [
+        Hypothesis("h0", "x0", SOURCE_ZOO), Hypothesis("h1", "x1", SOURCE_ZOO),
+        Hypothesis("h2", "x2", SOURCE_DERIVED),
+    ])
+    monkeypatch.setattr(orch, "process_hypothesis", lambda hyp, *a, **k: "candidate")
+    summary = run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                          llm=object(), sandbox=object(),
+                          budget=Budget(max_factors=20, early_stop_after=99),
+                          zoo_dir=tmp_path, run_sandbox=object(), oos_start=_TEST_OOS,
+                          ohlcv=_ohlcv_for(idx))
+    assert summary["queue_composition"] == {SOURCE_ZOO: 2, SOURCE_DERIVED: 1}
+    assert summary["ohlcv_range"] == [str(idx.min()), str(idx.max())]
+
+
 def test_run_foundry_raises_when_injected_ohlcv_has_no_close(tmp_path, monkeypatch):
     import pandas as pd, numpy as np
     from research.hermes import orchestrator as orch

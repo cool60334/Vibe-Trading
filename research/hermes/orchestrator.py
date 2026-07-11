@@ -363,6 +363,8 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
     summary["llm_calls_used"] = forge_budget.used
     if budget_exhausted:
         summary["budget_exhausted"] = True
+    summary["queue_composition"] = dict(Counter(h.source for h in queue))
+    summary["ohlcv_range"] = [str(features.index.min()), str(features.index.max())]
     return summary
 
 
