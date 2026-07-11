@@ -83,7 +83,7 @@ def test_healthy_factor_runs_full_pipeline_and_marks_job_done(tmp_path):
     s = summaries[0]
     # engineering facts only -- we do NOT assert a factor passed the gate
     assert s["candidate"] + s["rejected"] + s["forge_failed"] >= 1
-    assert "queue_composition" in s and "ohlcv_range" in s
+    assert "queue_composition" in s and "features_range" in s
     job = json.loads(Path(job_path).read_text())
     assert job["status"] == "done"
     assert llm.prompts and "compute" in llm.prompts[0]      # the real prompt was built

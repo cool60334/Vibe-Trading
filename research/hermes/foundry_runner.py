@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from research.hermes.orchestrator import (
+    _now, _write_job_json, enqueue_foundry_job, run_foundry_job)
 from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
 
 log = logging.getLogger(__name__)
@@ -48,9 +50,6 @@ def load_ohlcv(path) -> pd.DataFrame:
     return df
 
 
-from research.hermes.orchestrator import enqueue_foundry_job, run_foundry_job    # top-of-file import
-
-
 def _queued_jobs(runs_dir) -> list:
     jobs_root = Path(runs_dir) / "foundry_jobs"
     out = []
@@ -72,12 +71,29 @@ def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir, budge
 
     A bare SandboxError (docker/image infra, NOT a SandboxRunFailed subclass)
     aborts the whole batch — the next job would hit the same wall. Any other
-    failure leaves that job status=failed (already written by run_foundry_job)
-    and the batch continues, so one bad-code job does not poison its neighbours."""
+    failure *inside* run_foundry_job leaves that job status=failed (already
+    written by run_foundry_job itself) and the batch continues, so one
+    bad-code job does not poison its neighbours.
+
+    A failure *before* run_foundry_job is ever called — e.g. load_ohlcv
+    raising ValueError on a malformed parquet — would otherwise never be
+    persisted: run_foundry_job is the only thing that writes status="failed"
+    to job.json, and it never runs in that case. Left alone, the job would
+    sit at status="queued" forever and _queued_jobs would re-select it on
+    every future reconcile pass, silently poisoning the queue with no
+    operator-visible failure. So this function writes status="failed" for
+    that job itself (mirroring run_foundry_job's own write) before moving on
+    to the next job."""
     summaries = []
     for _created, job_path, job in _queued_jobs(runs_dir):
         try:
             ohlcv = load_ohlcv(job["params"]["ohlcv_path"])
+        except Exception as exc:                       # noqa: BLE001 job-level, keep going
+            log.warning("job %s failed to load ohlcv: %s; continuing", job_path, exc)
+            job["status"] = "failed"; job["error"] = str(exc); job["finished_at"] = _now()
+            _write_job_json(job_path, job)
+            continue
+        try:
             summaries.append(run_foundry_job(
                 job_path, manifests_dir=manifests_dir, llm=llm, sandbox=sandbox,
                 zoo_dir=zoo_dir, ohlcv=ohlcv, budget=budget))

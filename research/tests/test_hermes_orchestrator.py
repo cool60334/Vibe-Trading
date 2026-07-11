@@ -183,7 +183,7 @@ def test_run_foundry_respects_budget_and_early_stop(tmp_path, monkeypatch):
     assert summary["forge_failed"] == 3 and summary["candidate"] == 0
 
 
-def test_run_foundry_summary_reports_queue_composition_and_ohlcv_range(tmp_path, monkeypatch):
+def test_run_foundry_summary_reports_queue_composition_and_features_range(tmp_path, monkeypatch):
     """N4: the foundry e2e asserts these keys so a caller (dashboard / cron log)
     can see what the sweep actually tried and over what window, without having
     to re-derive it from the queue/panel after the fact."""
@@ -207,7 +207,7 @@ def test_run_foundry_summary_reports_queue_composition_and_ohlcv_range(tmp_path,
                           zoo_dir=tmp_path, run_sandbox=object(), oos_start=_TEST_OOS,
                           ohlcv=_ohlcv_for(idx))
     assert summary["queue_composition"] == {SOURCE_ZOO: 2, SOURCE_DERIVED: 1}
-    assert summary["ohlcv_range"] == [str(idx.min()), str(idx.max())]
+    assert summary["features_range"] == [str(idx.min()), str(idx.max())]
 
 
 def test_run_foundry_raises_when_injected_ohlcv_has_no_close(tmp_path, monkeypatch):

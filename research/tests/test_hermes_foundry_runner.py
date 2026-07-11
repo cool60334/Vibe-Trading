@@ -111,6 +111,7 @@ def test_job_level_failure_continues_queue(tmp_path, monkeypatch):
     assert ran == ["eth", "btc"]                       # btc still ran despite eth failing
 
 def test_bad_ohlcv_path_is_job_level_not_infra(tmp_path, monkeypatch):
+    import json
     import pandas as pd
     from research.hermes import foundry_runner as fr
     idx = pd.date_range("2024-01-01", periods=3, freq="1h", tz="UTC")
@@ -118,7 +119,7 @@ def test_bad_ohlcv_path_is_job_level_not_infra(tmp_path, monkeypatch):
     pd.DataFrame({"volume": [1.0, 2, 3]}, index=idx).to_parquet(bad_op)   # missing 'close'
     good_op = tmp_path / "good.parquet"
     pd.DataFrame({"close": [1.0, 2, 3]}, index=idx).to_parquet(good_op)
-    _queue_job(tmp_path, "eth", bad_op, "2026-01-01T00:00:00+00:00")
+    eth_job_path = _queue_job(tmp_path, "eth", bad_op, "2026-01-01T00:00:00+00:00")
     _queue_job(tmp_path, "btc", good_op, "2026-01-02T00:00:00+00:00")
     ran = []
     def fake_run_job(job_path, **k):
@@ -127,6 +128,13 @@ def test_bad_ohlcv_path_is_job_level_not_infra(tmp_path, monkeypatch):
     monkeypatch.setattr(fr, "run_foundry_job", fake_run_job)
     fr.reconcile_foundry_jobs(tmp_path, tmp_path, llm=object(), sandbox=object(), zoo_dir=tmp_path)
     assert ran == ["btc"]                               # eth's bad ohlcv never reached run_foundry_job; btc still ran
+    # the poison job must not be left at status="queued" forever -- reconcile
+    # itself has to mark it failed since run_foundry_job (the only other
+    # writer of status=failed) was never called for it.
+    eth_job = json.loads(Path(eth_job_path).read_text())
+    assert eth_job["status"] == "failed"
+    assert "close" in eth_job["error"]
+    assert "finished_at" in eth_job
 
 
 def test_build_llm_openrouter_is_not_yet_implemented():
