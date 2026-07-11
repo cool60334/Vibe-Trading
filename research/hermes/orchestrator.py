@@ -265,7 +265,7 @@ def _align_ohlcv(ohlcv, feature_index, min_coverage: float = 0.95):
 
 def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
                 oos_start, ohlcv, val_frac=0.2, derived_top_k=5,
-                daily_regime=None, run_sandbox=None) -> dict:
+                daily_regime=None, run_sandbox=None, forge_budget=None) -> dict:
     """Sweep the hypothesis queue for one symbol under Budget + early stopping.
 
     zoo_dir is REQUIRED (agy 4c: build_queue does Path(zoo_dir).rglob -> Path(None)
@@ -334,7 +334,9 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
                         llm_raw=[], derived_bases=derived_bases)[: budget.max_factors]
     outcomes: list = []
     # One breaker for the whole sweep, charged inside forge()'s repair loop.
-    forge_budget = ForgeBudget(max_llm_calls=budget.max_llm_calls)
+    # A caller sweeping multiple jobs (reconcile) can pass a shared ForgeBudget
+    # so spend is counted across the whole batch, not reset per job.
+    forge_budget = forge_budget or ForgeBudget(max_llm_calls=budget.max_llm_calls)
     budget_exhausted = False
     # `existing` is captured once above and never updated per-iteration: a factor
     # that passes/fails mid-sweep is NOT deduped against by later factors in the
@@ -389,7 +391,8 @@ def enqueue_foundry_job(symbol, runs_dir, params: dict) -> Path:
     return job_path
 
 
-def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, ohlcv, budget=None) -> dict:
+def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, ohlcv, budget=None,
+                    forge_budget=None) -> dict:
     """Foundry runner reconcile: read job.json, run_foundry, mark done.
 
     On any exception from run_foundry, the job file is rewritten with
@@ -407,7 +410,8 @@ def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, ohlcv, budge
     try:
         summary = run_foundry(job["symbol"], manifests_dir, cfg, llm, sandbox,
                               budget or Budget(), zoo_dir=zoo_dir, ohlcv=ohlcv,
-                              oos_start=p["oos_start"], val_frac=p.get("val_frac", 0.2))
+                              oos_start=p["oos_start"], val_frac=p.get("val_frac", 0.2),
+                              forge_budget=forge_budget)
     except Exception as e:
         job["status"] = "failed"; job["error"] = str(e); job["finished_at"] = _now()
         _write_job_json(job_path, job)

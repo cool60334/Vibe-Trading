@@ -183,6 +183,39 @@ def test_run_foundry_respects_budget_and_early_stop(tmp_path, monkeypatch):
     assert summary["forge_failed"] == 3 and summary["candidate"] == 0
 
 
+def test_run_foundry_uses_a_passed_shared_forge_budget(tmp_path, monkeypatch):
+    """A shared ForgeBudget passed in is used verbatim; run_foundry does not build
+    a fresh one. Pre-exhaust it and confirm the cap bites (not budget's 99)."""
+    import pandas as pd, numpy as np
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import run_foundry, Budget
+    from research.hermes.forge import ForgeBudget
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = pd.date_range("2022-01-01", periods=100, freq="1D")
+    feats = pd.DataFrame({"funding_z": np.arange(100.0)}, index=idx)
+    monkeypatch.setattr(orch, "load_features", lambda s, manifests_dir=None: feats)
+    monkeypatch.setattr(orch, "build_queue", lambda **k: [Hypothesis("h0", "x0", SOURCE_ZOO)])
+
+    shared = ForgeBudget(max_llm_calls=2)
+    shared.used = 2                                  # already exhausted
+    seen = {}
+    def fake_process(hyp, *a, forge_budget=None, **k):
+        seen["is_shared"] = forge_budget is shared
+        forge_budget.charge_call()                   # raises BudgetExhausted (used>=max)
+        return "candidate"
+    monkeypatch.setattr(orch, "process_hypothesis", fake_process)
+
+    summary = run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                          llm=object(), sandbox=object(),
+                          budget=Budget(max_factors=5, max_llm_calls=99),
+                          zoo_dir=tmp_path, run_sandbox=object(), oos_start=_TEST_OOS,
+                          ohlcv=_ohlcv_for(idx), forge_budget=shared)
+    assert seen["is_shared"] is True
+    assert summary.get("budget_exhausted") is True   # shared cap bit, not budget's 99
+
+
 def test_run_foundry_summary_reports_queue_composition_and_features_range(tmp_path, monkeypatch):
     """N4: the foundry e2e asserts these keys so a caller (dashboard / cron log)
     can see what the sweep actually tried and over what window, without having
