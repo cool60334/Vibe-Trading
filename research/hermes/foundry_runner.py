@@ -76,8 +76,8 @@ def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir, budge
     and the batch continues, so one bad-code job does not poison its neighbours."""
     summaries = []
     for _created, job_path, job in _queued_jobs(runs_dir):
-        ohlcv = load_ohlcv(job["params"]["ohlcv_path"])
         try:
+            ohlcv = load_ohlcv(job["params"]["ohlcv_path"])
             summaries.append(run_foundry_job(
                 job_path, manifests_dir=manifests_dir, llm=llm, sandbox=sandbox,
                 zoo_dir=zoo_dir, ohlcv=ohlcv, budget=budget))
