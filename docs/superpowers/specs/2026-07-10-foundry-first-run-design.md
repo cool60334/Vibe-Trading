@@ -125,6 +125,24 @@ agy raised nine points against section 1. Verified empirically before accepting:
 - **Already handled #9** — job.json atomicity. Already `tmp + os.replace`
   ([orchestrator.py:368]).
 
+### Second review (agy, folder mode, against the written spec)
+
+Three findings, each verified against the code before accepting:
+
+- **Accepted (spec factual error)** — the first draft put `BudgetExhausted` in
+  Layer A (abort the batch). Verified false: it is not a `SandboxError` and never
+  leaves `run_foundry`. Corrected in §3, with the real gap (no batch-level cost
+  ceiling) flagged for the paid-run spec.
+- **Accepted (real coverage gap)** — the first draft claimed
+  `test_hermes_candidate_store.py` covered the candidate write path. Verified
+  false: that test only exercises `write_candidate`, never the orchestrator's
+  `_merge_into_candidates` / `_merge_column`. Added two direct merge unit tests
+  to §4 (gate-independent, so no manufactured alpha).
+- **Accepted (incomplete fixture list)** — `run_foundry` calls `load_features`
+  first, which raises if `features_<sym>.parquet` is absent. The fixture list now
+  names the pre-OOS `features_eth` slice explicitly (sliced from the real
+  manifest, no network).
+
 ---
 
 ## Section 1 — Architecture & data flow
@@ -218,10 +236,17 @@ latter is an audit trail.
   cleanup. `tmp_path` as `manifests_dir`, with a real pre-OOS `features_eth`
   slice copied in.
 
-### New `research/tests/fixtures/ohlcv_eth_1h.parquet`
+### Fixtures for the e2e
 
-Real ETH 1H candles from OKX public API (read-only, no auth), fetched **once**
-and committed. ~22k rows × 5 cols, 1–2 MB. Approved one-time network access.
+- **`research/tests/fixtures/ohlcv_eth_1h.parquet`** — real ETH 1H candles from
+  OKX public API (read-only, no auth), fetched **once** and committed. ~22k rows
+  × 5 cols, 1–2 MB. Approved one-time network access.
+- **`features_eth` slice** — `run_foundry` calls `load_features(symbol,
+  manifests_dir)` first ([orchestrator.py:282]), which raises `FileNotFoundError`
+  if `features_<sym>.parquet` is absent. The e2e copies a pre-OOS slice of the
+  **already-real** `research/manifests/features_eth.parquet` (35040 rows) into
+  `tmp_path` — no network, no new fixture file needed. The slice and the ohlcv
+  fixture must share an index range so `_align_ohlcv`'s 95%-coverage check passes.
 
 ---
 
@@ -234,7 +259,23 @@ and committed. ~22k rows × 5 cols, 1–2 MB. Approved one-time network access.
 | image tag unresolvable | `resolve_image_id` pre-check | every hypothesis would die; retry amplifies a config error 60× |
 | image deleted after check (TOCTOU) | `docker run` exit 125 promotion | pre-check has a window; this is the second line |
 | daemon dies mid-run | stderr `Cannot connect...` promotion | not the LLM's fault |
-| LLM budget spent | `ForgeBudget.charge_call` → `BudgetExhausted` | already implemented |
+
+Only a bare `SandboxError` (not a `SandboxRunFailed` subclass) propagates out of
+`run_foundry_job` to abort the batch. Everything above raises exactly that.
+
+**`BudgetExhausted` is NOT a Layer-A abort** (corrected after review). Verified:
+it subclasses `HermesGuardError, RuntimeError` — not `SandboxError` — and
+`run_foundry` catches it internally ([orchestrator.py:348]), logs, `break`s, and
+returns a summary with `budget_exhausted: True`. So it ends **one** job cleanly
+(job status `done`), and each subsequent job gets a fresh `ForgeBudget`
+(constructed per `run_foundry` at [orchestrator.py:337]). That is a per-job
+budget by design.
+
+**Consequence, flagged for the real-run spec:** there is **no batch-level cost
+ceiling**. `reconcile` over N queued jobs can spend up to `N × max_llm_calls`
+with nothing stopping it. Harmless for this spec (the dry-run's `ScriptedLLM` is
+free), but the paid-run spec must add a batch budget before a cron reconciles a
+deep queue.
 
 ### Layer B — repairable, handled inside forge (`SandboxRunFailed`)
 
@@ -279,6 +320,8 @@ it**. Left = guard, right = the test that really invokes it.
 | **Layer A aborts batch** | `test_infra_error_aborts_whole_queue` | job1 raises infra → job2 **not executed** |
 | **Layer C continues** | `test_job_level_failure_continues_queue` | job1 fails (non-infra) → status=failed, job2 **still runs** |
 | parser eats dirty output | `test_scripted_llm_dirty_output_is_extracted` | fence+preamble → extract_code returns clean code |
+| **candidate merge** (was 0-coverage) | `test_merge_into_candidates_outer_joins` | in `test_hermes_orchestrator.py`: feed a synthetic series to `_merge_into_candidates`, assert the merged parquet — no gate pass needed, so no manufactured alpha |
+| **graveyard merge** | `test_merge_into_graveyard_outer_joins` | same, for `_merge_into_graveyard` / `_merge_column` |
 
 ### Integration (docker-gated, wall-clock bound) — `test_hermes_foundry_e2e.py`
 
@@ -299,10 +342,15 @@ session's eight bugs were all missing.
 1. `build_llm("openrouter")` and argparse `main()` wiring — not covered by the
    e2e (the real client is the next spec).
 2. The candidate-parquet write path is only reached when a factor happens to pass
-   the gate. It stays covered by the existing `test_hermes_candidate_store.py`,
-   not left to e2e chance. **We do not assert "a factor passes the gate"** —
+   the gate. **We do not assert "a factor passes the gate"** in the e2e —
    hand-picking a factor that clears `gross_ic_min`/`dsr_min` would be
-   manufacturing alpha. The e2e asserts engineering facts only.
+   manufacturing alpha; the e2e asserts engineering facts only. But the merge
+   logic underneath (`_merge_into_candidates` / `_merge_column`: read existing
+   parquet, align index, outer join) is NOT gate-dependent, so it is unit-tested
+   directly with a synthetic series (see the two merge rows above). The earlier
+   draft claimed `test_hermes_candidate_store.py` covered this — verified false:
+   that test only exercises the low-level `write_candidate` writer, never the
+   orchestrator's merge. Corrected after review.
 
 ---
 
