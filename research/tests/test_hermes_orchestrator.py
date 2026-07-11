@@ -599,3 +599,33 @@ def test_run_foundry_stops_the_sweep_when_budget_trips(tmp_path, monkeypatch):
                           run_sandbox=object())
     assert len(tried) == 3                       # stopped, did not grind through all 10
     assert summary.get("budget_exhausted") is True
+
+
+def test_merge_into_candidates_outer_joins_across_calls(tmp_path):
+    import pandas as pd, numpy as np
+    from research.hermes.orchestrator import _merge_into_candidates
+    from research.hermes.candidate_store import _candidate_path
+    idx = pd.date_range("2024-01-01", periods=5, freq="1h", tz="UTC")
+    _merge_into_candidates("eth", tmp_path, "f_a", pd.Series(np.arange(5.0), index=idx))
+    _merge_into_candidates("eth", tmp_path, "f_b", pd.Series(np.arange(5.0) * 2, index=idx))
+    got = pd.read_parquet(_candidate_path("eth", tmp_path))
+    assert list(got.columns) == ["f_a", "f_b"]              # both kept, not clobbered
+    assert got["f_b"].tolist() == [0.0, 2, 4, 6, 8]
+
+def test_merge_column_replaces_same_name_and_unions_index():
+    import pandas as pd, numpy as np
+    from research.hermes.orchestrator import _merge_column
+    idx1 = pd.date_range("2024-01-01", periods=3, freq="1h", tz="UTC")
+    idx2 = pd.date_range("2024-01-01 02:00", periods=3, freq="1h", tz="UTC")
+    base = _merge_column(None, "f_a", pd.Series([1.0, 2, 3], index=idx1))
+    out = _merge_column(base, "f_a", pd.Series([9.0, 9, 9], index=idx2))   # same name
+    assert list(out.columns) == ["f_a"]                     # replaced, not duplicated
+    assert len(out) == 5                                    # union of indexes (1 overlap)
+
+def test_merge_into_graveyard_persists_dead_values(tmp_path):
+    import pandas as pd, numpy as np
+    from research.hermes.orchestrator import _merge_into_graveyard, _graveyard_path
+    idx = pd.date_range("2024-01-01", periods=4, freq="1h", tz="UTC")
+    _merge_into_graveyard("eth", tmp_path, "dead_1", pd.Series(np.arange(4.0), index=idx))
+    got = pd.read_parquet(_graveyard_path("eth", tmp_path))
+    assert "dead_1" in got.columns and len(got) == 4
