@@ -109,3 +109,22 @@ def call_with_deadline(fn, deadline_s: float = HUNT_DEADLINE_S):
     thread.start()
     thread.join(deadline_s)
     return thread, box
+
+
+class ScriptedLLM:
+    """A fake LLMCoder that returns pre-written bodies in call order, wrapped in
+    a markdown fence with a chatty preamble so forge's build_prompt/extract_code
+    parse path is actually exercised (a clean string would bypass it). Records
+    every prompt it is handed so a test can assert the hypothesis description
+    reached the LLM."""
+
+    def __init__(self, bodies: list):
+        self._bodies = list(bodies)
+        self._i = 0
+        self.prompts: list = []
+
+    def complete(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        body = self._bodies[min(self._i, len(self._bodies) - 1)]
+        self._i += 1
+        return f"Certainly! Here is the factor you asked for:\n\n```python\n{body}\n```\nHope this helps."
