@@ -101,7 +101,7 @@ def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir,
     operator-visible failure. So this function writes status="failed" for
     that job itself (mirroring run_foundry_job's own write) before moving on
     to the next job."""
-    shared = ForgeBudget(max_llm_calls=batch_max_llm_calls) if batch_max_llm_calls else None
+    shared = ForgeBudget(max_llm_calls=batch_max_llm_calls) if batch_max_llm_calls is not None else None
     jobs_attempted = 0                                  # only jobs that reached run_foundry_job
     summaries = []
     for _created, job_path, job in _queued_jobs(runs_dir):

@@ -189,6 +189,33 @@ def test_batch_cap_holds_when_a_job_raises_mid_sweep(tmp_path, monkeypatch):
     assert ran == ["eth"]          # eth's 2 calls still counted -> btc not started
 
 
+def test_batch_max_llm_calls_zero_means_spend_nothing(tmp_path, monkeypatch):
+    # Regression: batch_max_llm_calls=0 used to be treated the same as None
+    # (Python truthiness), which meant "0" silently disabled the shared cap
+    # instead of enforcing a zero-spend batch. It must build a real
+    # ForgeBudget(max_llm_calls=0) whose very first charge_call() raises
+    # BudgetExhausted -- a generic (non-infra, non-LLMUnavailable) exception,
+    # so reconcile buries it as a job-level failure and the batch continues,
+    # exactly like test_job_level_failure_continues_queue's non-infra case.
+    import pandas as pd
+    from research.hermes import foundry_runner as fr
+    idx = pd.date_range("2024-01-01", periods=3, freq="1h", tz="UTC")
+    op = tmp_path / "o.parquet"; pd.DataFrame({"close": [1.0, 2, 3]}, index=idx).to_parquet(op)
+    _queue_job(tmp_path, "eth", op, "2026-01-01T00:00:00+00:00")
+    ran = []
+    def fake_run_job(job_path, *, forge_budget=None, **k):
+        import json
+        ran.append(json.loads(Path(job_path).read_text())["symbol"])
+        forge_budget.charge_call()          # must raise before any spend happens
+        return {"candidate": 0}             # never reached if the fix holds
+    monkeypatch.setattr(fr, "run_foundry_job", fake_run_job)
+    summaries = fr.reconcile_foundry_jobs(tmp_path, tmp_path, llm=object(), sandbox=object(),
+                                          zoo_dir=tmp_path, batch_max_llm_calls=0)
+    assert ran == ["eth"]           # job was entered (to prove it wasn't just skipped)
+    assert summaries == []          # charge_call() raised before run_foundry_job could return
+                                     # a summary -- proving no spend happened past the cap
+
+
 def test_llm_unavailable_aborts_whole_batch(tmp_path, monkeypatch):
     import pandas as pd
     from research.hermes import foundry_runner as fr
