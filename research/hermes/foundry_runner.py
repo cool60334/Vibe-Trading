@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from research.hermes.forge import ForgeBudget
+from research.hermes.llm_client import LLMUnavailable
 from research.hermes.orchestrator import (
     _now, _write_job_json, enqueue_foundry_job, run_foundry_job)
 from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
@@ -66,14 +68,29 @@ def _queued_jobs(runs_dir) -> list:
     return out
 
 
-def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir, budget=None) -> list:
-    """Run every queued foundry job in created_at order (write-file->reconcile).
+def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir,
+                           budget=None, batch_max_llm_calls=None) -> list:
+    """Run every queued foundry job in created_at order under ONE shared LLM-call
+    budget (write-file->reconcile).
 
-    A bare SandboxError (docker/image infra, NOT a SandboxRunFailed subclass)
-    aborts the whole batch — the next job would hit the same wall. Any other
-    failure *inside* run_foundry_job leaves that job status=failed (already
-    written by run_foundry_job itself) and the batch continues, so one
-    bad-code job does not poison its neighbours.
+    The shared ForgeBudget is charged before each llm.complete() (forge.py), so a
+    job that fails mid-sweep still leaves its spend counted — the batch total is a
+    hard cap, not a sum of returned summaries (a failed job returns none).
+
+    Before starting job N+1 we project its cost as the mean spend of the jobs
+    attempted so far (jobs_attempted, updated in a `finally` so a mid-sweep
+    failure still counts) and refuse to start it if `used + avg_cost` would
+    blow the cap. A bare `used >= max_llm_calls` check is not enough here: a
+    job can legitimately land UNDER the cap (2 used / 3 max) while still
+    being the last one that safely fits — starting one more of similar size
+    would overshoot. This is a conservative estimate, not an exact one: a
+    batch of jobs with wildly uneven cost can stop earlier than the hard cap
+    strictly requires, but it never launches a job blind past the ceiling.
+
+    Abort rules: a bare SandboxError (infra, not SandboxRunFailed) OR an
+    LLMUnavailable (bad key / no quota) stops the whole batch, because every
+    later job would hit the same wall. Any other job failure leaves that job
+    status=failed and the batch continues.
 
     A failure *before* run_foundry_job is ever called — e.g. load_ohlcv
     raising ValueError on a malformed parquet — would otherwise never be
@@ -84,8 +101,18 @@ def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir, budge
     operator-visible failure. So this function writes status="failed" for
     that job itself (mirroring run_foundry_job's own write) before moving on
     to the next job."""
+    shared = ForgeBudget(max_llm_calls=batch_max_llm_calls) if batch_max_llm_calls else None
+    jobs_attempted = 0                                  # only jobs that reached run_foundry_job
     summaries = []
     for _created, job_path, job in _queued_jobs(runs_dir):
+        if shared is not None and jobs_attempted > 0:
+            avg_cost = shared.used / jobs_attempted
+            if shared.used + avg_cost > shared.max_llm_calls:
+                log.warning(
+                    "batch LLM-call budget projected to be spent (%d used, "
+                    "avg %.1f/job over %d jobs, cap %d); stopping",
+                    shared.used, avg_cost, jobs_attempted, shared.max_llm_calls)
+                break
         try:
             ohlcv = load_ohlcv(job["params"]["ohlcv_path"])
         except Exception as exc:                       # noqa: BLE001 job-level, keep going
@@ -96,7 +123,10 @@ def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir, budge
         try:
             summaries.append(run_foundry_job(
                 job_path, manifests_dir=manifests_dir, llm=llm, sandbox=sandbox,
-                zoo_dir=zoo_dir, ohlcv=ohlcv, budget=budget))
+                zoo_dir=zoo_dir, ohlcv=ohlcv, budget=budget, forge_budget=shared))
+        except LLMUnavailable:
+            log.error("LLM backend unavailable on %s; aborting the batch", job_path)
+            raise                                      # infra: every later job hits the same wall
         except SandboxError as exc:
             if not isinstance(exc, SandboxRunFailed):
                 log.error("infra fault on %s; aborting the batch: %s", job_path, exc)
@@ -104,6 +134,9 @@ def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir, budge
             log.warning("job %s failed (repairable, buried): %s", job_path, exc)
         except Exception as exc:                       # noqa: BLE001 job-level, keep going
             log.warning("job %s failed: %s; continuing", job_path, exc)
+        finally:
+            if shared is not None:
+                jobs_attempted += 1                     # count even a mid-sweep failure
     return summaries
 
 
