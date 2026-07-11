@@ -51,7 +51,9 @@ def test_timeout_reaps_the_container_before_draining_the_cli(monkeypatch, tmp_pa
     with pytest.raises(SandboxRunFailed, match="timed out"):
         sb.run(SAFE_SOURCE, input_parquet="x.parquet", output_dir=str(tmp_path))
 
-    assert log == ["communicate#1", "docker kill", "docker rm", "docker ps",
+    # "docker image" is the Task 2 pre-check (`_ensure_image`), run once before
+    # the container ever starts; everything after it is the existing reap order.
+    assert log == ["docker image", "communicate#1", "docker kill", "docker rm", "docker ps",
                    "communicate#2"], log
     assert not fake.killed, "killed the docker CLI; the container would have survived it"
 

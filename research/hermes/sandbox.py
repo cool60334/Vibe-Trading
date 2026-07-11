@@ -125,6 +125,22 @@ def _assert_image_pinned(image: str, allow_unpinned: bool) -> None:
     )
 
 
+def _assert_image_exists(image: str) -> None:
+    """Ask the daemon whether the image resolves. A missing image is infra, not
+    an LLM code failure: without this, `docker run` exits non-zero and the
+    classifier would call it repairable, burning every hypothesis's retries on a
+    config typo. Raises a bare SandboxError (aborts the sweep)."""
+    try:
+        proc = subprocess.run(["docker", "image", "inspect", image],
+                              capture_output=True, text=True, timeout=15)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise SandboxError(f"could not inspect sandbox image {image!r}: {exc}") from exc
+    if proc.returncode != 0:
+        raise SandboxError(
+            f"sandbox image {image!r} does not resolve on this host "
+            f"(docker image inspect exit {proc.returncode}): {(proc.stderr or '').strip()[:200]}")
+
+
 class DockerSandbox(SandboxExecutor):
     """Hardened container executor with AST gate + resource limits.
 
@@ -139,6 +155,7 @@ class DockerSandbox(SandboxExecutor):
                  cpus: str = "1", timeout_s: int = 120, allow_unpinned: bool = False):
         self.image, self.memory, self.cpus, self.timeout_s = image, memory, cpus, timeout_s
         self.allow_unpinned = allow_unpinned
+        self._image_verified = False
 
     def _build_command(
         self,
@@ -187,6 +204,11 @@ class DockerSandbox(SandboxExecutor):
             "python", "/app/runner.py", in_container_path, "/out/candidate.parquet",
         ]
         return cmd
+
+    def _ensure_image(self) -> None:
+        if not self._image_verified:
+            _assert_image_exists(self.image)
+            self._image_verified = True
 
     def _is_running(self, name: str) -> bool:
         """Ask the daemon whether the container is still up. False if we can't tell."""
@@ -264,6 +286,7 @@ class DockerSandbox(SandboxExecutor):
         _assert_image_pinned(self.image, self.allow_unpinned)
         if not is_docker_available():
             raise SandboxError("docker daemon unavailable; cannot run sandboxed ETL")
+        self._ensure_image()
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 

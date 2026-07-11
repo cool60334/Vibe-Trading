@@ -157,6 +157,12 @@ SAFE_SOURCE = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
 def _patch_popen(monkeypatch, fake: FakePopen) -> None:
     monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+    # Task 2: run() also calls _ensure_image(), which drives `docker image
+    # inspect` through subprocess.run (not Popen) before the container ever
+    # starts. Stub it to resolve so these tests still exercise the Popen-level
+    # (container-ran) behaviour they're named for, not the image pre-check.
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="sha256:e...\n", stderr=""))
 
 
 def test_nonzero_exit_is_run_failed_not_infra(tmp_path, monkeypatch):
@@ -232,3 +238,40 @@ def test_mutable_tag_still_refused():
     from research.hermes.sandbox import _assert_image_pinned, SandboxError
     with pytest.raises(SandboxError, match="pinned|digest|sha256"):
         _assert_image_pinned("talos-sandbox:test", allow_unpinned=False)
+
+
+# ── Task 2: image-existence pre-check, verified once per sandbox ────────────
+
+def test_missing_image_is_infra_not_repairable(tmp_path, monkeypatch):
+    import subprocess
+    from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    def fake_run(cmd, **k):
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="No such image")
+        raise AssertionError(f"should not reach: {cmd}")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    sb = DockerSandbox(image="sha256:" + "e" * 64, allow_unpinned=False, timeout_s=5)
+    safe = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
+    with pytest.raises(SandboxError) as ei:
+        sb.run(safe, input_parquet="x.parquet", output_dir=str(tmp_path))
+    assert not isinstance(ei.value, SandboxRunFailed)     # infra: must abort the sweep
+
+def test_image_verified_once_not_per_hypothesis(tmp_path, monkeypatch):
+    import subprocess
+    from research.hermes.sandbox import DockerSandbox
+    from research.tests.hermes_support import FakePopen
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    calls = {"inspect": 0}
+    def fake_run(cmd, **k):
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            calls["inspect"] += 1
+            return subprocess.CompletedProcess(cmd, 0, stdout="sha256:e...\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")   # reap etc.
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakePopen(returncode=0))
+    sb = DockerSandbox(image="sha256:" + "e" * 64, allow_unpinned=False, timeout_s=5)
+    safe = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
+    for _ in range(3):
+        sb.run(safe, input_parquet="x.parquet", output_dir=str(tmp_path))
+    assert calls["inspect"] == 1          # cached after the first run
