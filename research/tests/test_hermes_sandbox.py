@@ -275,3 +275,42 @@ def test_image_verified_once_not_per_hypothesis(tmp_path, monkeypatch):
     for _ in range(3):
         sb.run(safe, input_parquet="x.parquet", output_dir=str(tmp_path))
     assert calls["inspect"] == 1          # cached after the first run
+
+
+# ── Task 3: exit-125 / daemon-down mid-run promoted to infra ────────────────
+#
+# The Task 2 pre-check has a TOCTOU window -- the image can be deleted, or the
+# daemon can die, after inspection but before/during `docker run`. Exit 125 is
+# docker's own "couldn't start the container" code; LLM code cannot produce it.
+
+def test_exit_125_is_promoted_to_infra(tmp_path, monkeypatch):
+    from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
+    from research.tests.hermes_support import FakePopen
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    monkeypatch.setattr("research.hermes.sandbox.DockerSandbox._ensure_image", lambda self: None)
+    _patch_popen(monkeypatch, FakePopen(returncode=125, stderr="Unable to find image 'x' locally"))
+    sb = DockerSandbox(allow_unpinned=True, timeout_s=5)
+    with pytest.raises(SandboxError) as ei:
+        sb.run(SAFE_SOURCE, input_parquet="x.parquet", output_dir=str(tmp_path))
+    assert not isinstance(ei.value, SandboxRunFailed)     # infra, abort the sweep
+
+def test_daemon_down_midrun_is_infra(tmp_path, monkeypatch):
+    from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
+    from research.tests.hermes_support import FakePopen
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    monkeypatch.setattr("research.hermes.sandbox.DockerSandbox._ensure_image", lambda self: None)
+    _patch_popen(monkeypatch, FakePopen(returncode=1, stderr="Cannot connect to the Docker daemon"))
+    sb = DockerSandbox(allow_unpinned=True, timeout_s=5)
+    with pytest.raises(SandboxError) as ei:
+        sb.run(SAFE_SOURCE, input_parquet="x.parquet", output_dir=str(tmp_path))
+    assert not isinstance(ei.value, SandboxRunFailed)
+
+def test_ordinary_nonzero_exit_stays_repairable(tmp_path, monkeypatch):
+    from research.hermes.sandbox import DockerSandbox, SandboxRunFailed
+    from research.tests.hermes_support import FakePopen
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    monkeypatch.setattr("research.hermes.sandbox.DockerSandbox._ensure_image", lambda self: None)
+    _patch_popen(monkeypatch, FakePopen(returncode=1, stderr="KeyError: 'nope'"))
+    sb = DockerSandbox(allow_unpinned=True, timeout_s=5)
+    with pytest.raises(SandboxRunFailed):     # container ran; the code failed
+        sb.run(SAFE_SOURCE, input_parquet="x.parquet", output_dir=str(tmp_path))

@@ -75,6 +75,20 @@ class SandboxRunFailed(SandboxError):
         self.oom = oom
 
 
+_DOCKER_STARTUP_EXIT = 125     # docker's own "couldn't start the container" code
+_DAEMON_DOWN_MARKERS = ("Cannot connect to the Docker daemon", "Unable to find image")
+
+
+def _looks_like_infra(exit_code: int, stderr: str) -> bool:
+    """True when docker itself failed to start the container, not the code inside
+    it. Exit 125 is docker's dedicated startup-failure code; LLM code cannot emit
+    it. The stderr markers catch a daemon that died or an image deleted after the
+    pre-check (TOCTOU)."""
+    if exit_code == _DOCKER_STARTUP_EXIT:
+        return True
+    return any(m in stderr for m in _DAEMON_DOWN_MARKERS)
+
+
 def _looks_like_oom(exit_code: int, stderr: str) -> bool:
     """Exit code 137 OR a MemoryError/Killed marker in stderr.
 
@@ -310,6 +324,11 @@ class DockerSandbox(SandboxExecutor):
             )
             returncode, _stdout, stderr = self._run_container(cmd, name)
             if returncode != 0:
+                stderr = stderr or ""
+                if _looks_like_infra(returncode, stderr):
+                    raise SandboxError(
+                        f"docker could not start the sandbox container "
+                        f"(exit {returncode}): {stderr.strip()[:300]}")
                 oom = _looks_like_oom(returncode, stderr)
                 hint = (f"; looks OOM-killed — the code exceeded --memory={self.memory}"
                         if oom else "")
