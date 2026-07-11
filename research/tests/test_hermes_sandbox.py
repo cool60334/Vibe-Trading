@@ -216,3 +216,19 @@ def test_daemon_down_stays_infra(monkeypatch, tmp_path):
     with pytest.raises(SandboxError) as ei:
         sb.run(safe, input_parquet="x", output_dir=str(tmp_path))
     assert not isinstance(ei.value, SandboxRunFailed)      # infra: must abort the sweep
+
+
+def test_bare_image_id_is_accepted_as_pinned():
+    from research.hermes.sandbox import _assert_image_pinned
+    _assert_image_pinned("sha256:" + "e" * 64, allow_unpinned=False)   # must not raise
+
+
+def test_registry_digest_still_accepted():
+    from research.hermes.sandbox import _assert_image_pinned
+    _assert_image_pinned("python@sha256:" + "a" * 64, allow_unpinned=False)   # must not raise
+
+
+def test_mutable_tag_still_refused():
+    from research.hermes.sandbox import _assert_image_pinned, SandboxError
+    with pytest.raises(SandboxError, match="pinned|digest|sha256"):
+        _assert_image_pinned("talos-sandbox:test", allow_unpinned=False)

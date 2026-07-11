@@ -1,4 +1,4 @@
-"""Layer-1 sandbox: OS-level isolation for LLM-generated feature ETL.
+﻿"""Layer-1 sandbox: OS-level isolation for LLM-generated feature ETL.
 
 SandboxExecutor is the stable interface; DockerSandbox is the only impl.
 Every run passes the layer-0 AST gate first, then executes inside a locked
@@ -11,7 +11,7 @@ file and mounted read-only at /app/user_source.py; the fixed runner template
 (research/hermes/_runner_template.py) is mounted read-only at /app/runner.py;
 the real input parquet is mounted read-only at /in/<basename>. The LLM-authored
 source never touches the container except as an inert, read-only file that the
-runner `exec`s — it cannot write anywhere but /out.
+runner `exec`s ??it cannot write anywhere but /out.
 """
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ class SandboxExecutor(ABC):
         ...
 
 
-_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+_DIGEST_RE = re.compile(r"(?:^|@)sha256:[0-9a-f]{64}$")
 
 
 def _assert_image_pinned(image: str, allow_unpinned: bool) -> None:
@@ -114,14 +114,14 @@ def _assert_image_pinned(image: str, allow_unpinned: bool) -> None:
     A `:tag` can be re-pushed under you between the run that vetted a factor and
     the run that is supposed to reproduce it, so a factor's evidence card would
     describe code that no longer runs the same way. Callers that knowingly point
-    at a locally-built test image pass allow_unpinned=True — an explicit, visible
+    at a locally-built test image pass allow_unpinned=True ??an explicit, visible
     opt-out rather than a silent default.
     """
     if allow_unpinned or _DIGEST_RE.search(image):
         return
     raise SandboxError(
         f"sandbox image {image!r} is not pinned by digest; use "
-        f"'name@sha256:<64-hex>' (or pass allow_unpinned=True for a local test image)"
+        f"'name@sha256:<64-hex>' or a bare 'sha256:<64-hex>' image id (or pass allow_unpinned=True for a local test image)"
     )
 
 
@@ -132,7 +132,7 @@ class DockerSandbox(SandboxExecutor):
     `--name talos_sbx_<uuid>`. The run stays synchronous/blocking (no `-d`) so
     stdout/stderr can still be read back on the happy path. When the wall clock
     expires, `_run_container` reaps the container by that name *before* draining
-    the CLI's pipes — see its docstring for why the order is load-bearing and
+    the CLI's pipes ??see its docstring for why the order is load-bearing and
     why `subprocess.run(timeout=)` cannot be used.
     """
     def __init__(self, image: str = DEFAULT_IMAGE, memory: str = "1g",
@@ -288,7 +288,7 @@ class DockerSandbox(SandboxExecutor):
             returncode, _stdout, stderr = self._run_container(cmd, name)
             if returncode != 0:
                 oom = _looks_like_oom(returncode, stderr)
-                hint = (f"; looks OOM-killed — the code exceeded --memory={self.memory}"
+                hint = (f"; looks OOM-killed ??the code exceeded --memory={self.memory}"
                         if oom else "")
                 raise SandboxRunFailed(
                     f"sandbox run failed (exit {returncode}){hint}\n{stderr[-800:]}",
@@ -298,3 +298,4 @@ class DockerSandbox(SandboxExecutor):
         finally:
             if tmp_source_path is not None:
                 Path(tmp_source_path).unlink(missing_ok=True)
+
