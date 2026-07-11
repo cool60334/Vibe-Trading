@@ -127,3 +127,21 @@ def test_bad_ohlcv_path_is_job_level_not_infra(tmp_path, monkeypatch):
     monkeypatch.setattr(fr, "run_foundry_job", fake_run_job)
     fr.reconcile_foundry_jobs(tmp_path, tmp_path, llm=object(), sandbox=object(), zoo_dir=tmp_path)
     assert ran == ["btc"]                               # eth's bad ohlcv never reached run_foundry_job; btc still ran
+
+
+def test_build_llm_openrouter_is_not_yet_implemented():
+    from research.hermes.foundry_runner import build_llm
+    with pytest.raises(NotImplementedError, match="openrouter|next spec"):
+        build_llm("openrouter")
+
+def test_main_enqueue_writes_a_queued_job(tmp_path):
+    import json
+    from research.hermes.foundry_runner import main
+    rc = main(["enqueue", "--symbol", "eth", "--runs-dir", str(tmp_path),
+               "--oos-start", "2025-01-01", "--ohlcv-path", str(tmp_path / "o.parquet")])
+    assert rc == 0
+    jobs = list((tmp_path / "foundry_jobs").rglob("job.json"))
+    assert len(jobs) == 1
+    job = json.loads(jobs[0].read_text())
+    assert job["status"] == "queued" and job["symbol"] == "eth"
+    assert job["params"]["oos_start"] == "2025-01-01"
