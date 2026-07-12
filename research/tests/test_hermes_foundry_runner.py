@@ -140,8 +140,8 @@ def test_bad_ohlcv_path_is_job_level_not_infra(tmp_path, monkeypatch):
 def test_build_llm_openrouter_returns_a_coder(monkeypatch):
     from research.hermes import foundry_runner as fr
     sentinel = object()
-    monkeypatch.setattr(fr, "build_openrouter_coder",
-                        lambda *, model, max_tokens: sentinel)
+    monkeypatch.setattr(fr, "build_llm_coder",
+                        lambda *, provider, model, max_tokens: sentinel)
     assert fr.build_llm("openrouter", model="x/y", max_tokens=1000) is sentinel
 
 
@@ -289,3 +289,29 @@ def test_run_with_spend_flag_builds_llm_and_reconciles(tmp_path, monkeypatch):
                   "--batch-max-llm-calls", "4"])
     assert rc == 0 and calls["reconciled"] is True
     assert calls["model"] == "deepseek/deepseek-chat" and calls["batch"] == 4
+
+
+def test_build_llm_openai_returns_a_coder(monkeypatch):
+    from research.hermes import foundry_runner as fr
+    sentinel = object()
+    seen = {}
+    def fake_factory(*, provider, model, max_tokens):
+        seen.update(provider=provider, model=model); return sentinel
+    monkeypatch.setattr(fr, "build_llm_coder", fake_factory)
+    assert fr.build_llm("openai", model="gpt-4o-mini") is sentinel
+    assert seen == {"provider": "openai", "model": "gpt-4o-mini"}
+
+
+def test_build_llm_openrouter_still_dispatches(monkeypatch):
+    from research.hermes import foundry_runner as fr
+    seen = {}
+    monkeypatch.setattr(fr, "build_llm_coder",
+                        lambda *, provider, model, max_tokens: seen.update(provider=provider))
+    fr.build_llm("openrouter", model="x/y")
+    assert seen["provider"] == "openrouter"
+
+
+def test_build_llm_openai_requires_a_model():
+    from research.hermes.foundry_runner import build_llm
+    with pytest.raises(ValueError, match="model"):
+        build_llm("openai", model=None)

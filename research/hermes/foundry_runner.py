@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from research.hermes.forge import ForgeBudget
-from research.hermes.llm_client import build_openrouter_coder, LLMUnavailable
+from research.hermes.llm_client import build_llm_coder, LLMUnavailable
 from research.hermes.orchestrator import (
     _now, _write_job_json, enqueue_foundry_job, run_foundry_job)
 from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
@@ -141,14 +141,14 @@ def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir,
 
 
 def build_llm(spec: str, *, model: str | None = None, max_tokens: int = 2048):
-    """Construct the LLM client named by `spec`. For openrouter, the model is
-    pinned explicitly (a paid run must never inherit an expensive model from a
-    stray LANGCHAIN_MODEL_NAME)."""
-    if spec == "openrouter":
+    """Construct the LLM client named by `spec`. For a supported provider the
+    model is pinned explicitly (a paid run must never inherit an expensive model
+    from a stray LANGCHAIN_MODEL_NAME)."""
+    if spec in ("openrouter", "openai"):
         if not model:
-            raise ValueError("openrouter requires an explicit model (a paid run "
-                             "must not read the model from the environment)")
-        return build_openrouter_coder(model=model, max_tokens=max_tokens)
+            raise ValueError(f"{spec} requires an explicit model (a paid run must "
+                             "not read the model from the environment)")
+        return build_llm_coder(provider=spec, model=model, max_tokens=max_tokens)
     raise ValueError(f"unknown llm spec {spec!r}")
 
 
