@@ -9,17 +9,28 @@ import argparse
 import json
 import logging
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
 from research.hermes.forge import ForgeBudget
+from research.hermes.foundry_spend import (
+    AlreadyRunning, default_ledger_path, record_spend, single_instance_lock, todays_spend,
+)
 from research.hermes.llm_client import build_llm_coder, LLMUnavailable
 from research.hermes.orchestrator import (
     _now, _write_job_json, enqueue_foundry_job, run_foundry_job)
 from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFailed
 
 log = logging.getLogger(__name__)
+
+
+def _positive_int(s: str) -> int:
+    v = int(s)
+    if v <= 0:
+        raise argparse.ArgumentTypeError(f"must be > 0, got {v}")
+    return v
 
 
 def resolve_image_id(tag: str) -> str:
@@ -179,8 +190,12 @@ def main(argv=None) -> int:
     r.add_argument("--model", required=True, help="explicit OpenRouter model id (pinned)")
     r.add_argument("--i-will-spend-real-money", action="store_true",
                    help="required to actually call the paid LLM; without it, run refuses")
-    r.add_argument("--batch-max-llm-calls", type=int, default=6)
+    r.add_argument("--batch-max-llm-calls", type=_positive_int, default=6)
     r.add_argument("--max-tokens", type=int, default=2048)
+    r.add_argument("--daily-max-llm-calls", type=_positive_int, default=None,
+                   help="cross-run UTC-day call ceiling; omit for no daily guard")
+    r.add_argument("--spend-ledger", default=None,
+                   help="spend ledger path (default <runs-dir>/foundry_spend.jsonl)")
 
     args = ap.parse_args(argv)
     if args.cmd == "enqueue":
@@ -191,16 +206,47 @@ def main(argv=None) -> int:
 
     if not args.i_will_spend_real_money:
         print("refusing: a real run spends money. Re-run with "
-              "--i-will-spend-real-money once you have set OPENROUTER_API_KEY.")
+              "--i-will-spend-real-money once your provider key is set.")
         return 2
-    image_id = resolve_image_id(args.image)          # infra pre-check; raises to abort
-    sandbox = DockerSandbox(image=image_id, timeout_s=args.timeout_s, allow_unpinned=False)
-    llm = build_llm(args.llm, model=args.model, max_tokens=args.max_tokens)
-    reconcile_foundry_jobs(args.runs_dir, args.manifests_dir, llm, sandbox, args.zoo_dir,
-                           batch_max_llm_calls=args.batch_max_llm_calls)
-    used = getattr(llm, "total_tokens", 0)
-    print(f"foundry run complete. tokens used (reported): {used}")
-    return 0
+
+    ledger = args.spend_ledger or str(default_ledger_path(args.runs_dir))
+    daily = args.daily_max_llm_calls
+    try:
+        with single_instance_lock(args.runs_dir):
+            today = None
+            effective = args.batch_max_llm_calls
+            if daily is not None:
+                today = datetime.now(timezone.utc).date()          # pinned once
+                remaining = daily - todays_spend(ledger, today)
+                if remaining <= 0:
+                    print(f"refusing: daily LLM-call budget {daily} already spent "
+                          f"today ({today.isoformat()}).")
+                    return 2
+                effective = min(args.batch_max_llm_calls, remaining)
+
+            image_id = resolve_image_id(args.image)                # infra pre-check; raises to abort
+            sandbox = DockerSandbox(image=image_id, timeout_s=args.timeout_s, allow_unpinned=False)
+            llm = build_llm(args.llm, model=args.model, max_tokens=args.max_tokens)
+            shared = ForgeBudget(max_llm_calls=effective)
+            record_error = None
+            try:
+                reconcile_foundry_jobs(args.runs_dir, args.manifests_dir, llm, sandbox,
+                                       args.zoo_dir, shared_budget=shared)
+            finally:
+                if daily is not None:
+                    try:
+                        record_spend(ledger, day=today, calls=shared.used,
+                                     tokens=getattr(llm, "total_tokens", 0))
+                    except Exception as e:      # noqa: BLE001 - MUST NOT return/raise here:
+                        log.error("daily guard compromised: spend not recorded: %s", e)
+                        record_error = e         # that would mask reconcile's own traceback
+            if record_error is not None:
+                return 2
+            print(f"foundry run complete. tokens used (reported): {getattr(llm, 'total_tokens', 0)}")
+            return 0
+    except AlreadyRunning as exc:
+        print(f"refusing: {exc}")
+        return 2
 
 
 if __name__ == "__main__":

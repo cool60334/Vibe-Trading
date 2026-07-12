@@ -280,8 +280,11 @@ def test_run_with_spend_flag_builds_llm_and_reconciles(tmp_path, monkeypatch):
     monkeypatch.setattr(fr, "DockerSandbox", lambda **k: object())
     fake_coder = object()
     monkeypatch.setattr(fr, "build_llm", lambda *a, **k: (calls.__setitem__("model", k.get("model")), fake_coder)[1])
-    def fake_reconcile(runs_dir, manifests_dir, llm, sandbox, zoo_dir, **k):
-        calls["reconciled"] = True; calls["batch"] = k.get("batch_max_llm_calls"); return []
+    def fake_reconcile(runs_dir, manifests_dir, llm, sandbox, zoo_dir, shared_budget=None, **k):
+        # Task 3 wires main to build its own ForgeBudget and hand it to reconcile
+        # as shared_budget= (never a raw batch_max_llm_calls kwarg) -- see
+        # test_reconcile_uses_a_passed_shared_budget for the reconcile-side contract.
+        calls["reconciled"] = True; calls["batch"] = shared_budget.max_llm_calls; return []
     monkeypatch.setattr(fr, "reconcile_foundry_jobs", fake_reconcile)
     rc = fr.main(["run", "--runs-dir", str(tmp_path), "--manifests-dir", str(tmp_path),
                   "--zoo-dir", str(tmp_path), "--image", "talos-sandbox:test",
@@ -332,3 +335,84 @@ def test_reconcile_uses_a_passed_shared_budget(tmp_path, monkeypatch):
     fr.reconcile_foundry_jobs(tmp_path, tmp_path, llm=object(), sandbox=object(),
                               zoo_dir=tmp_path, shared_budget=shared)
     assert shared.used == 2          # main can read the same object afterwards
+
+
+def _run_args(tmp_path, **extra):
+    a = ["run", "--runs-dir", str(tmp_path), "--manifests-dir", str(tmp_path),
+         "--zoo-dir", str(tmp_path), "--image", "talos-sandbox:test",
+         "--model", "gpt-4o-mini", "--i-will-spend-real-money"]
+    for k, v in extra.items():
+        a += [f"--{k}", str(v)]
+    return a
+
+def _stub_run_deps(monkeypatch, fr, reconcile):
+    monkeypatch.setattr(fr, "resolve_image_id", lambda tag: "sha256:" + "e" * 64)
+    monkeypatch.setattr(fr, "DockerSandbox", lambda **k: object())
+    monkeypatch.setattr(fr, "build_llm", lambda *a, **k: type("C", (), {"total_tokens": 0})())
+    monkeypatch.setattr(fr, "reconcile_foundry_jobs", reconcile)
+
+
+def test_remaining_zero_refuses_and_skips_reconcile(tmp_path, monkeypatch):
+    import json
+    from research.hermes import foundry_runner as fr
+    (tmp_path / "foundry_spend.jsonl").write_text(
+        json.dumps({"date": __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc).date().isoformat(), "calls": 40}) + "\n")
+    called = {"reconcile": False}
+    _stub_run_deps(monkeypatch, fr, lambda *a, **k: called.__setitem__("reconcile", True))
+    rc = fr.main(_run_args(tmp_path, **{"daily-max-llm-calls": 40, "batch-max-llm-calls": 6}))
+    assert rc == 2 and called["reconcile"] is False
+
+
+def test_effective_shrinks_to_remaining(tmp_path, monkeypatch):
+    import json
+    from research.hermes import foundry_runner as fr
+    today = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).date().isoformat()
+    (tmp_path / "foundry_spend.jsonl").write_text(json.dumps({"date": today, "calls": 37}) + "\n")
+    seen = {}
+    def reconcile(*a, shared_budget=None, **k): seen["cap"] = shared_budget.max_llm_calls
+    _stub_run_deps(monkeypatch, fr, reconcile)
+    fr.main(_run_args(tmp_path, **{"daily-max-llm-calls": 40, "batch-max-llm-calls": 6}))
+    assert seen["cap"] == 3          # min(6, 40-37)
+
+
+def test_spend_recorded_even_when_reconcile_aborts(tmp_path, monkeypatch):
+    from research.hermes import foundry_runner as fr
+    from research.hermes.llm_client import LLMUnavailable
+    from research.hermes.foundry_spend import todays_spend
+    from datetime import datetime, timezone
+    def reconcile(*a, shared_budget=None, **k):
+        shared_budget.charge_call(); shared_budget.charge_call()
+        raise LLMUnavailable("bad key")
+    _stub_run_deps(monkeypatch, fr, reconcile)
+    with pytest.raises(LLMUnavailable):           # reconcile's exception is NOT masked
+        fr.main(_run_args(tmp_path, **{"daily-max-llm-calls": 40, "batch-max-llm-calls": 6}))
+    assert todays_spend(tmp_path / "foundry_spend.jsonl",
+                        datetime.now(timezone.utc).date()) == 2   # spend still recorded
+
+
+def test_argparse_rejects_nonpositive_budgets(tmp_path):
+    from research.hermes import foundry_runner as fr
+    with pytest.raises(SystemExit):
+        fr.main(_run_args(tmp_path, **{"batch-max-llm-calls": 0}))
+    with pytest.raises(SystemExit):
+        fr.main(_run_args(tmp_path, **{"daily-max-llm-calls": 0}))
+
+
+def test_daily_omitted_skips_the_guard(tmp_path, monkeypatch):
+    from research.hermes import foundry_runner as fr
+    seen = {"reconciled": False}
+    _stub_run_deps(monkeypatch, fr,
+                   lambda *a, **k: seen.__setitem__("reconciled", True))
+    rc = fr.main(_run_args(tmp_path, **{"batch-max-llm-calls": 6}))   # no --daily
+    assert rc == 0 and seen["reconciled"] is True
+    assert not (tmp_path / "foundry_spend.jsonl").exists()   # no ledger touched
+
+
+def test_record_failure_returns_nonzero_when_reconcile_succeeded(tmp_path, monkeypatch):
+    from research.hermes import foundry_runner as fr
+    _stub_run_deps(monkeypatch, fr, lambda *a, **k: None)     # reconcile succeeds
+    monkeypatch.setattr(fr, "record_spend",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    rc = fr.main(_run_args(tmp_path, **{"daily-max-llm-calls": 40, "batch-max-llm-calls": 6}))
+    assert rc == 2
