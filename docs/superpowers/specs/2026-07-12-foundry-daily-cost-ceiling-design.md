@@ -75,6 +75,30 @@ Verified and adopted before writing:
 - **OK, no change — ledger location/growth.** `<runs-dir>/foundry_spend.jsonl`,
   whole-file sum; rotation is YAGNI.
 
+### Second review (agy, folder mode against the code) — dispositions
+
+- **Accepted (critical) — `finally` must not mask reconcile's exception.** If
+  reconcile raises and the `finally`'s `record_spend` then `return`s or raises,
+  the operator loses the traceback of what killed the batch. The `finally` wraps
+  recording in its own `try/except` that only logs; reconcile's exception
+  propagates; a record failure returns non-zero only when reconcile succeeded.
+- **Accepted — per-`--runs-dir` scoping is a bypass if unstated.** Different
+  `--runs-dir` = independent ledgers = doubled cap. Documented (§3-2) and made
+  overridable via `--spend-ledger` for a global budget.
+- **Accepted — lock staleness from the dir's own `st_mtime`, not `meta.json`.**
+  `mkdir` is atomic; the post-mkdir `meta.json` write is not, so a peer could
+  read a half-written/absent file. Age comes from the directory stat; a
+  `meta.json` read error is treated as "fresh", never as grounds to steal.
+- **Accepted — a failed stale-lock `rmtree` logs loudly** (else a lock that can't
+  be removed silently wedges every future run).
+- **Accepted — no `assert` for arg validation.** `type=positive_int` matches the
+  existing print+return-2 convention rather than throwing an `AssertionError`.
+- **Accepted — `--daily-max-llm-calls` default None** (guard inactive, back-compat)
+  so a missing value never hits `None - int`; the guard is opt-in and documented.
+- **OK — wiring and `shared.used` semantics** verified against `forge.py`
+  (charge before `complete`, so abort-time spend is counted) and the projected-cost
+  pre-check (unaffected by an injected budget).
+
 ---
 
 ## Section 1 — Architecture & data flow
@@ -83,25 +107,42 @@ A cross-run daily guard wraps the existing per-reconcile budget; the shared
 `ForgeBudget` mechanism is unchanged.
 
 ```
-foundry run --batch-max-llm-calls 6 --daily-max-llm-calls 40
-  argparse: assert batch_max_llm_calls > 0 and daily_max_llm_calls > 0
+foundry run --batch-max-llm-calls 6 [--daily-max-llm-calls 40]
+  argparse: --batch-max-llm-calls type=positive_int (existing default 6);
+            --daily-max-llm-calls type=positive_int, default None
+            (a bad value prints + returns 2 like the existing bad-arg path — no assert)
+  # --daily omitted -> no cross-run guard (per-reconcile budget only, back-compat)
   with single_instance_lock(<runs-dir>/foundry.lock, stale_hours=6):
-      today = datetime.now(timezone.utc).date()          # pinned once
-      remaining = daily_max_llm_calls - todays_spend(ledger, today)
-      if remaining <= 0:  refuse (return != 0)
-      effective = min(batch_max_llm_calls, remaining)
+      if daily_max_llm_calls is not None:
+          today = datetime.now(timezone.utc).date()      # pinned once (bill the day we budgeted)
+          remaining = daily_max_llm_calls - todays_spend(ledger, today)
+          if remaining <= 0:  refuse (return 2), reconcile never called
+          effective = min(batch_max_llm_calls, remaining)
+      else:
+          effective, today = batch_max_llm_calls, None
       shared = ForgeBudget(max_llm_calls=effective)       # main holds the ref
+      record_error = None
       try:
-          reconcile_foundry_jobs(..., shared_budget=shared)   # abort may raise
+          reconcile_foundry_jobs(..., shared_budget=shared)   # abort (LLMUnavailable/SandboxError) may raise
       finally:
-          record_spend(ledger, day=today, calls=shared.used,
-                       tokens=getattr(llm, "total_tokens", 0))  # even on abort
-      # if record_spend raised: loud log + return != 0
+          if daily_max_llm_calls is not None:
+              try:
+                  record_spend(ledger, day=today, calls=shared.used,
+                               tokens=getattr(llm, "total_tokens", 0))  # recorded even on abort
+              except Exception as e:            # MUST NOT return/raise here: that would mask
+                  log.error("daily guard compromised: spend not recorded: %s", e)  # reconcile's own traceback
+                  record_error = e
+      # reconcile's exception (if any) propagates naturally out of the finally.
+      # Only when reconcile SUCCEEDED but recording failed do we signal it:
+      if record_error is not None:  return 2
 ```
 
 ### N1 — spend ledger (`research/hermes/foundry_spend.py`)
 
-Append-only JSONL at `<runs-dir>/foundry_spend.jsonl`, one line per run:
+Append-only JSONL, default `<runs-dir>/foundry_spend.jsonl`, one line per run.
+The path is **overridable via `--spend-ledger`** so an operator who wants a
+single global budget across several `--runs-dir` can point them all at one file
+(see §3 for why the default is per-runs-dir and what that scoping means). Format:
 `{"date": "2026-07-12", "ts": "<iso>", "calls": 6, "tokens": 2562}`.
 
 - `todays_spend(path, day: date) -> int` — sum `calls` over lines whose `date`
@@ -114,10 +155,20 @@ Append-only JSONL at `<runs-dir>/foundry_spend.jsonl`, one line per run:
 
 `single_instance_lock(runs_dir, stale_hours=6)` context manager:
 `os.mkdir(<runs-dir>/foundry.lock)` is the atomic acquire. If it already exists,
-read its `meta.json` (`{pid, ts}`); if `now - ts > stale_hours`, treat it as a
-crashed run, `rmtree` and retry once; otherwise raise `AlreadyRunning` (main
-returns non-zero). The `finally` removes the lock dir. `stale_hours=6` is chosen
-`>>` a normal run, so takeover almost never races a live long run.
+decide staleness from **the lock directory's own `os.stat().st_mtime`**, not from
+a `meta.json` inside it: `mkdir` stamps the directory atomically, whereas writing
+a `meta.json` afterward is a second, non-atomic step — a peer that reads a
+half-written or absent `meta.json` would `FileNotFoundError`/`JSONDecodeError` and
+could crash or falsely declare the lock stale. (`meta.json` is still written with
+`{pid, ts}` for human diagnostics only; a read failure there is treated as
+"fresh", never as grounds to steal the lock.) If `now - dir_mtime > stale_hours`,
+treat it as a crashed run, `rmtree` and retry the `mkdir` once; **if that `rmtree`
+fails, `log.warning` loudly** (otherwise a lock that can't be removed — perms,
+Windows file lock — silently wedges every future run until `stale_hours` elapses
+again, with no operator signal) and raise `AlreadyRunning`. Otherwise (fresh)
+raise `AlreadyRunning` immediately. `main` returns non-zero on `AlreadyRunning`.
+The `finally` removes the lock dir. `stale_hours=6` is chosen `>>` a normal run,
+so takeover almost never races a live long run.
 
 ### N3 — reconcile accepts a pre-built shared budget
 
@@ -133,7 +184,7 @@ projected-cost pre-check reads `shared.used` / `jobs_attempted` unchanged.
 | File | Responsibility |
 |---|---|
 | `research/hermes/foundry_spend.py` (create) | `todays_spend`, `record_spend`, `single_instance_lock`, `AlreadyRunning` |
-| `research/hermes/foundry_runner.py` (modify) | `reconcile` gains `shared_budget=None`; `main` run gains `--daily-max-llm-calls`, argparse asserts, lock, pinned date, try/finally recording, non-zero on refuse/record-failure |
+| `research/hermes/foundry_runner.py` (modify) | `reconcile` gains `shared_budget=None`; `main` run gains `--daily-max-llm-calls` (type=positive_int, default None) + `--spend-ledger` (default `<runs-dir>/foundry_spend.jsonl`) + `--batch-max-llm-calls` becomes `type=positive_int`; lock, pinned UTC date, mask-safe `finally` recording, return 2 on refuse / record-failure |
 | `research/tests/test_hermes_foundry_spend.py` (create) | ledger + lock unit tests |
 | `research/tests/test_hermes_foundry_runner.py` (modify) | daily-guard integration tests |
 
@@ -143,24 +194,37 @@ projected-cost pre-check reads `shared.used` / `jobs_attempted` unchanged.
 
 | situation | behaviour |
 |---|---|
-| `remaining <= 0` | refuse, return non-zero, reconcile never called |
-| reconcile aborts (LLMUnavailable / SandboxError) | `finally` still records `shared.used`; the exception propagates after recording |
-| `record_spend` raises (disk full, permissions) | loud log ("daily guard compromised"); return non-zero; artifacts already persisted are untouched |
-| another instance holds a fresh lock | `AlreadyRunning`; return non-zero without running |
-| lock is stale (`age > stale_hours`) | take it over (rmtree + retry once) |
-| non-positive `--batch`/`--daily` | argparse error before any side effect |
+| `--daily-max-llm-calls` omitted | no cross-run guard; per-reconcile budget only (back-compat) |
+| `remaining <= 0` | refuse, return 2, reconcile never called |
+| reconcile aborts (LLMUnavailable / SandboxError) | `finally` records `shared.used`, then **reconcile's exception propagates** (the recording never masks it) |
+| `record_spend` raises inside `finally` | log loudly, set `record_error`, **do not return/raise in `finally`**; return 2 only if reconcile itself succeeded |
+| another instance holds a fresh lock | `AlreadyRunning`; return 2 without running |
+| lock is stale (`dir mtime age > stale_hours`) | rmtree + retry mkdir once; if rmtree fails, `log.warning` + `AlreadyRunning` |
+| lock exists, `meta.json` unreadable | treat as fresh (never steal on a read error) |
+| non-positive `--batch`/`--daily` | `type=positive_int` → argparse error, before any side effect (not `assert`) |
 
 **Honest boundaries (in docstrings):**
 
-1. **Calls, not USD.** A call's cost varies by model/tokens; `max_tokens` bounds
-   output. Cross-model dollar accounting is deferred (needs a pricing table).
-2. **Lock is single-host.** Two instances that call `os.mkdir` within the same
+1. **Calls, not USD — and calls is a floor.** A call's cost varies by
+   model/tokens; `max_tokens` bounds output. Moreover `ForgeBudget` counts one
+   `llm.complete()`, but a transport-layer retry (HTTP 502/429, `MAX_RETRIES`)
+   can issue more than one real API request per call, so the *actual* API spend
+   can exceed the nominal `--daily-max-llm-calls`. Set the daily cap with head-
+   room. Cross-model dollar accounting is deferred (needs a pricing table).
+2. **The daily budget is per-`--runs-dir` by default.** The ledger and lock live
+   under `<runs-dir>`, so two runs with **different** `--runs-dir` keep
+   independent ledgers and the daily cap is effectively doubled. This is fine for
+   the intended use (one cron, one runs-dir), and an operator who wants a single
+   global budget across experiments points them all at one `--spend-ledger` (the
+   lock stays per-runs-dir; the ledger is what bounds spend). Stated so no one
+   assumes it protects an API key globally by default.
+3. **Lock is single-host.** Two instances that call `os.mkdir` within the same
    instant: only one wins (mkdir is atomic), so this is safe on one host; it does
    not coordinate across machines.
-3. **Stale takeover is age-based, not liveness-based.** A genuine run exceeding
+4. **Stale takeover is age-based, not liveness-based.** A genuine run exceeding
    `stale_hours` could be taken over. `stale_hours=6` is set far above a normal
    run to make this vanishingly unlikely.
-4. **Ledger is trusted.** A hand-edited or externally-corrupted ledger mis-states
+5. **Ledger is trusted.** A hand-edited or externally-corrupted ledger mis-states
    today's spend; malformed lines are skipped but a wrong `calls` value is taken
    at face value.
 
@@ -185,9 +249,11 @@ projected-cost pre-check reads `shared.used` / `jobs_attempted` unchanged.
 |---|---|
 | `test_remaining_zero_refuses_and_skips_reconcile` | ledger already at daily cap → non-zero return; monkeypatched `reconcile` **not called** |
 | `test_effective_shrinks_to_remaining` | daily=40, ledger today=37, batch=6 → reconcile receives a `shared_budget` capped at 3 |
-| `test_spend_recorded_even_when_reconcile_aborts` | reconcile raises `LLMUnavailable` after charging the shared budget → ledger still gets a line with those calls; the run returns non-zero |
-| `test_argparse_rejects_nonpositive_budgets` | `--batch-max-llm-calls 0` / `--daily-max-llm-calls 0` → argparse error |
-| `test_record_failure_logs_and_returns_nonzero` | monkeypatched `record_spend` raises → loud log, non-zero return |
+| `test_spend_recorded_even_when_reconcile_aborts` | reconcile raises `LLMUnavailable` after charging the shared budget → ledger still gets a line with those calls |
+| `test_reconcile_abort_traceback_is_not_masked_by_recording` | reconcile raises `LLMUnavailable`; **that** exception propagates out (not swallowed by the `finally` recording), even if `record_spend` also fails |
+| `test_argparse_rejects_nonpositive_budgets` | `--batch-max-llm-calls 0` / `--daily-max-llm-calls 0` → argparse error (SystemExit 2), no traceback |
+| `test_daily_omitted_skips_the_guard` | no `--daily-max-llm-calls` → reconcile runs with the plain per-reconcile budget; no ledger read/write |
+| `test_record_failure_returns_nonzero_when_reconcile_succeeded` | reconcile succeeds, monkeypatched `record_spend` raises → loud log, return 2 |
 
 ### Honestly-recorded gaps
 
@@ -202,11 +268,13 @@ projected-cost pre-check reads `shared.used` / `jobs_attempted` unchanged.
 
 - **Placeholders:** none. `stale_hours=6` is a concrete default; the ledger schema
   is fixed.
-- **Consistency:** the shared-budget-in-`finally` recording (§1) matches the abort
-  test (§4) and the error table (§3). `effective = min(batch, remaining)` appears
-  identically in §1/D2/§4. `single_instance_lock` is defined in §1-N2 and tested in
-  §4.
-- **Scope:** one implementation plan — a ledger module + a `main` guard + a
+- **Consistency:** the mask-safe `finally` recording (§1) matches the
+  non-masking test and the error table (§3). `effective = min(batch, remaining)`
+  appears identically in §1/D2/§4. `single_instance_lock` (dir-`st_mtime`
+  staleness) is defined in §1-N2, tabled in §3, tested in §4. `--daily` default
+  None (guard opt-in) is consistent across §1/§2/§3/§4.
+- **Scope:** one implementation plan — a ledger+lock module + a `main` guard + a
   one-arg reconcile extension. No new subsystem.
-- **Ambiguity:** the window is pinned to a UTC calendar day; enforcement to
-  shrink-then-refuse; the lock to `os.mkdir` with age-based takeover.
+- **Ambiguity:** the window is a UTC calendar day; enforcement is
+  shrink-then-refuse; the lock is `os.mkdir` with dir-mtime age-based takeover;
+  the guard is opt-in (`--daily` default None).
