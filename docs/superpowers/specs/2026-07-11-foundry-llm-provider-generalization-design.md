@@ -46,7 +46,14 @@ Generating factor code with OpenAI's own models is unaffected.
   `ChatOpenAI`; the old name lies when used for OpenAI). Keep
   `OpenRouterCoder = ChatCoder` as a back-compat alias so existing imports/tests
   keep working.
-- Add a provider-parameterized factory:
+- Add a provider-parameterized factory. **It must be deterministic regardless of
+  prior `os.environ` state** — the agent's `_sync_provider_env` writes the
+  resolved key/base into `OPENAI_API_KEY`/`OPENAI_API_BASE` (the vars ChatOpenAI
+  reads), so a leftover `OPENAI_API_BASE` from an earlier build (or a stale env
+  var) would send this provider's key to the wrong host. So: validate the
+  provider **first** (capabilities silently falls back to openai for an unknown
+  name — never rely on it to raise), clear cross-provider base residue, and pin
+  both provider and model:
 
 ```python
 _PROVIDER_BASE_DEFAULTS = {"openrouter": "https://openrouter.ai/api/v1"}
@@ -55,11 +62,22 @@ _SUPPORTED_PROVIDERS = ("openrouter", "openai")
 def build_llm_coder(*, provider: str, model: str, max_tokens: int = 2048) -> ChatCoder:
     """Build a ChatCoder from the agent's ChatOpenAI for `provider`.
 
-    Sets LANGCHAIN_PROVIDER so the agent resolves the right key/base-url. Only
-    openrouter needs a base-url default; openai uses OPENAI_BASE_URL or
-    ChatOpenAI's own api.openai.com default. The model is pinned explicitly so a
-    stray LANGCHAIN_MODEL_NAME cannot hijack an expensive model on a paid run.
-    Any import/signature break is re-raised as a clear RuntimeError."""
+    Deterministic: forces each provider's canonical endpoint (it does NOT honour
+    a custom OPENAI_BASE_URL proxy — out of scope), so a prior build or a stale
+    env var cannot misroute the key. The model is pinned explicitly (via both the
+    call arg and LANGCHAIN_MODEL_NAME) so a stray env model cannot hijack an
+    expensive model on a paid run. Import/signature break -> clear RuntimeError.
+    """
+    if provider not in _SUPPORTED_PROVIDERS:      # capabilities would silently fall back to openai
+        raise ValueError(f"unsupported provider {provider!r}; use one of {_SUPPORTED_PROVIDERS}")
+    os.environ["LANGCHAIN_PROVIDER"] = provider
+    os.environ["LANGCHAIN_MODEL_NAME"] = model
+    os.environ.pop("OPENAI_API_BASE", None)       # clear cross-provider residue
+    os.environ.pop("OPENAI_BASE_URL", None)
+    base = _PROVIDER_BASE_DEFAULTS.get(provider)
+    if base:                                       # openrouter only; openai -> api.openai.com default
+        os.environ[f"{provider.upper()}_BASE_URL"] = base
+    ...  # _agent_build_llm(model_name=model).bind(max_tokens=...) in a fail-loud try
 ```
 
 - `build_openrouter_coder(*, model, max_tokens=2048)` becomes a thin wrapper:
@@ -81,15 +99,49 @@ surface as `LLMUnavailable` and abort the batch. No change.
 
 ---
 
+## Adversarial review (agy, folder mode) — dispositions
+
+agy cross-checked the design against `_sync_provider_env` / `capabilities.py`.
+Verified and adopted:
+
+- **Accepted (real fragility) — cross-provider base pollution.** `_sync_provider_env`
+  writes the resolved base into `OPENAI_API_BASE` (what ChatOpenAI reads), so an
+  openrouter build (or a stale env var) leaves an openrouter URL there; a later
+  openai build would send the OpenAI key to it. Production is safe (one `--llm`
+  per `main` process), but the factory is now made deterministic: it pops
+  `OPENAI_API_BASE`/`OPENAI_BASE_URL` and forces the provider's canonical
+  endpoint.
+- **Accepted — unknown provider silently falls back to openai.** `capabilities`
+  returns `_PROVIDERS["openai"]` for an unknown name rather than raising, so the
+  "loud ValueError" must be enforced by `build_llm_coder` itself, first, before
+  any env mutation.
+- **Accepted — tests would flap on shared `os.environ`.** The new tests must use
+  `monkeypatch` env isolation (documented in Testing).
+- **Accepted (minor) — model-name consistency.** The factory now also sets
+  `LANGCHAIN_MODEL_NAME=model`, so the whole agent stack reads one model name.
+- **Verified OK — alias.** `OpenRouterCoder = ChatCoder` is transparent to
+  `isinstance` and existing imports.
+- **Verified OK — `gpt-4o-mini` id.** `capabilities` adds no prefix for openai;
+  the bare id is passed straight to ChatOpenAI, which is correct.
+
+---
+
 ## Testing (no test spends money)
+
+**Every test that touches the factory uses `monkeypatch` for `os.environ` and
+monkeypatches `_agent_build_llm`.** The factory mutates process-global env
+(`LANGCHAIN_PROVIDER`, base URLs); without `monkeypatch`'s auto-restore, one
+test's env would leak into the next and flap. `monkeypatch.setenv`/`delenv` undo
+themselves at test teardown.
 
 Add to `research/tests/test_hermes_llm_client.py`:
 
 | test | assertion |
 |---|---|
-| `test_build_llm_coder_openai_sets_provider_and_no_openrouter_base` | `provider="openai"` → `LANGCHAIN_PROVIDER=openai`; `OPENROUTER_BASE_URL` **not** set by the factory |
-| `test_build_llm_coder_openrouter_still_sets_base` | `provider="openrouter"` → base-url default set (back-compat) |
-| `test_build_llm_coder_rejects_unknown_provider` | `provider="anthropic"` → `ValueError` |
+| `test_build_llm_coder_openai_clears_cross_provider_base` | pre-set `OPENAI_API_BASE=<openrouter-url>`; after `provider="openai"` it is popped, `LANGCHAIN_PROVIDER=openai`, no `OPENROUTER_BASE_URL` set |
+| `test_build_llm_coder_openrouter_sets_base` | `provider="openrouter"` → `OPENROUTER_BASE_URL` default set (back-compat) |
+| `test_build_llm_coder_pins_model_name_env` | after any build, `os.environ["LANGCHAIN_MODEL_NAME"]` equals the passed model |
+| `test_build_llm_coder_rejects_unknown_provider` | `provider="anthropic"` → `ValueError` **before** any env mutation or `_agent_build_llm` call |
 | `test_openrouter_coder_alias_points_at_chatcoder` | `OpenRouterCoder is ChatCoder` |
 
 Add to `research/tests/test_hermes_foundry_runner.py`:
@@ -134,4 +186,9 @@ Estimated cost: `gpt-4o-mini` (~$0.15/$0.60 per M) under a 6-call / 2048-token c
 - **Scope:** a single small delta — one generic factory + a two-value dispatch +
   a rename-with-alias. No new subsystem.
 - **Ambiguity:** supported providers are an explicit allowlist
-  (`_SUPPORTED_PROVIDERS`); an unknown provider is a loud `ValueError`.
+  (`_SUPPORTED_PROVIDERS`); an unknown provider is a loud `ValueError` raised by
+  `build_llm_coder` **first**, not delegated to `capabilities` (which silently
+  falls back to openai).
+- **Determinism:** the factory clears cross-provider base residue and forces the
+  provider's canonical endpoint, so it does not depend on prior `os.environ`
+  state; tests isolate env via `monkeypatch`.
