@@ -48,19 +48,50 @@ source (`lib.okx_data.fetch_candles`). The data exists; it just was never saved.
 
 ---
 
+## Adversarial review (agy, folder mode against the code) — dispositions
+
+Verified against `config.py`/`okx_data.py`/`factor_io.py`/`orchestrator.py` and adopted:
+
+- **Accepted (critical) — tz-aware subtraction.** `datetime.utcnow()` is naive but
+  the feature index is UTC-aware; `naive - aware` raises `TypeError`. Use
+  `datetime.now(timezone.utc)`.
+- **Accepted — interval-namespaced path.** `load_features` reads the
+  interval-aware dir (`.../15m` under `RESEARCH_INTERVAL`); the OHLCV must be
+  written to the **same** resolved dir, or a sub-hour run writes prices where the
+  run won't look. Resolve once, read and write there.
+- **Accepted — reuse `_align_ohlcv` for the coverage gate** instead of a hand-
+  rolled 95% check, so the refresh and the run can never drift apart on what
+  "covered" means.
+- **Accepted — guard empty features** (`.index.min()` → `NaT`) before computing
+  depth.
+- **Accepted — filename uses `_symbol_short`** (the undefined `short` in the
+  first draft), matching `features_<short>.parquet`.
+- **OK — no change:** `fetch_candles`/`_atomic_to_parquet` signatures, `bar`
+  format (`"1H"` passed straight through), same-dir `mkstemp` (no cross-device
+  `os.replace`), bash `set -e` vs. Python continue-on-error (a single `python -m`
+  call, exit code passed through), and UTC-hourly index alignment.
+
+---
+
 ## Section 1 — Architecture & data flow
 
 ```
 python -m research.pipeline.refresh_ohlcv [--manifests-dir ...]
   cfg = load_config()                         # honors RESEARCH_ONLY_SYMBOL / RESEARCH_INTERVAL
+  mdir = resolved once (default: _REPO_ROOT / cfg.feature_store_path, which
+         _apply_interval_override already namespaces as .../15m under RESEARCH_INTERVAL;
+         or the explicit --manifests-dir). READ and WRITE use this SAME dir.
   for sym_cfg in cfg.symbols:                 # btc/eth/sol (or the single --only symbol)
-    feats  = load_features(sym_cfg.name, manifests_dir)   # raises if features absent
-    days   = (utcnow() - feats.index.min()).days + BUFFER_DAYS
-    ohlcv  = fetch_candles(sym_cfg.okx_swap, days, bar=cfg.interval)   # OKX, deep endpoint
-    aligned = ohlcv.reindex(feats.index)
-    if aligned["close"].notna().mean() < 0.95:            # same threshold as _align_ohlcv
+    feats = load_features(sym_cfg.name, mdir) # raises FileNotFoundError if absent
+    if feats.empty:  FAIL this symbol         # .index.min() would be NaT
+    days  = (datetime.now(timezone.utc) - feats.index.min()).days + BUFFER_DAYS  # tz-AWARE both sides
+    ohlcv = fetch_candles(sym_cfg.okx_swap, days, bar=cfg.interval)   # OKX, deep endpoint
+    try:
+        _align_ohlcv(ohlcv, feats.index)      # REUSE the run's own gate (close >=95%);
+    except ValueError:                         # a ValueError == not covered -> fail loud
         FAIL this symbol (do not write a gappy parquet)
-    _atomic_to_parquet(ohlcv, manifests_dir / f"ohlcv_{short}.parquet")   # temp + os.replace
+    short = _symbol_short(sym_cfg.name)        # matches features_<short>.parquet naming
+    _atomic_to_parquet(ohlcv, mdir / f"ohlcv_{short}.parquet")        # temp + os.replace, same dir
   exit 0 if every symbol ok else 1            # old parquets left intact on failure
 ```
 
@@ -72,16 +103,27 @@ validate coverage of that symbol's feature index, and atomically write
 `load_features` reads from — so the file the Foundry aligns against sits next to
 the features it must cover.
 
-- Depth from features: `days = (now_utc - features.index.min()).days + BUFFER_DAYS`
-  (`BUFFER_DAYS = 3`, a small margin so the fetch's earliest bar is at or before the
-  features' earliest). Coverage is then a property of construction, not luck.
-- Coverage gate: reindex the fetched OHLCV onto the feature index and require
-  `close` non-NaN ≥ 95% — the exact check `_align_ohlcv` will apply at run time.
-  Failing here means OKX returned a gap; fail loud rather than write a parquet the
-  Foundry rejects later with a cryptic message.
-- Atomic write via `_atomic_to_parquet` (temp file + `os.replace`), so a Foundry
-  run reading `ohlcv_<sym>.parquet` concurrently never sees a half-written file
-  (the same single-writer/atomic convention as the candidate parquet, design C-8).
+- **Same dir for read and write.** Resolve the manifests dir once — the default
+  is `_REPO_ROOT / cfg.feature_store_path`, which `_apply_interval_override`
+  already namespaces (`.../15m` under `RESEARCH_INTERVAL`), matching what
+  `load_features` reads. The OHLCV is written into that same dir, so under any
+  interval the file the Foundry aligns against sits beside the features it covers.
+  Filename `ohlcv_<short>.parquet` via `_symbol_short` (matching
+  `features_<short>.parquet`).
+- Depth from features: `days = (datetime.now(timezone.utc) - features.index.min()).days
+  + BUFFER_DAYS` (`BUFFER_DAYS = 3`). Both sides are tz-aware (the feature index is
+  UTC-aware; use `datetime.now(timezone.utc)`, **not** naive `utcnow()`, which would
+  raise `TypeError` on the subtraction). An empty features frame (`.index.min()` →
+  `NaT`) fails the symbol before any fetch.
+- Coverage gate: **reuse the run's own `_align_ohlcv(ohlcv, features.index)`**
+  (import it from `research.hermes.orchestrator`). A returned frame means covered;
+  a raised `ValueError` means not, and the symbol fails loud. Reusing it — rather
+  than re-implementing `close` non-NaN ≥ 0.95 — keeps one source of truth, so a
+  future threshold change can't let the refresh pass a table the run rejects.
+- Atomic write via `_atomic_to_parquet` (temp file in the same dir + `os.replace`),
+  so a Foundry run reading `ohlcv_<sym>.parquet` concurrently never sees a
+  half-written file (same single-writer/atomic convention as the candidate parquet,
+  design C-8).
 - Per-symbol independence: catch a symbol's failure, log it, continue to the next;
   return exit 1 if any failed (mirrors stage0a's `compute_exit_code`), so a nightly
   cron surfaces the failure while still refreshing the coins that could.
@@ -104,7 +146,10 @@ exit code through. This is the cron entry point.
 
 Reused as-is: `pipeline.config.load_config` (+ its `RESEARCH_ONLY_SYMBOL` /
 `RESEARCH_INTERVAL` handling), `lib.okx_data.fetch_candles`,
-`lib.factor_io.load_features` + `_atomic_to_parquet`.
+`lib.factor_io.load_features` + `_atomic_to_parquet` + `_symbol_short`, and
+`hermes.orchestrator._align_ohlcv` (the coverage gate — imported so refresh and
+run share one definition of "covered"; the leading-underscore coupling is
+intentional here, not a smell).
 
 ---
 
@@ -112,9 +157,10 @@ Reused as-is: `pipeline.config.load_config` (+ its `RESEARCH_ONLY_SYMBOL` /
 
 | situation | behaviour |
 |---|---|
-| `features_<sym>.parquet` absent | that symbol fails with a clear error (no features → OHLCV is meaningless); other symbols continue; exit 1 |
+| `features_<sym>.parquet` absent | `load_features` raises `FileNotFoundError`; that symbol fails; others continue; exit 1 |
+| `features_<sym>` present but empty | fail that symbol before fetch (`.index.min()` would be `NaT`); others continue; exit 1 |
 | OKX fetch raises (network/API) | that symbol fails, logged; old `ohlcv_<sym>.parquet` intact (never written); other symbols continue; exit 1 |
-| fetched coverage < 95% | that symbol fails loud (OKX gap); no parquet written; exit 1 |
+| coverage insufficient (`_align_ohlcv` raises `ValueError`) | that symbol fails loud (OKX gap); no parquet written; exit 1 |
 | all symbols succeed | each `ohlcv_<sym>.parquet` atomically replaced; exit 0 |
 | `RESEARCH_ONLY_SYMBOL=eth` | only eth is fetched (config filter); exit reflects that one |
 
@@ -141,10 +187,11 @@ Reused as-is: `pipeline.config.load_config` (+ its `RESEARCH_ONLY_SYMBOL` /
 
 | test | assertion |
 |---|---|
-| `test_writes_ohlcv_parquet_covering_features` | mock returns a full-span frame → `ohlcv_eth.parquet` written next to `features_eth`, columns `open..volume`, UTC index |
-| `test_depth_derives_from_features_earliest` | `fetch_candles` is called with `days >= (now - features.index.min()).days` |
-| `test_gappy_fetch_fails_loud_and_writes_nothing` | mock returns a frame covering < 95% of the feature index → that symbol fails, **no parquet written**, exit 1 |
-| `test_missing_features_fails_that_symbol` | no `features_<sym>` → clear error for that symbol, others still processed, exit 1 |
+| `test_writes_ohlcv_parquet_next_to_features` | mock returns a full-span frame → `ohlcv_eth.parquet` written in the **same dir** `load_features` read `features_eth` from, columns `open..volume`, UTC index |
+| `test_depth_derives_from_features_earliest` | `fetch_candles` called with `days >= (now_utc - features.index.min()).days`; the subtraction uses tz-aware `datetime.now(timezone.utc)` (no `TypeError`) |
+| `test_gappy_fetch_fails_via_align_ohlcv` | mock returns a frame covering < 95% → `_align_ohlcv` raises → that symbol fails, **no parquet written**, exit 1 |
+| `test_missing_features_fails_that_symbol` | no `features_<sym>` → `FileNotFoundError` for that symbol, others still processed, exit 1 |
+| `test_empty_features_fails_before_fetch` | an empty `features_<sym>` → symbol fails, `fetch_candles` **not called** for it, exit 1 |
 | `test_atomic_write_used` | the write goes through `_atomic_to_parquet` (a pre-existing `ohlcv_<sym>.parquet` is replaced, never truncated in place) |
 | `test_only_symbol_env_limits_fetch` | `RESEARCH_ONLY_SYMBOL=eth` → only eth fetched |
 | `test_one_symbol_failure_does_not_block_others` | btc fetch raises, eth succeeds → eth parquet written, exit 1 |
@@ -181,11 +228,13 @@ python -m research.hermes.foundry_runner run --runs-dir runs \
 
 - **Placeholders:** none. `BUFFER_DAYS = 3` and the 95% threshold are concrete;
   symbols come from config.
-- **Consistency:** the coverage gate (§1/§3) is the same `close` non-NaN ≥ 0.95 as
-  `_align_ohlcv`, so the file that passes here is exactly what the run accepts.
-  Per-symbol-independent exit 0/1 matches stage0a's convention throughout.
+- **Consistency:** the coverage gate is the run's own `_align_ohlcv` (imported,
+  not re-implemented), so the file that passes here is by definition what the run
+  accepts. Per-symbol-independent exit 0/1 matches stage0a's convention. Read and
+  write use one resolved (interval-aware) manifests dir.
 - **Scope:** one plan — a fetch/validate/write module + a cron wrapper + tests. No
-  new subsystem, no changes to `orchestrator`/`foundry_runner`.
-- **Ambiguity:** depth is pinned to features-earliest + 3 days; failure is
-  per-symbol with a non-zero aggregate exit; the output path is the
-  interval-aware manifests dir next to `features_<sym>.parquet`.
+  new subsystem, no changes to `orchestrator`/`foundry_runner` (only an import of
+  `_align_ohlcv`).
+- **Ambiguity:** depth is `datetime.now(timezone.utc) - features.index.min() + 3d`;
+  failure is per-symbol with a non-zero aggregate exit; the output path is the same
+  interval-aware manifests dir `load_features` reads, `ohlcv_<short>.parquet`.
