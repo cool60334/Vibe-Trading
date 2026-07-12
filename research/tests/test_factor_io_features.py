@@ -48,6 +48,15 @@ def test_dump_load_features_roundtrip(tmp_path: Path) -> None:
     assert len(df) == 10
 
 
+def test_load_features_accepts_str_manifests_dir(tmp_path: Path) -> None:
+    """The foundry CLI threads --manifests-dir as a plain str (argparse), not a
+    Path. load_features must coerce it: `str / str` is a TypeError that aborted
+    the first real paid run before any LLM call."""
+    dump_features("eth", {"feat_a": _make_series(10)}, tmp_path)
+    df = load_features("eth", manifests_dir=str(tmp_path))   # STR, as the CLI passes
+    assert len(df) == 10
+
+
 def test_load_features_missing_raises_file_not_found(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="features"):
         load_features("eth", manifests_dir=tmp_path)

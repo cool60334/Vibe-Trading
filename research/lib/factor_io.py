@@ -360,7 +360,10 @@ def load_features(symbol: str, manifests_dir: Path | None = None) -> pd.DataFram
         If the parquet file does not exist.
     """
     sym_short = _symbol_short(symbol)
-    mdir = manifests_dir if manifests_dir is not None else _default_manifests_dir()
+    # Coerce: callers (the foundry CLI) may pass a plain str manifests_dir, and
+    # `str / str` is a TypeError. Path(Path) is a no-op, so this is safe for the
+    # tmp_path callers too.
+    mdir = Path(manifests_dir) if manifests_dir is not None else _default_manifests_dir()
     parquet_path = mdir / f"features_{sym_short}.parquet"
 
     if not parquet_path.exists():
