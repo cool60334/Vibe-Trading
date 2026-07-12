@@ -315,3 +315,20 @@ def test_build_llm_openai_requires_a_model():
     from research.hermes.foundry_runner import build_llm
     with pytest.raises(ValueError, match="model"):
         build_llm("openai", model=None)
+
+
+def test_reconcile_uses_a_passed_shared_budget(tmp_path, monkeypatch):
+    import pandas as pd
+    from research.hermes import foundry_runner as fr
+    from research.hermes.forge import ForgeBudget
+    idx = pd.date_range("2024-01-01", periods=3, freq="1h", tz="UTC")
+    op = tmp_path / "o.parquet"; pd.DataFrame({"close": [1.0, 2, 3]}, index=idx).to_parquet(op)
+    _queue_job(tmp_path, "eth", op, "2026-01-01T00:00:00+00:00")
+    def fake_run_job(job_path, *, forge_budget=None, **k):
+        forge_budget.charge_call(); forge_budget.charge_call()   # spend 2 on the shared obj
+        return {"candidate": 0, "llm_calls_used": forge_budget.used}
+    monkeypatch.setattr(fr, "run_foundry_job", fake_run_job)
+    shared = ForgeBudget(max_llm_calls=5)
+    fr.reconcile_foundry_jobs(tmp_path, tmp_path, llm=object(), sandbox=object(),
+                              zoo_dir=tmp_path, shared_budget=shared)
+    assert shared.used == 2          # main can read the same object afterwards
