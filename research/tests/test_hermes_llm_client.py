@@ -24,6 +24,20 @@ class FakeChat:
         return self._msg
 
 
+@pytest.fixture(autouse=True)
+def _clean_llm_client_env(monkeypatch):
+    """build_llm_coder/build_openrouter_coder write LANGCHAIN_PROVIDER,
+    LANGCHAIN_MODEL_NAME, and *_BASE_URL keys straight to os.environ (not
+    through monkeypatch), so a bare monkeypatch.delenv(..., raising=False)
+    called before the key exists records no undo entry and the value leaks
+    into later tests. Scrub before every test so each starts from a known
+    state regardless of what an earlier test in this file left behind."""
+    for key in ("LANGCHAIN_PROVIDER", "LANGCHAIN_MODEL_NAME",
+                "OPENAI_API_BASE", "OPENAI_BASE_URL", "OPENROUTER_BASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+    yield
+
+
 def test_complete_flattens_text_blocks():
     from research.hermes.llm_client import OpenRouterCoder
     chat = FakeChat(msg=FakeMsg([{"type": "text", "text": "def compute(df): ..."}]))
@@ -114,3 +128,61 @@ def test_build_openrouter_coder_fails_loud_on_bad_import(monkeypatch):
     monkeypatch.setattr(mod, "_agent_build_llm", boom, raising=False)
     with pytest.raises(RuntimeError, match="agent.*build_llm|could not build"):
         mod.build_openrouter_coder(model="x/y")
+
+
+def test_openrouter_coder_alias_points_at_chatcoder():
+    from research.hermes.llm_client import OpenRouterCoder, ChatCoder
+    assert OpenRouterCoder is ChatCoder
+
+
+def test_build_llm_coder_rejects_unknown_provider_before_any_side_effect(monkeypatch):
+    import os
+    import research.hermes.llm_client as mod
+    called = {"agent": False}
+    monkeypatch.setattr(mod, "_agent_build_llm",
+                        lambda **k: called.__setitem__("agent", True), raising=False)
+    before = os.environ.get("LANGCHAIN_PROVIDER")
+    with pytest.raises(ValueError, match="unsupported provider"):
+        mod.build_llm_coder(provider="anthropic", model="claude")
+    assert called["agent"] is False                       # raised before building
+    assert os.environ.get("LANGCHAIN_PROVIDER") == before  # no env mutation
+
+
+def test_build_llm_coder_openai_clears_cross_provider_base(monkeypatch):
+    import os
+    import research.hermes.llm_client as mod
+    monkeypatch.setenv("OPENAI_API_BASE", "https://openrouter.ai/api/v1")   # residue
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+    class C:
+        def bind(self, **kw): return self
+        def invoke(self, m): return FakeMsg("c")
+    monkeypatch.setattr(mod, "_agent_build_llm", lambda **k: C(), raising=False)
+    mod.build_llm_coder(provider="openai", model="gpt-4o-mini")
+    assert os.environ["LANGCHAIN_PROVIDER"] == "openai"
+    assert "OPENAI_API_BASE" not in os.environ            # popped -> api.openai.com default
+    assert "OPENAI_BASE_URL" not in os.environ
+    assert "OPENROUTER_BASE_URL" not in os.environ        # openai never sets it
+
+
+def test_build_llm_coder_pins_model_name_env(monkeypatch):
+    import os
+    import research.hermes.llm_client as mod
+    class C:
+        def bind(self, **kw): return self
+        def invoke(self, m): return FakeMsg("c")
+    monkeypatch.setattr(mod, "_agent_build_llm", lambda **k: C(), raising=False)
+    mod.build_llm_coder(provider="openai", model="gpt-4o-mini")
+    assert os.environ["LANGCHAIN_MODEL_NAME"] == "gpt-4o-mini"
+
+
+def test_build_openrouter_coder_still_sets_provider_and_base(monkeypatch):
+    import os
+    import research.hermes.llm_client as mod
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    class C:
+        def bind(self, **kw): return self
+        def invoke(self, m): return FakeMsg("c")
+    monkeypatch.setattr(mod, "_agent_build_llm", lambda **k: C(), raising=False)
+    mod.build_openrouter_coder(model="x/y")               # back-compat wrapper
+    assert os.environ["LANGCHAIN_PROVIDER"] == "openrouter"
+    assert os.environ["OPENROUTER_BASE_URL"] == "https://openrouter.ai/api/v1"

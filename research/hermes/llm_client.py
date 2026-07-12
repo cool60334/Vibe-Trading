@@ -1,5 +1,5 @@
-"""Talos Foundry LLM client: a thin adapter making the agent's OpenRouter
-ChatOpenAI satisfy forge's LLMCoder protocol (.complete(prompt) -> str).
+"""Talos Foundry LLM client: a thin adapter making the agent's ChatOpenAI
+(OpenRouter or OpenAI) satisfy forge's LLMCoder protocol (.complete(prompt) -> str).
 
 The heavy lifting (OpenRouter base URL, key, reasoning handling, retries,
 timeout) lives in agent/src/providers/llm.py; this module only adapts its
@@ -56,8 +56,8 @@ def _flatten_content(content) -> str:
     return _THINK_RE.sub("", text).strip()
 
 
-class OpenRouterCoder:
-    """Adapts a bound ChatOpenAI to forge's LLMCoder.complete(prompt) -> str."""
+class ChatCoder:
+    """Adapts a bound ChatOpenAI (any provider) to forge's LLMCoder.complete."""
 
     def __init__(self, chat, max_tokens: int):
         self._chat = chat
@@ -71,7 +71,7 @@ class OpenRouterCoder:
             msg = self._chat.invoke([HumanMessage(content=prompt)])
         except (openai.AuthenticationError, openai.PermissionDeniedError,
                 openai.RateLimitError, openai.APIConnectionError) as exc:
-            raise LLMUnavailable(f"OpenRouter backend unavailable: "
+            raise LLMUnavailable(f"LLM backend unavailable: "
                                  f"{type(exc).__name__}: {exc}") from exc
         usage = getattr(msg, "usage_metadata", None)
         if isinstance(usage, dict):
@@ -79,22 +79,42 @@ class OpenRouterCoder:
         return _flatten_content(msg.content)
 
 
-def build_openrouter_coder(*, model: str, max_tokens: int = 2048) -> OpenRouterCoder:
-    """Build an OpenRouterCoder from the agent's OpenRouter ChatOpenAI.
+OpenRouterCoder = ChatCoder      # back-compat alias
 
-    The model is pinned explicitly (never read from LANGCHAIN_MODEL_NAME) so a
-    stray .env cannot hijack an expensive model on a paid run. The agent resolves
-    the OpenRouter key/base-url from LANGCHAIN_PROVIDER=openrouter, so we set that
-    and default the base URL — without it the agent falls back to api.openai.com.
-    Any import/signature failure is re-raised as a clear RuntimeError (the
-    one-directional coupling's fuse)."""
-    os.environ["LANGCHAIN_PROVIDER"] = "openrouter"
-    os.environ.setdefault("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+_PROVIDER_BASE_DEFAULTS = {"openrouter": "https://openrouter.ai/api/v1"}
+_SUPPORTED_PROVIDERS = ("openrouter", "openai")
+
+
+def build_llm_coder(*, provider: str, model: str, max_tokens: int = 2048) -> ChatCoder:
+    """Build a ChatCoder from the agent's ChatOpenAI for `provider`.
+
+    Deterministic regardless of prior os.environ: validates the provider first
+    (capabilities silently falls back to openai for an unknown name), clears the
+    shared OPENAI_API_BASE/OPENAI_BASE_URL that _sync_provider_env writes (so an
+    earlier build cannot misroute this provider's key), and pins provider+model.
+    Only openrouter needs a base-url default; openai falls back to api.openai.com.
+    Import/signature break -> clear RuntimeError (the coupling's fuse)."""
+    if provider not in _SUPPORTED_PROVIDERS:
+        raise ValueError(f"unsupported provider {provider!r}; "
+                         f"use one of {_SUPPORTED_PROVIDERS}")
+    os.environ["LANGCHAIN_PROVIDER"] = provider
+    os.environ["LANGCHAIN_MODEL_NAME"] = model
+    os.environ.pop("OPENAI_API_BASE", None)          # clear cross-provider residue
+    os.environ.pop("OPENAI_BASE_URL", None)
+    base = _PROVIDER_BASE_DEFAULTS.get(provider)
+    if base:                                          # openrouter only
+        os.environ.setdefault(f"{provider.upper()}_BASE_URL", base)
     try:
         chat = _agent_build_llm(model_name=model)
         bound = chat.bind(max_tokens=max_tokens)
     except Exception as exc:      # noqa: BLE001 - fail loud on any coupling break
         raise RuntimeError(
-            f"could not build the agent OpenRouter client (model={model!r}): "
+            f"could not build the agent {provider} client (model={model!r}): "
             f"{type(exc).__name__}: {exc}") from exc
-    return OpenRouterCoder(bound, max_tokens=max_tokens)
+    return ChatCoder(bound, max_tokens=max_tokens)
+
+
+def build_openrouter_coder(*, model: str, max_tokens: int = 2048) -> ChatCoder:
+    """Back-compat wrapper: build_llm_coder(provider='openrouter')."""
+    return build_llm_coder(provider="openrouter", model=model, max_tokens=max_tokens)
