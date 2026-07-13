@@ -208,7 +208,10 @@ def _load_daily_regime(symbol, manifests_dir) -> "pd.Series | None":
         breakdown = data["breakdown"]
         if not breakdown:
             return None
-        dates = pd.to_datetime([row["date"] for row in breakdown])
+        # utc=True: the foundry panel/ohlcv index is tz-aware UTC, so regime
+        # labels must be too or regime_ic's alignment raises "Cannot compare
+        # dtypes datetime64 and datetime64[..., UTC]".
+        dates = pd.to_datetime([row["date"] for row in breakdown], utc=True)
         labels = [row["regime"] for row in breakdown]
         return pd.Series(labels, index=dates).sort_index()
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:

@@ -115,6 +115,22 @@ def test_regime_ic_ffills_daily_labels_to_factor_freq():
     assert "bull" in r and np.isfinite(r["bull"])
 
 
+def test_regime_ic_handles_fwd_ret_longer_than_factor():
+    # In foundry the factor rides the FEATURES index while fwd_ret rides the
+    # (wider) OHLCV index — the mask is built on the factor index, so masking a
+    # longer fwd_ret with it must not raise "Unalignable boolean Series".
+    from research.hermes.gatekeeper import regime_ic
+    fidx = pd.date_range("2024-01-01", periods=240, freq="1h")    # factor: 10 days
+    widx = pd.date_range("2023-12-30", periods=288, freq="1h")    # fwd: superset, 12 days
+    factor = pd.Series(np.arange(240, dtype="float64"), index=fidx)
+    fwd = pd.Series(np.arange(288, dtype="float64"), index=widx)
+    didx = pd.date_range("2024-01-01", periods=10, freq="1D")
+    daily_labels = pd.Series((["bull"] * 5) + (["bear"] * 5), index=didx)
+    r = regime_ic(factor, fwd, daily_labels)                       # must not raise
+    assert set(r) <= {"bull", "bear", "neutral"}
+    assert "bull" in r and np.isfinite(r["bull"])
+
+
 def test_yearly_ic_splits_by_year():
     from research.hermes.gatekeeper import yearly_ic
     idx = pd.date_range("2022-06-01", periods=500, freq="1D")

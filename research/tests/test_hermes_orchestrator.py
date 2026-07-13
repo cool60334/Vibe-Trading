@@ -374,6 +374,25 @@ def test_run_foundry_loads_daily_regime_from_regime_manifest_when_present(tmp_pa
     assert (dr.index == dr.index.normalize()).all()           # daily-normalized index
 
 
+def test_load_daily_regime_returns_tz_aware_utc_index(tmp_path):
+    # The foundry panel/ohlcv are tz-aware UTC; a naive regime index makes
+    # regime_ic's alignment raise "Cannot compare dtypes datetime64 and
+    # datetime64[..., UTC]". The loader must return UTC-aware labels.
+    import json
+    from research.hermes.orchestrator import _load_daily_regime
+
+    manifest = {"breakdown": [
+        {"date": "2022-01-01", "regime": "bull"},
+        {"date": "2022-01-02", "regime": "neutral"},
+    ]}
+    (tmp_path / "regime_eth.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    dr = _load_daily_regime("eth", tmp_path)
+    assert dr is not None
+    assert dr.index.tz is not None                            # tz-aware, not naive
+    assert str(dr.index.tz) == "UTC"
+
+
 def test_run_foundry_falls_back_to_neutral_when_regime_manifest_malformed(tmp_path, monkeypatch):
     """A present-but-broken regime_<sym>.json must degrade to the neutral
     fallback, not crash the foundry run (regime_ic is informational only)."""

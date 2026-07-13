@@ -109,6 +109,11 @@ def regime_ic(factor: pd.Series, fwd_ret: pd.Series, daily_regime: pd.Series) ->
     hours before it was actually knowable (research/lib/regime.py has the
     full explanation) -- found in post-merge review, 2026-07-09."""
     labels = ffill_regime_to(daily_regime, factor.index)
+    # Align fwd_ret to the factor grid before boolean-masking: in foundry the
+    # factor rides the FEATURES index while fwd_ret rides the (wider) OHLCV
+    # index, so a mask built on factor.index is unalignable against fwd_ret.
+    # gross_ic drops the introduced NaNs (concat+dropna), same as its siblings.
+    fwd_ret = fwd_ret.reindex(factor.index)
     out: dict = {}
     for label in ("bull", "bear", "neutral"):
         mask = labels == label
