@@ -168,6 +168,7 @@ research/manifests/factor_values_*.parquet
 research/manifests/factor_values_*.meta.json
 research/manifests/features_*.parquet
 research/manifests/features_*.meta.json
+research/manifests/ohlcv_*.parquet
 research/manifests/evidence_*.json
 research/manifests/coin_scout.json
 research/manifests/*/missing_factor.json
