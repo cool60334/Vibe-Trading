@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from research.hermes.candidate_store import CANDIDATE_SUBDIR, _candidate_path, write_candidate
+from research.hermes.candidate_store import CANDIDATE_SUBDIR, _candidate_path, write_candidate, write_candidate_code
 from research.hermes.evidence_card import EvidenceCard, VERDICT_CANDIDATE, VERDICT_GRAVEYARD
 from research.hermes.evidence_store import upsert_card
 from research.hermes.forge import forge, BudgetExhausted, ForgeBudget
@@ -69,6 +69,9 @@ def make_run_sandbox(sandbox: SandboxExecutor, scratch_dir: str | Path):
         series.index = panel.index               # runner drops index; restore it
         return series
 
+    # Provenance for the code store: the bridge compares this against the image
+    # it re-runs under, and a drifted image shows up as a reconciliation failure.
+    run.image_id = getattr(sandbox, "image", None)
     return run
 
 
@@ -166,6 +169,16 @@ def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
 
     if res.passed:
         _merge_into_candidates(symbol, manifests_dir, hyp.id, fr.series)
+        # Persist the SOURCE, not just its sha: the bridge must re-run this exact
+        # code over the full span (Foundry only ever computed it pre-oos).
+        # horizon_h is recorded per factor because gross_ic on the card was
+        # measured at THIS horizon — the bridge must reuse it, not the config's first.
+        write_candidate_code(hyp.id, symbol, manifests_dir, fr.code or "", {
+            "code_sha256": code_sha,
+            "base_image_id": getattr(run_sandbox, "image_id", None),
+            "interval": cfg.interval,
+            "horizon_h": cfg.horizon_h,
+        })
     else:
         _merge_into_graveyard(symbol, manifests_dir, hyp.id, fr.series)
     upsert_card(card, symbol, manifests_dir)

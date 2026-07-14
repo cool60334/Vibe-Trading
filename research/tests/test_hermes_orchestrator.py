@@ -708,3 +708,39 @@ def test_merge_into_graveyard_persists_dead_values(tmp_path):
     _merge_into_graveyard("eth", tmp_path, "dead_1", pd.Series(np.arange(4.0), index=idx))
     got = pd.read_parquet(_graveyard_path("eth", tmp_path))
     assert "dead_1" in got.columns and len(got) == 4
+
+def test_process_hypothesis_persists_code_for_candidate_only(tmp_path, monkeypatch):
+    # A candidate's forged source must be retrievable afterwards (the bridge
+    # re-runs it over the full span); a graveyard factor's need not be.
+    import numpy as np, pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.candidate_store import load_candidate_code
+    from research.hermes.forge import ForgeResult
+    from research.hermes.gatekeeper import GateConfig, GatekeeperResult
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = pd.date_range("2022-01-01", periods=48, freq="1h", tz="UTC")
+    panel = pd.DataFrame({"close": np.arange(48.0)}, index=idx)
+    series = pd.Series(np.arange(48.0), index=idx)
+    code = "def compute(panel):\n    return panel['close']\n"
+
+    monkeypatch.setattr(orch, "forge", lambda *a, **k: ForgeResult(
+        success=True, attempts=1, code=code, series=series))
+    monkeypatch.setattr(orch, "evaluate", lambda *a, **k: GatekeeperResult(
+        True, {"gross_ic": 0.1, "ic_nonoverlap": 0.1, "ir": 0.5, "dsr": 1.0,
+               "pbo": None, "turnover": 0.1, "n_samples": 48,
+               "regime_ic": {}, "yearly_ic": {}, "nearest_factor": None,
+               "nearest_abs_spearman": 0.0}, ""))
+    monkeypatch.setattr(orch, "upsert_card", lambda *a, **k: None)
+    monkeypatch.setattr(orch, "append_event", lambda *a, **k: None)
+    monkeypatch.setattr(orch, "_merge_into_candidates", lambda *a, **k: None)
+
+    hyp = Hypothesis("zoo_mom", "momentum", SOURCE_ZOO)
+    cfg = GateConfig(interval="1H", horizon_h=24)
+    out = orch.process_hypothesis(hyp, panel, panel, None, panel, "eth",
+                                  tmp_path, cfg, object(), lambda c, p: series)
+
+    assert out == orch.OUTCOME_CANDIDATE
+    got_code, meta = load_candidate_code("zoo_mom", "eth", tmp_path)
+    assert got_code == code
+    assert meta["code_sha256"] == __import__("hashlib").sha256(code.encode()).hexdigest()
