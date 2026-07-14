@@ -140,7 +140,8 @@ def build_overlay(symbol, manifests_dir, panel, run_sandbox, oos_start,
         # The card's gross_ic was measured at the horizon Foundry ran with, so
         # reuse THAT per-factor horizon. (research_config's horizons_h is
         # (8, 24, 72, 168) — taking its first element would mislabel the IC as 8h.)
-        h = int(meta.get("horizon_h") or horizon_h)
+        _h = meta.get("horizon_h")
+        h = int(_h) if _h is not None else int(horizon_h)
         try:
             series = recompute_full_span(code, panel, run_sandbox)
         except Exception as exc:                     # noqa: BLE001 - degrade, never crash
@@ -149,6 +150,13 @@ def build_overlay(symbol, manifests_dir, panel, run_sandbox, oos_start,
         if not reconciles_pre_oos(series, stored[fid], oos_start):
             log.warning("bridge: %s pre-oos does not reconcile (non-causal or image "
                         "drift); skipping", fid)
+            continue
+        cutoff = pd.Timestamp(oos_start)
+        if cutoff.tz is None:
+            cutoff = cutoff.tz_localize(series.index.tz)
+        oos_slice = series[series.index >= cutoff]
+        if oos_slice.isna().all():
+            log.warning("bridge: %s OOS window is entirely NaN; skipping", fid)
             continue
         cols[name] = series
         entries.append(card_to_entry(card, horizon_h=h))

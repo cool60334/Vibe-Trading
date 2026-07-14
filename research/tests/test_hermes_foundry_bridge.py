@@ -84,6 +84,30 @@ def test_card_to_entry_maps_fields_and_uses_real_classify_stability():
     assert entry.verdict != FactorVerdict.REJECT
 
 
+def test_card_to_entry_downgrades_verdict_when_regime_conditional():
+    # Mixed IC signs across regimes -> classify_stability returns CONDITIONAL,
+    # which must downgrade SINGLE_USE -> ENSEMBLE_ONLY via refine_verdict.
+    from research.hermes.foundry_bridge import card_to_entry
+    from research.factor_regime import classify_stability, refine_verdict
+    from schemas import FactorStability, FactorVerdict
+
+    class Card:                      # duck-typed EvidenceCard
+        factor_id = "zoo_cond"
+        gross_ic = 0.06
+        ir = 0.4
+        n_samples = 20000
+        interval = "1H"
+        regime_ic = {"bull": 0.05, "bear": -0.05, "neutral": 0.05}  # mixed signs
+
+    assert classify_stability(Card.regime_ic) == FactorStability.CONDITIONAL
+
+    entry = card_to_entry(Card(), horizon_h=24)
+
+    assert entry.stability == FactorStability.CONDITIONAL
+    assert entry.verdict == refine_verdict(FactorVerdict.SINGLE_USE, FactorStability.CONDITIONAL)
+    assert entry.verdict == FactorVerdict.ENSEMBLE_ONLY
+
+
 import json
 from research.hermes.foundry_bridge import build_overlay, write_overlay
 from research.hermes.candidate_store import write_candidate_code, _candidate_path
@@ -206,3 +230,24 @@ def test_write_overlay_emits_parquet_and_manifest(tmp_path):
     assert (tmp_path / "foundry_overlay_eth.parquet").exists()
     man = json.loads((tmp_path / "foundry_manifest_eth.json").read_text(encoding="utf-8"))
     assert man["factors"][0]["name"] == "foundry_x"
+
+
+def test_build_overlay_drops_a_factor_whose_oos_window_is_entirely_nan(tmp_path, monkeypatch):
+    # A factor that reproduces correctly pre-oos but is all-NaN across the OOS
+    # window (e.g. depends on a column absent post-oos) must be dropped, not
+    # kept with a dead OOS column.
+    panel = _panel(100)
+    _seed(tmp_path, panel, ["zoo_deadoos"])
+    monkeypatch.setattr("research.hermes.foundry_bridge.load_cards",
+                        lambda s, d: [_Card("zoo_deadoos")])
+
+    def run(code, p):
+        s = pd.Series(np.arange(float(len(p))), index=p.index)
+        oos_mask = s.index >= pd.Timestamp(_OOS, tz="UTC")
+        s = s.copy()
+        s[oos_mask] = np.nan
+        return s
+
+    df, entries = build_overlay("eth", tmp_path, panel, run, _OOS, horizon_h=24)
+
+    assert df.empty and entries == []

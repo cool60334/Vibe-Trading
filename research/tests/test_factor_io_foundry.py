@@ -210,8 +210,9 @@ def test_load_manifest_no_overlay_dir_env_returns_base_unchanged(base_manifest, 
     assert [f["name"] for f in result["factors"]] == ["funding_z", "basis_rel"]
 
 
-def test_load_manifest_with_short_symbol_eth(base_manifest, tmp_path, monkeypatch):
-    """load_manifest accepts short symbol form ('eth') and finds the right files."""
+def test_load_manifest_normalizes_full_ticker_symbol(base_manifest, tmp_path, monkeypatch):
+    """load_manifest accepts a full ticker ('ETH-USDT-SWAP') and normalizes it via
+    _symbol_short to resolve the same eth-scoped files as the short form."""
     ov = tmp_path / "ov"; ov.mkdir()
     foundry_manifest = {
         "factors": [
@@ -224,8 +225,9 @@ def test_load_manifest_with_short_symbol_eth(base_manifest, tmp_path, monkeypatc
     monkeypatch.setenv("RESEARCH_INCLUDE_FOUNDRY", "1")
     monkeypatch.setenv("RESEARCH_FOUNDRY_OVERLAY_DIR", str(ov))
 
-    # Pass short form directly
-    result = load_manifest("eth", manifests_dir=base_manifest)
+    # Pass the full ticker form; _symbol_short must normalize it down to "eth"
+    # to find factor_eth.json / foundry_manifest_eth.json.
+    result = load_manifest("ETH-USDT-SWAP", manifests_dir=base_manifest)
 
     assert len(result["factors"]) == 3
     names = [f["name"] for f in result["factors"]]
