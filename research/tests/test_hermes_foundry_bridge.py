@@ -57,3 +57,28 @@ def test_reconciles_pre_oos_fails_when_window_is_empty():
     stored = pd.Series(np.arange(50.0), index=panel.index)
 
     assert reconciles_pre_oos(rec, stored, oos_cutoff) is False
+
+
+def test_card_to_entry_maps_fields_and_uses_real_classify_stability():
+    from research.hermes.foundry_bridge import card_to_entry
+    from research.factor_regime import classify_stability
+    from schemas import FactorVerdict
+
+    class Card:                      # duck-typed EvidenceCard
+        factor_id = "zoo_mom"
+        gross_ic = 0.06
+        ir = 0.4
+        n_samples = 20000
+        interval = "1H"
+        regime_ic = {"bull": 0.05, "bear": 0.05, "neutral": 0.05}
+
+    entry = card_to_entry(Card(), horizon_h=24)
+
+    assert entry.name == "foundry_zoo_mom"
+    assert entry.ic_by_horizon == {24: 0.06}
+    assert entry.ir == 0.4
+    assert entry.sample_size == 20000
+    assert entry.cross_regime_ic == Card.regime_ic
+    # stability must come from the REAL pipeline function, not an invented metric
+    assert entry.stability == classify_stability(Card.regime_ic)
+    assert entry.verdict != FactorVerdict.REJECT

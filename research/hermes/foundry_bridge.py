@@ -11,8 +11,20 @@ path into what the live trader reads.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+
+# ── Path bootstrap ─────────────────────────────────────────────────────────────
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+for _p in (_REPO_ROOT / "research", _REPO_ROOT / "dashboard" / "server"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from schemas import FactorEntry, FactorVerdict          # noqa: E402
+from research.factor_regime import classify_stability, refine_verdict   # noqa: E402
 
 FOUNDRY_PREFIX = "foundry_"
 
@@ -53,3 +65,31 @@ def reconciles_pre_oos(recomputed: pd.Series, stored: pd.Series,
     return bool(np.allclose(left.to_numpy(dtype="float64"),
                             right.to_numpy(dtype="float64"),
                             atol=atol, rtol=0.0, equal_nan=True))
+
+
+def card_to_entry(card, horizon_h: int) -> FactorEntry:
+    """Foundry evidence card -> pipeline FactorEntry.
+
+    Every statistic is taken from the card, i.e. from Foundry's PRE-OOS
+    evaluation. Nothing is recomputed from the full-span series — that would
+    leak OOS information into the selection stage2 performs.
+
+    `stability` reuses the pipeline's own classify_stability(cross_regime_ic)
+    (a regime_stable/conditional classification) rather than inventing a
+    different metric, so stage2's filters read it with the same meaning as a
+    library factor's.
+    """
+    regime_ic = dict(card.regime_ic or {})
+    stability = classify_stability(regime_ic) if regime_ic else None
+    verdict = FactorVerdict.SINGLE_USE
+    if stability is not None:
+        verdict = refine_verdict(verdict, stability)   # conditional -> ensemble_only
+    return FactorEntry(
+        name=f"{FOUNDRY_PREFIX}{card.factor_id}",
+        ic_by_horizon={int(horizon_h): card.gross_ic},
+        ir=float(card.ir),
+        sample_size=int(card.n_samples),
+        cross_regime_ic=regime_ic or None,
+        stability=stability,
+        verdict=verdict,
+    )
