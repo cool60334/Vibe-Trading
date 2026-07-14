@@ -744,3 +744,41 @@ def test_process_hypothesis_persists_code_for_candidate_only(tmp_path, monkeypat
     got_code, meta = load_candidate_code("zoo_mom", "eth", tmp_path)
     assert got_code == code
     assert meta["code_sha256"] == __import__("hashlib").sha256(code.encode()).hexdigest()
+
+
+def test_process_hypothesis_does_not_persist_code_for_rejected(tmp_path, monkeypatch):
+    # Negative path: a rejected/graveyard factor must NOT have its code persisted.
+    # Only candidates get code storage; rejects are buried and their source is discarded.
+    import numpy as np, pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.candidate_store import load_candidate_code
+    from research.hermes.forge import ForgeResult
+    from research.hermes.gatekeeper import GateConfig, GatekeeperResult
+    from research.hermes.hypothesis import Hypothesis, SOURCE_ZOO
+
+    idx = pd.date_range("2022-01-01", periods=48, freq="1h", tz="UTC")
+    panel = pd.DataFrame({"close": np.arange(48.0)}, index=idx)
+    series = pd.Series(np.arange(48.0), index=idx)
+    code = "def compute(panel):\n    return panel['close']\n"
+
+    # Forge succeeds, but gatekeeper rejects
+    monkeypatch.setattr(orch, "forge", lambda *a, **k: ForgeResult(
+        success=True, attempts=1, code=code, series=series))
+    monkeypatch.setattr(orch, "evaluate", lambda *a, **k: GatekeeperResult(
+        False, {"gross_ic": 0.001, "ic_nonoverlap": 0.0, "ir": 0.0, "dsr": 0.1,
+                "pbo": None, "turnover": 0.1, "n_samples": 48,
+                "regime_ic": {}, "yearly_ic": {}, "nearest_factor": None,
+                "nearest_abs_spearman": 0.0}, "weak ic"))
+    monkeypatch.setattr(orch, "upsert_card", lambda *a, **k: None)
+    monkeypatch.setattr(orch, "append_event", lambda *a, **k: None)
+    monkeypatch.setattr(orch, "_merge_into_graveyard", lambda *a, **k: None)
+
+    hyp = Hypothesis("dead_zoo", "weak_factor", SOURCE_ZOO)
+    cfg = GateConfig(interval="1H", horizon_h=24)
+    out = orch.process_hypothesis(hyp, panel, panel, None, panel, "eth",
+                                  tmp_path, cfg, object(), lambda c, p: series)
+
+    assert out == orch.OUTCOME_REJECTED
+    # Code must NOT be persisted for rejected factors
+    with pytest.raises(FileNotFoundError):
+        load_candidate_code("dead_zoo", "eth", tmp_path)
