@@ -175,6 +175,26 @@ def test_build_overlay_skips_a_name_that_collides_with_production(tmp_path, monk
     assert df.empty and entries == []                        # never shadow a real feature
 
 
+def test_build_overlay_drops_factor_absent_from_stored_parquet(tmp_path, monkeypatch):
+    """Test that a factor with valid code but missing from the candidate parquet
+    is gracefully dropped (not an exception), and does not appear in the overlay."""
+    panel = _panel(100)
+    # Seed only zoo_ok in the parquet; zoo_missing has code but no parquet entry
+    _seed(tmp_path, panel, ["zoo_ok"])
+    # Write code for zoo_missing even though it's not in the parquet
+    write_candidate_code("zoo_missing", "eth", tmp_path, "code", {"code_sha256": ""})
+    monkeypatch.setattr("research.hermes.foundry_bridge.load_cards",
+                        lambda s, d: [_Card("zoo_ok"), _Card("zoo_missing")])
+    run = lambda code, p: pd.Series(np.arange(float(len(p))), index=p.index)
+
+    df, entries = build_overlay("eth", tmp_path, panel, run, _OOS, horizon_h=24)
+
+    # zoo_missing should be dropped; only zoo_ok appears
+    assert list(df.columns) == ["foundry_zoo_ok"]
+    assert [e.name for e in entries] == ["foundry_zoo_ok"]
+    assert "foundry_zoo_missing" not in df.columns
+
+
 def test_write_overlay_emits_parquet_and_manifest(tmp_path):
     panel = _panel(10)
     df = pd.DataFrame({"foundry_x": np.arange(10.0)}, index=panel.index)

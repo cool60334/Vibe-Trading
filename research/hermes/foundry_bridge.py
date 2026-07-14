@@ -134,6 +134,9 @@ def build_overlay(symbol, manifests_dir, panel, run_sandbox, oos_start,
         except FileNotFoundError:
             log.warning("bridge: no stored code for %s; skipping", fid)
             continue
+        if fid not in stored.columns:
+            log.warning("bridge: %s absent from candidate parquet; skipping", fid)
+            continue
         # The card's gross_ic was measured at the horizon Foundry ran with, so
         # reuse THAT per-factor horizon. (research_config's horizons_h is
         # (8, 24, 72, 168) — taking its first element would mislabel the IC as 8h.)
@@ -142,9 +145,6 @@ def build_overlay(symbol, manifests_dir, panel, run_sandbox, oos_start,
             series = recompute_full_span(code, panel, run_sandbox)
         except Exception as exc:                     # noqa: BLE001 - degrade, never crash
             log.warning("bridge: recompute failed for %s (%s); skipping", fid, exc)
-            continue
-        if fid not in stored.columns:
-            log.warning("bridge: %s absent from candidate parquet; skipping", fid)
             continue
         if not reconciles_pre_oos(series, stored[fid], oos_start):
             log.warning("bridge: %s pre-oos does not reconcile (non-causal or image "
