@@ -82,3 +82,107 @@ def test_card_to_entry_maps_fields_and_uses_real_classify_stability():
     # stability must come from the REAL pipeline function, not an invented metric
     assert entry.stability == classify_stability(Card.regime_ic)
     assert entry.verdict != FactorVerdict.REJECT
+
+
+import json
+from research.hermes.foundry_bridge import build_overlay, write_overlay
+from research.hermes.candidate_store import write_candidate_code, _candidate_path
+
+
+class _Card:
+    def __init__(self, fid, verdict="candidate", dsr=1.0):
+        self.factor_id = fid; self.verdict = verdict
+        self.gross_ic = 0.06; self.ir = 0.4; self.n_samples = 90
+        self.interval = "1H"; self.dsr = dsr
+        self.regime_ic = {"bull": 0.05, "bear": 0.05, "neutral": 0.05}
+        self.code_sha256 = ""
+
+
+def _seed(tmp_path, panel, fids):
+    """Write cand parquet (pre-oos values) + stored code for each factor id."""
+    pre = panel.index < pd.Timestamp(_OOS, tz="UTC")
+    cand = pd.DataFrame(
+        {f: pd.Series(np.arange(float(len(panel))), index=panel.index)[pre] for f in fids})
+    p = _candidate_path("eth", tmp_path); p.parent.mkdir(parents=True, exist_ok=True)
+    cand.to_parquet(p)
+    for f in fids:
+        write_candidate_code(f, "eth", tmp_path, "code", {"code_sha256": ""})
+
+
+def test_build_overlay_recomputes_reconciles_and_prefixes(tmp_path, monkeypatch):
+    panel = _panel(100)
+    _seed(tmp_path, panel, ["zoo_mom"])
+    monkeypatch.setattr("research.hermes.foundry_bridge.load_cards",
+                        lambda s, d: [_Card("zoo_mom")])
+    run = lambda code, p: pd.Series(np.arange(float(len(p))), index=p.index)
+
+    df, entries = build_overlay("eth", tmp_path, panel, run, _OOS, horizon_h=24)
+
+    assert list(df.columns) == ["foundry_zoo_mom"]
+    assert df.index.equals(panel.index)          # full span, OOS included
+    assert df["foundry_zoo_mom"].notna().all()
+    assert [e.name for e in entries] == ["foundry_zoo_mom"]
+
+
+def test_build_overlay_drops_a_factor_whose_pre_oos_does_not_reconcile(tmp_path, monkeypatch):
+    panel = _panel(100)
+    _seed(tmp_path, panel, ["zoo_bad"])
+    monkeypatch.setattr("research.hermes.foundry_bridge.load_cards",
+                        lambda s, d: [_Card("zoo_bad")])
+    run = lambda code, p: pd.Series(np.arange(float(len(p))) + 99.0, index=p.index)  # drift
+
+    df, entries = build_overlay("eth", tmp_path, panel, run, _OOS, horizon_h=24)
+
+    assert df.empty and entries == []
+
+
+def test_build_overlay_skips_graveyard_and_missing_code(tmp_path, monkeypatch):
+    panel = _panel(100)
+    _seed(tmp_path, panel, ["zoo_ok"])                      # only zoo_ok has code
+    monkeypatch.setattr("research.hermes.foundry_bridge.load_cards",
+                        lambda s, d: [_Card("zoo_ok"), _Card("zoo_dead", verdict="graveyard"),
+                                      _Card("zoo_nocode")])
+    run = lambda code, p: pd.Series(np.arange(float(len(p))), index=p.index)
+
+    df, entries = build_overlay("eth", tmp_path, panel, run, _OOS, horizon_h=24)
+
+    assert list(df.columns) == ["foundry_zoo_ok"]           # graveyard + no-code dropped
+
+
+def test_build_overlay_caps_candidate_count(tmp_path, monkeypatch):
+    panel = _panel(100)
+    fids = [f"f{i}" for i in range(5)]
+    _seed(tmp_path, panel, fids)
+    cards = [_Card(f, dsr=float(i)) for i, f in enumerate(fids)]   # f4 best
+    monkeypatch.setattr("research.hermes.foundry_bridge.load_cards", lambda s, d: cards)
+    run = lambda code, p: pd.Series(np.arange(float(len(p))), index=p.index)
+
+    df, entries = build_overlay("eth", tmp_path, panel, run, _OOS, horizon_h=24, cap=2)
+
+    assert len(df.columns) == 2                              # OOM guard
+    assert "foundry_f4" in df.columns                        # top-K by dsr
+
+
+def test_build_overlay_skips_a_name_that_collides_with_production(tmp_path, monkeypatch):
+    panel = _panel(100).assign(foundry_zoo_mom=1.0)          # production already has the name
+    _seed(tmp_path, panel[["close"]], ["zoo_mom"])
+    monkeypatch.setattr("research.hermes.foundry_bridge.load_cards",
+                        lambda s, d: [_Card("zoo_mom")])
+    run = lambda code, p: pd.Series(np.arange(float(len(p))), index=p.index)
+
+    df, entries = build_overlay("eth", tmp_path, panel, run, _OOS, horizon_h=24)
+
+    assert df.empty and entries == []                        # never shadow a real feature
+
+
+def test_write_overlay_emits_parquet_and_manifest(tmp_path):
+    panel = _panel(10)
+    df = pd.DataFrame({"foundry_x": np.arange(10.0)}, index=panel.index)
+    from research.hermes.foundry_bridge import card_to_entry
+    entries = [card_to_entry(_Card("x"), horizon_h=24)]
+
+    write_overlay(tmp_path, "eth", df, entries)
+
+    assert (tmp_path / "foundry_overlay_eth.parquet").exists()
+    man = json.loads((tmp_path / "foundry_manifest_eth.json").read_text(encoding="utf-8"))
+    assert man["factors"][0]["name"] == "foundry_x"
