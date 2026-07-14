@@ -80,5 +80,5 @@ def test_promote_candidate_refuses_foundry_factor_early(tmp_path):
     # The guard fires BEFORE evidence card / candidate parquet checks, so even
     # with an empty manifests_dir (no fixtures), promotion of a foundry_ factor
     # is refused immediately with a clear error message.
-    with pytest.raises(PromoteRefused, match="foundry_zoo_mom"):
+    with pytest.raises(PromoteRefused, match="strategy depends on Foundry factor"):
         promote_candidate("foundry_zoo_mom", "eth", manifests_dir=tmp_path, confirm=True)
