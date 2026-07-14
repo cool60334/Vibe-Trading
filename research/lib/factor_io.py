@@ -3,7 +3,7 @@ factor_io.py — Persist and reload factor time series as Parquet files.
 
 Public API:
     dump_factor_values(symbol, factor_series_dict, manifests_dir) -> Path
-    load_factor_values(symbol) -> pd.DataFrame
+    load_factor_values(symbol, manifests_dir=None, include_foundry=None) -> pd.DataFrame
     load_factor_meta(symbol) -> dict
 
     dump_features(symbol, feature_series_dict, manifests_dir) -> Path
@@ -215,8 +215,17 @@ def dump_factor_values(
     return parquet_path
 
 
-def load_factor_values(symbol: str, manifests_dir: Path | None = None) -> pd.DataFrame:
-    """Load factor parquet for the given symbol.
+def load_factor_values(symbol: str, manifests_dir: Path | None = None,
+                       include_foundry: bool | None = None) -> pd.DataFrame:
+    """Load factor parquet for the given symbol, optionally unioned with a
+    per-run Foundry overlay.
+
+    This is the READ path used by every generated ``signal_engine.py`` at
+    backtest/live time. Like ``load_features``, this never runs the sandbox
+    and never computes a factor — the bridge materialises the overlay ONCE
+    per pipeline run; the stages (and the strategies' own signal engines)
+    are separate subprocesses, so computing here would wake Docker once per
+    call and could yield different values to different callers.
 
     Parameters
     ----------
@@ -224,12 +233,21 @@ def load_factor_values(symbol: str, manifests_dir: Path | None = None) -> pd.Dat
         Short ("eth") or full ticker ("ETH-USDT-SWAP").
     manifests_dir:
         Override the default manifests directory (useful for tests).
+    include_foundry:
+        If None, defer to RESEARCH_INCLUDE_FOUNDRY env var (via foundry_enabled()).
+        If True, union the overlay. If False, ignore it.
 
     Raises
     ------
     FileNotFoundError
         If the parquet file does not exist.  Message includes
         "run stage1_factors first" as a hint.
+
+    Returns
+    -------
+    pd.DataFrame
+        Production factor values, optionally merged with Foundry overlay
+        columns (production columns always win in a name collision).
     """
     sym_short = _symbol_short(symbol)
     mdir = manifests_dir if manifests_dir is not None else _default_manifests_dir()
@@ -243,7 +261,24 @@ def load_factor_values(symbol: str, manifests_dir: Path | None = None) -> pd.Dat
 
     df = pd.read_parquet(parquet_path, engine="pyarrow")
     _check_index_freq(df)
-    return df
+
+    use = foundry_enabled() if include_foundry is None else include_foundry
+    if not use:
+        return df
+    d = _overlay_dir()
+    if d is None:
+        return df
+    path = d / f"foundry_overlay_{sym_short}.parquet"
+    if not path.exists():
+        return df
+    overlay = pd.read_parquet(path)
+    # production always wins a name clash — an overlay must never shadow a
+    # factor the rest of the system (and the trader) treats as ground truth.
+    overlay = overlay.drop(columns=[c for c in overlay.columns if c in df.columns],
+                           errors="ignore")
+    if overlay.empty:
+        return df
+    return df.join(overlay.reindex(df.index), how="left")
 
 
 def load_factor_meta(symbol: str, manifests_dir: Path | None = None) -> dict:
