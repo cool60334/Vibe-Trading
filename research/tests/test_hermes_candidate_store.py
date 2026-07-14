@@ -70,3 +70,35 @@ def test_code_store_lives_under_candidate_features(tmp_path):
 def test_load_candidate_code_missing_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_candidate_code("nope", "eth", tmp_path)
+
+
+# ── Path traversal protection tests ────────────────────────────────────────────
+
+def test_write_candidate_code_rejects_parent_directory_escape(tmp_path):
+    """Guard against ../../etc/passwd-style path traversal."""
+    with pytest.raises(ProductionWriteError, match="path separators or .. sequences"):
+        write_candidate_code("../../etc/passwd", "eth", tmp_path, "code", {})
+
+
+def test_write_candidate_code_rejects_forward_slash(tmp_path):
+    """Guard against forward slash in factor_id."""
+    with pytest.raises(ProductionWriteError, match="path separators or .. sequences"):
+        write_candidate_code("foo/bar", "eth", tmp_path, "code", {})
+
+
+def test_write_candidate_code_rejects_backslash(tmp_path):
+    """Guard against backslash in factor_id."""
+    with pytest.raises(ProductionWriteError, match="path separators or .. sequences"):
+        write_candidate_code("foo\\bar", "eth", tmp_path, "code", {})
+
+
+def test_load_candidate_code_rejects_parent_directory_escape(tmp_path):
+    """Guard against ../../etc/passwd-style path traversal in load."""
+    with pytest.raises(ProductionWriteError, match="path separators or .. sequences"):
+        load_candidate_code("../../etc/passwd", "eth", tmp_path)
+
+
+def test_load_candidate_code_rejects_forward_slash(tmp_path):
+    """Guard against forward slash in factor_id on load."""
+    with pytest.raises(ProductionWriteError, match="path separators or .. sequences"):
+        load_candidate_code("foo/bar", "eth", tmp_path)

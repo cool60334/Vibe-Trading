@@ -24,6 +24,18 @@ class ProductionWriteError(HermesGuardError, RuntimeError):
     """Raised when a write would land outside the isolated candidate store."""
 
 
+def _validate_factor_id(factor_id: str) -> None:
+    """Guard against path traversal in factor_id before building paths.
+
+    Raises ProductionWriteError if factor_id contains unsafe characters
+    like path separators or parent directory references.
+    """
+    if "/" in factor_id or "\\" in factor_id or ".." in factor_id:
+        raise ProductionWriteError(
+            f"factor_id must not contain path separators or .. sequences, got: {factor_id!r}"
+        )
+
+
 def _candidate_path(symbol: str, manifests_dir: Path) -> Path:
     return Path(manifests_dir) / CANDIDATE_SUBDIR / f"cand_{_symbol_short(symbol)}.parquet"
 
@@ -38,6 +50,7 @@ def write_candidate_code(factor_id: str, symbol: str, manifests_dir,
                          code: str, meta: dict) -> Path:
     """Persist a forged factor's SOURCE (not just its sha) so the bridge can
     re-run it over the full span later. Foundry otherwise discards it."""
+    _validate_factor_id(factor_id)
     d = code_dir(symbol, manifests_dir)
     d.mkdir(parents=True, exist_ok=True)
     py = d / f"{factor_id}.py"
@@ -49,6 +62,7 @@ def write_candidate_code(factor_id: str, symbol: str, manifests_dir,
 
 def load_candidate_code(factor_id: str, symbol: str, manifests_dir) -> tuple:
     """(code, meta). Raises FileNotFoundError when the factor was never stored."""
+    _validate_factor_id(factor_id)
     d = code_dir(symbol, manifests_dir)
     py = d / f"{factor_id}.py"
     if not py.exists():
