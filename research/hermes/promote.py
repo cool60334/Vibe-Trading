@@ -80,6 +80,8 @@ def promote_candidate(factor_id: str, symbol: str, manifests_dir=None,
     # agy #1: resolve default BEFORE any Path(manifests_dir) — Path(None) crashes.
     mdir = Path(manifests_dir) if manifests_dir is not None else _default_manifests_dir()
 
+    assert_promotable_factor_names([factor_id])
+
     cards = {c.factor_id: c for c in load_cards(symbol, mdir)}
     card = cards.get(factor_id)
     if card is None:
