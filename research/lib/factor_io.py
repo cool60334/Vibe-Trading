@@ -7,11 +7,13 @@ Public API:
     load_factor_meta(symbol) -> dict
 
     dump_features(symbol, feature_series_dict, manifests_dir) -> Path
-    load_features(symbol, manifests_dir=None) -> pd.DataFrame
+    load_features(symbol, manifests_dir=None, include_foundry=None) -> pd.DataFrame
     load_features_meta(symbol, manifests_dir=None) -> dict
     dump_evidence(symbol, evidence, manifests_dir) -> Path
     load_evidence(symbol, manifests_dir=None) -> list | dict
     append_feature_column(symbol, key, series, manifests_dir=None, coverage_threshold=0.5) -> None
+    foundry_enabled() -> bool
+    load_manifest(symbol, manifests_dir=None, include_foundry=None) -> dict
 """
 
 from __future__ import annotations
@@ -31,6 +33,22 @@ if TYPE_CHECKING:
 
 SCHEMA_VERSION = 1
 FEATURES_SCHEMA_VERSION = 1
+
+ENV_INCLUDE_FOUNDRY = "RESEARCH_INCLUDE_FOUNDRY"
+ENV_FOUNDRY_OVERLAY_DIR = "RESEARCH_FOUNDRY_OVERLAY_DIR"
+
+
+def foundry_enabled() -> bool:
+    """Strict '1' comparison. bool(os.getenv(...)) would treat "0" and "false"
+    as True — i.e. the overlay would be ON by default, which would leak research
+    factors into every read. Off unless explicitly '1'."""
+    return os.getenv(ENV_INCLUDE_FOUNDRY) == "1"
+
+
+def _overlay_dir():
+    d = os.getenv(ENV_FOUNDRY_OVERLAY_DIR)
+    return Path(d) if d else None
+
 
 # Resolve manifests dir relative to this file's location:
 # factor_io.py lives at research/lib/factor_io.py
@@ -344,8 +362,8 @@ def dump_features(
     return parquet_path
 
 
-def load_features(symbol: str, manifests_dir: Path | None = None) -> pd.DataFrame:
-    """Load features parquet for the given symbol.
+def _load_production_features(symbol: str, manifests_dir: Path | None = None) -> pd.DataFrame:
+    """Load production features parquet for the given symbol.
 
     Parameters
     ----------
@@ -372,6 +390,88 @@ def load_features(symbol: str, manifests_dir: Path | None = None) -> pd.DataFram
         )
 
     return pd.read_parquet(parquet_path, engine="pyarrow")
+
+
+def load_features(symbol: str, manifests_dir: Path | None = None,
+                  include_foundry: bool | None = None) -> pd.DataFrame:
+    """Production features, optionally unioned with a per-run Foundry overlay.
+
+    This is a READ path only: it never runs the sandbox and never computes a
+    factor. The bridge materialises the overlay ONCE per pipeline run; the
+    stages are separate subprocesses, so computing here would wake Docker once
+    per stage and could yield different values to different stages.
+
+    Parameters
+    ----------
+    symbol:
+        Short ("eth") or full ticker ("ETH-USDT-SWAP").
+    manifests_dir:
+        Override the default manifests directory (useful for tests).
+    include_foundry:
+        If None, defer to RESEARCH_INCLUDE_FOUNDRY env var (via foundry_enabled()).
+        If True, union the overlay. If False, ignore it.
+
+    Returns
+    -------
+    pd.DataFrame
+        Production features, optionally merged with Foundry overlay columns
+        (production columns always win in a name collision).
+    """
+    prod = _load_production_features(symbol, manifests_dir=manifests_dir)
+    use = foundry_enabled() if include_foundry is None else include_foundry
+    if not use:
+        return prod
+    d = _overlay_dir()
+    if d is None:
+        return prod
+    path = d / f"foundry_overlay_{_symbol_short(symbol)}.parquet"
+    if not path.exists():
+        return prod
+    overlay = pd.read_parquet(path)
+    # production always wins a name clash — an overlay must never shadow a
+    # feature the rest of the system (and the trader) treats as ground truth.
+    overlay = overlay.drop(columns=[c for c in overlay.columns if c in prod.columns],
+                           errors="ignore")
+    if overlay.empty:
+        return prod
+    return prod.join(overlay.reindex(prod.index), how="left")
+
+
+def load_manifest(symbol: str, manifests_dir: Path | None = None,
+                  include_foundry: bool | None = None) -> dict:
+    """stage1's factor_<sym>.json, optionally with the per-run Foundry entries
+    appended. Foundry entries carry Foundry's own (pre-oos) statistics.
+
+    Parameters
+    ----------
+    symbol:
+        Short ("eth") or full ticker ("ETH-USDT-SWAP").
+    manifests_dir:
+        Override the default manifests directory (useful for tests).
+    include_foundry:
+        If None, defer to RESEARCH_INCLUDE_FOUNDRY env var (via foundry_enabled()).
+        If True, union the overlay. If False, ignore it.
+
+    Returns
+    -------
+    dict
+        Factor manifest with optional Foundry factors appended.
+    """
+    mdir = Path(manifests_dir) if manifests_dir is not None else _default_manifests_dir()
+    sym = _symbol_short(symbol)
+    manifest = json.loads((mdir / f"factor_{sym}.json").read_text(encoding="utf-8"))
+    use = foundry_enabled() if include_foundry is None else include_foundry
+    d = _overlay_dir()
+    if not use or d is None:
+        return manifest
+    path = d / f"foundry_manifest_{sym}.json"
+    if not path.exists():
+        return manifest
+    extra = json.loads(path.read_text(encoding="utf-8")).get("factors", [])
+    existing = {f["name"] for f in manifest.get("factors", [])}
+    manifest["factors"] = manifest.get("factors", []) + [
+        f for f in extra if f["name"] not in existing]
+    return manifest
 
 
 def load_features_meta(symbol: str, manifests_dir: Path | None = None) -> dict:
