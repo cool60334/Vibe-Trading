@@ -62,3 +62,15 @@ def test_promote_not_exported_from_package():
     # agy #5: a production-mutating gate must not be in the package namespace
     import research.hermes as pkg
     assert not hasattr(pkg, "promote_candidate")
+
+
+def test_promote_refuses_a_strategy_depending_on_a_foundry_factor():
+    # The bridge only feeds RESEARCH. Production recomputes factors from the
+    # library code, which has no Foundry factor in it -> the factor would go
+    # stale immediately and pause the trader. Refuse, don't dead-end.
+    from research.hermes.promote import assert_promotable_factor_names, PromoteRefused
+
+    assert_promotable_factor_names(["funding_z", "basis_rel"])      # library-only: fine
+
+    with pytest.raises(PromoteRefused, match="foundry_zoo_mom"):
+        assert_promotable_factor_names(["funding_z", "foundry_zoo_mom"])

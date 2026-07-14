@@ -26,6 +26,7 @@ from research.hermes.candidate_store import _candidate_path
 from research.hermes.errors import HermesGuardError
 from research.hermes.evidence_card import VERDICT_CANDIDATE
 from research.hermes.evidence_store import load_cards
+from research.hermes.foundry_bridge import FOUNDRY_PREFIX
 from research.lib.factor_io import (
     append_feature_column, load_features_meta, _default_manifests_dir, _symbol_short,
 )
@@ -34,6 +35,30 @@ from research.lib.research_ledger import append_event
 
 class PromoteRefused(HermesGuardError, RuntimeError):
     """Raised when a promotion is not allowed (no confirm / not a candidate / clash / missing)."""
+
+
+def assert_promotable_factor_names(names: list[str]) -> None:
+    """Refuse a strategy that depends on a Foundry factor.
+
+    The bridge makes Foundry factors available to RESEARCH only. Production
+    factor values are recomputed periodically from the FACTOR LIBRARY's code
+    (scripts/refresh_factors.sh -> factor_values_<sym>.parquet, read by the live
+    trader). A forged Foundry factor's code is not in that library, so once
+    promoted its values would never refresh: the trader would trip its
+    `factor data stale:` guard and pause.
+
+    Promoting the factor's CODE into the production library is a separate piece
+    of work; until it exists, this refuses loudly instead of letting a selected
+    strategy dead-end at deployment.
+    """
+    offenders = [n for n in names if str(n).startswith(FOUNDRY_PREFIX)]
+    if offenders:
+        raise PromoteRefused(
+            f"strategy depends on Foundry factor(s) {offenders}: their code is not in "
+            "the production factor library, so production could never refresh them "
+            "(the trader would pause on stale factor data). Promote the factor CODE "
+            "into the production feature path first."
+        )
 
 
 def _production_feature_names(symbol: str, manifests_dir: Path) -> set:
