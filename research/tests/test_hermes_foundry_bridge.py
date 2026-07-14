@@ -46,3 +46,14 @@ def test_reconciliation_fails_when_pre_oos_drifts():
     rec = pd.Series(np.arange(100.0), index=panel.index)
     stored = rec[rec.index < pd.Timestamp(_OOS, tz="UTC")] + 1.0   # drift
     assert reconciles_pre_oos(rec, stored, _OOS) is False
+
+
+def test_reconciles_pre_oos_fails_when_window_is_empty():
+    # If recomputed's entire index is at or after oos_start, there's nothing
+    # to reconcile against — fail closed to avoid trusting an unevaluated factor.
+    oos_cutoff = "2024-11-03"
+    panel = _panel(50, start=oos_cutoff)  # starts at oos_start
+    rec = pd.Series(np.arange(50.0), index=panel.index)
+    stored = pd.Series(np.arange(50.0), index=panel.index)
+
+    assert reconciles_pre_oos(rec, stored, oos_cutoff) is False
