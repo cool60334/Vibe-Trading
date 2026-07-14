@@ -28,6 +28,25 @@ logging.basicConfig(
 logger = logging.getLogger("pipeline.manager")
 
 
+def stage_env(overrides: dict) -> dict:
+    """Environment for a stage subprocess. MUST inherit the parent env: passing
+    only overrides would drop PATH and the stage would fail to start."""
+    return {**os.environ, **{k: str(v) for k, v in overrides.items()}}
+
+
+def cleanup_overlay(job_dir) -> None:
+    """Delete the per-run Foundry overlay cache. It belongs to one pipeline run;
+    left behind, these parquet files accumulate as orphans and fill the disk."""
+    d = Path(job_dir)
+    if not d.exists():
+        return
+    for p in list(d.glob("foundry_overlay_*.parquet")) + list(d.glob("foundry_manifest_*.json")):
+        try:
+            p.unlink()
+        except OSError as exc:                       # noqa: BLE001 - teardown must not crash
+            logger.warning("could not remove overlay cache %s: %s", p, exc)
+
+
 def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_fp,
                     stress: bool = False, interval: str = "1H",
                     live_refresh: bool = False) -> int:
@@ -95,51 +114,55 @@ class Manager:
 
         lp = pj.log_path(self.repo_root, job["job_id"])
         lp.parent.mkdir(parents=True, exist_ok=True)
+        job_dir = lp.parent
 
-        for step in job["steps"]:
-            fresh = pj.read_job(self.repo_root, job["job_id"]) or job
-            if fresh.get("cancel"):
-                job["status"] = "canceled"
-                job["finished_at"] = pj._now()
+        try:
+            for step in job["steps"]:
+                fresh = pj.read_job(self.repo_root, job["job_id"]) or job
+                if fresh.get("cancel"):
+                    job["status"] = "canceled"
+                    job["finished_at"] = pj._now()
+                    pj.write_job(self.repo_root, job)
+                    logger.info("job %s canceled before stage %s", job["job_id"], step["stage"])
+                    return
+
+                step["status"] = "running"
                 pj.write_job(self.repo_root, job)
-                logger.info("job %s canceled before stage %s", job["job_id"], step["stage"])
-                return
+                logger.info("job %s running stage %s", job["job_id"], step["stage"])
 
-            step["status"] = "running"
-            pj.write_job(self.repo_root, job)
-            logger.info("job %s running stage %s", job["job_id"], step["stage"])
+                with open(lp, "a", encoding="utf-8") as fp:
+                    fp.write(f"\n===== stage {step['stage']} @ {pj._now()} =====\n")
+                    fp.flush()
+                    step_symbol = (
+                        job.get("symbol")
+                        if job.get("symbol") and pj.stage_uses_symbol(step["stage"])
+                        else None
+                    )
+                    rc = self._runner(
+                        self.repo_root, step["stage"], step_symbol, fp,
+                        job.get("stress", False), job.get("interval", "1H"),
+                        job.get("kind") == "live_refresh" and step["stage"] == "0a",
+                    )
 
-            with open(lp, "a", encoding="utf-8") as fp:
-                fp.write(f"\n===== stage {step['stage']} @ {pj._now()} =====\n")
-                fp.flush()
-                step_symbol = (
-                    job.get("symbol")
-                    if job.get("symbol") and pj.stage_uses_symbol(step["stage"])
-                    else None
-                )
-                rc = self._runner(
-                    self.repo_root, step["stage"], step_symbol, fp,
-                    job.get("stress", False), job.get("interval", "1H"),
-                    job.get("kind") == "live_refresh" and step["stage"] == "0a",
-                )
-
-            step["exit_code"] = rc
-            step["status"] = "succeeded" if rc == 0 else "failed"
-            pj.write_job(self.repo_root, job)
-
-            if rc != 0:
-                job["status"] = "failed"
-                job["exit_code"] = rc
-                job["error"] = f"stage {step['stage']} exited {rc}"
-                job["finished_at"] = pj._now()
+                step["exit_code"] = rc
+                step["status"] = "succeeded" if rc == 0 else "failed"
                 pj.write_job(self.repo_root, job)
-                logger.warning("job %s failed at stage %s (rc=%s)", job["job_id"], step["stage"], rc)
-                return
 
-        job["status"] = "succeeded"
-        job["finished_at"] = pj._now()
-        pj.write_job(self.repo_root, job)
-        logger.info("job %s succeeded", job["job_id"])
+                if rc != 0:
+                    job["status"] = "failed"
+                    job["exit_code"] = rc
+                    job["error"] = f"stage {step['stage']} exited {rc}"
+                    job["finished_at"] = pj._now()
+                    pj.write_job(self.repo_root, job)
+                    logger.warning("job %s failed at stage %s (rc=%s)", job["job_id"], step["stage"], rc)
+                    return
+
+            job["status"] = "succeeded"
+            job["finished_at"] = pj._now()
+            pj.write_job(self.repo_root, job)
+            logger.info("job %s succeeded", job["job_id"])
+        finally:
+            cleanup_overlay(job_dir)
 
     def scan_once(self) -> bool:
         """Run the oldest queued job to completion. Returns True if one ran."""
