@@ -60,20 +60,25 @@ def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_f
     argv = [sys.executable, *pj.stage_command(stage_id)]
     if stress and stage_id == "3":
         argv.append("--stress")
-    env = {**os.environ}
-    env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
+
+    overrides = {}
+    overrides["PYTHONPATH"] = str(repo_root) + os.pathsep + os.environ.get("PYTHONPATH", "")
     if symbol:
-        env["RESEARCH_ONLY_SYMBOL"] = symbol
-    else:
-        env.pop("RESEARCH_ONLY_SYMBOL", None)
+        overrides["RESEARCH_ONLY_SYMBOL"] = symbol
     if interval and interval != "1H":
-        env["RESEARCH_INTERVAL"] = interval
-    else:
-        env.pop("RESEARCH_INTERVAL", None)
+        overrides["RESEARCH_INTERVAL"] = interval
     if live_refresh and stage_id == "0a":
-        env["LIVE_OI_REFRESH"] = "1"
-    else:
+        overrides["LIVE_OI_REFRESH"] = "1"
+
+    env = stage_env(overrides)
+    # Explicitly remove keys that should not be set based on conditions
+    if not symbol:
+        env.pop("RESEARCH_ONLY_SYMBOL", None)
+    if not (interval and interval != "1H"):
+        env.pop("RESEARCH_INTERVAL", None)
+    if not (live_refresh and stage_id == "0a"):
         env.pop("LIVE_OI_REFRESH", None)
+
     proc = subprocess.run(
         argv, cwd=str(repo_root), env=env,
         stdout=log_fp, stderr=subprocess.STDOUT, text=True,
