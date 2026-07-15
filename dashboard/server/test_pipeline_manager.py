@@ -17,7 +17,8 @@ def _runner(codes):
     calls = []
     intervals = []
 
-    def run(repo_root, stage_id, symbol, fp, stress=False, interval="1H", live_refresh=False):
+    def run(repo_root, stage_id, symbol, fp, stress=False, interval="1H", live_refresh=False,
+            config=None):
         calls.append((stage_id, symbol, stress))
         intervals.append((stage_id, interval))
         fp.write(f"ran {stage_id} symbol={symbol} stress={stress} interval={interval}\n")
@@ -227,7 +228,7 @@ def test_live_refresh_sets_env_on_0a_step(tmp_path):
     seen = {}
 
     def fake_runner(repo_root, stage_id, symbol, log_fp, stress=False,
-                    interval="1H", live_refresh=False):
+                    interval="1H", live_refresh=False, config=None):
         seen[stage_id] = live_refresh
         return 0
 

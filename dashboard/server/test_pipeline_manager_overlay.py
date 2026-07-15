@@ -36,7 +36,8 @@ def test_cleanup_overlay_runs_on_job_failure(tmp_path):
     (log_dir / "foundry_manifest_eth.json").write_text("{}", encoding="utf-8")
 
     # Inject a runner that fails with exit code 1
-    def failing_runner(repo_root, stage_id, symbol, fp, stress=False, interval="1H", live_refresh=False):
+    def failing_runner(repo_root, stage_id, symbol, fp, stress=False, interval="1H", live_refresh=False,
+                       config=None):
         return 1
 
     mgr = Manager(tmp_path, runner=failing_runner)

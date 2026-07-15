@@ -27,6 +27,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pipeline.manager")
 
+# A stage/command step exits 201 to mean "the killswitch/pause-file tripped
+# mid-run, not a failure" -- execute_job marks the job "paused" (resumable)
+# instead of "failed" for this code. See research/hermes/foundry_runner.py.
+EXIT_PAUSED = 201
+
 
 def stage_env(overrides: dict) -> dict:
     """Environment for a stage subprocess. MUST inherit the parent env: passing
@@ -55,14 +60,17 @@ def cleanup_overlay(job_dir) -> None:
 
 def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_fp,
                     stress: bool = False, interval: str = "1H",
-                    live_refresh: bool = False) -> int:
+                    live_refresh: bool = False, config: Optional[dict] = None) -> int:
     """Run one stage as ``python -m research.pipeline.<module>``; stdout+stderr
     stream into the job's log file. If ``symbol`` is set, scope it via
     RESEARCH_ONLY_SYMBOL. If ``stress`` is set AND this is stage 3, append
     ``--stress`` so stage 3 also runs the 2x/3x cost-stress sweep. A sub-hour
     ``interval`` is applied globally via RESEARCH_INTERVAL (the config loader's
-    interval override); "1H" leaves it unset for zero regression. Returns the
-    process exit code."""
+    interval override); "1H" leaves it unset for zero regression. If ``config``
+    is set (a ``discovery_pipeline`` job's non-secret config, carrying
+    ``overlay_dir``), the stage sees the Foundry overlay via
+    RESEARCH_INCLUDE_FOUNDRY/RESEARCH_FOUNDRY_OVERLAY_DIR. Returns the process
+    exit code."""
     argv = [sys.executable, *pj.stage_command(stage_id)]
     if stress and stage_id == "3":
         argv.append("--stress")
@@ -75,6 +83,9 @@ def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_f
         overrides["RESEARCH_INTERVAL"] = interval
     if live_refresh and stage_id == "0a":
         overrides["LIVE_OI_REFRESH"] = "1"
+    if config is not None:
+        overrides["RESEARCH_INCLUDE_FOUNDRY"] = "1"
+        overrides["RESEARCH_FOUNDRY_OVERLAY_DIR"] = config.get("overlay_dir", "")
 
     env = stage_env(overrides)
     # Explicitly remove keys that should not be set based on conditions
@@ -84,6 +95,9 @@ def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_f
         env.pop("RESEARCH_INTERVAL", None)
     if not (live_refresh and stage_id == "0a"):
         env.pop("LIVE_OI_REFRESH", None)
+    if config is None:
+        env.pop("RESEARCH_INCLUDE_FOUNDRY", None)
+        env.pop("RESEARCH_FOUNDRY_OVERLAY_DIR", None)
 
     proc = subprocess.run(
         argv, cwd=str(repo_root), env=env,
@@ -98,6 +112,10 @@ class Manager:
     def __init__(self, repo_root, *, runner: Optional[Callable] = None) -> None:
         self.repo_root = Path(repo_root)
         self._runner = runner or _default_runner
+        # Tests inject `runner` to fake out every step (stage AND command) via
+        # a single seam; production leaves this None so _command_runner takes
+        # the real subprocess path below.
+        self._injected_runner = runner
 
     def reconcile_startup(self) -> None:
         """A job left ``running`` means the runner died mid-step; mark it failed
@@ -144,20 +162,42 @@ class Manager:
                 with open(lp, "a", encoding="utf-8") as fp:
                     fp.write(f"\n===== stage {step['stage']} @ {pj._now()} =====\n")
                     fp.flush()
-                    step_symbol = (
-                        job.get("symbol")
-                        if job.get("symbol") and pj.stage_uses_symbol(step["stage"])
-                        else None
-                    )
-                    rc = self._runner(
-                        self.repo_root, step["stage"], step_symbol, fp,
-                        job.get("stress", False), job.get("interval", "1H"),
-                        job.get("kind") == "live_refresh" and step["stage"] == "0a",
-                    )
+                    if pj.is_command_step(step["stage"]):
+                        rc = self._command_runner(job, step["stage"], fp)
+                    else:
+                        step_symbol = (
+                            job.get("symbol")
+                            if job.get("symbol") and pj.stage_uses_symbol(step["stage"])
+                            else None
+                        )
+                        # A discovery_pipeline job's stage steps run after the
+                        # "bridge" step materialized the Foundry overlay
+                        # parquet -- carry overlay_dir (+ any other non-secret
+                        # config) so the stage subprocess can pick it up.
+                        step_config = (
+                            {**job.get("config", {}), "overlay_dir": job["overlay_dir"]}
+                            if job.get("kind") == "discovery_pipeline" else None
+                        )
+                        rc = self._runner(
+                            self.repo_root, step["stage"], step_symbol, fp,
+                            job.get("stress", False), job.get("interval", "1H"),
+                            job.get("kind") == "live_refresh" and step["stage"] == "0a",
+                            config=step_config,
+                        )
 
                 step["exit_code"] = rc
                 step["status"] = "succeeded" if rc == 0 else "failed"
                 pj.write_job(self.repo_root, job)
+
+                if rc == EXIT_PAUSED:
+                    step["exit_code"] = rc
+                    step["status"] = "paused"
+                    job["status"] = "paused"
+                    job["exit_code"] = rc
+                    job["finished_at"] = pj._now()
+                    pj.write_job(self.repo_root, job)
+                    logger.info("job %s paused by killswitch at %s", job["job_id"], step["stage"])
+                    return
 
                 if rc != 0:
                     job["status"] = "failed"
@@ -174,6 +214,41 @@ class Manager:
             logger.info("job %s succeeded", job["job_id"])
         finally:
             cleanup_overlay(job_dir)
+
+    def _command_runner(self, job: dict, step_id: str, log_fp) -> int:
+        """Run a command step ("foundry" / "bridge") -- a direct
+        ``research.hermes.*`` subprocess rather than a ``research.pipeline``
+        stage module. Builds argv via ``pipeline_jobs.step_command`` from the
+        job's non-secret ``config`` (LLM API key is never read here -- the
+        subprocess reads it from ``agent/.env`` itself). Returns the process
+        exit code.
+
+        If a fake ``runner`` was injected (tests), delegate to it instead of
+        shelling out for real -- this is the same seam ``_runner`` uses for
+        stage steps, so a single injected callable can fake out an entire
+        job's steps regardless of whether a step is a command step or a
+        research.pipeline stage.
+        """
+        if self._injected_runner is not None:
+            return self._injected_runner(
+                self.repo_root, step_id, job.get("symbol"), log_fp,
+                config=job.get("config"),
+            )
+
+        c = job.get("config", {})
+        argv = [sys.executable, *pj.step_command(
+            step_id, job.get("symbol"), overlay_dir=job["overlay_dir"],
+            runs_dir=c.get("runs_dir"), manifests_dir=c.get("manifests_dir"),
+            zoo_dir=c.get("zoo_dir"), image=c.get("image"), llm=c.get("llm"),
+            model=c.get("model"), daily_max=c.get("daily_max"),
+            pause_file=c.get("pause_file"),
+        )]
+        env = stage_env({"PYTHONPATH": str(self.repo_root) + os.pathsep + os.environ.get("PYTHONPATH", "")})
+        proc = subprocess.run(
+            argv, cwd=str(self.repo_root), env=env,
+            stdout=log_fp, stderr=subprocess.STDOUT, text=True,
+        )
+        return proc.returncode
 
     def scan_once(self) -> bool:
         """Run the oldest queued job to completion. Returns True if one ran."""
