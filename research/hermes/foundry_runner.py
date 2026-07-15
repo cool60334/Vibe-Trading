@@ -25,6 +25,8 @@ from research.hermes.sandbox import DockerSandbox, SandboxError, SandboxRunFaile
 
 log = logging.getLogger(__name__)
 
+EXIT_PAUSED = 201
+
 
 def _positive_int(s: str) -> int:
     v = int(s)
@@ -80,7 +82,8 @@ def _queued_jobs(runs_dir) -> list:
 
 
 def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir,
-                           budget=None, batch_max_llm_calls=None, shared_budget=None) -> list:
+                           budget=None, batch_max_llm_calls=None, shared_budget=None,
+                           pause_file=None) -> list:
     """Run every queued foundry job in created_at order under ONE shared LLM-call
     budget (write-file->reconcile).
 
@@ -139,7 +142,8 @@ def reconcile_foundry_jobs(runs_dir, manifests_dir, llm, sandbox, zoo_dir,
         try:
             summaries.append(run_foundry_job(
                 job_path, manifests_dir=manifests_dir, llm=llm, sandbox=sandbox,
-                zoo_dir=zoo_dir, ohlcv=ohlcv, budget=budget, forge_budget=shared))
+                zoo_dir=zoo_dir, ohlcv=ohlcv, budget=budget, forge_budget=shared,
+                pause_file=pause_file))
         except LLMUnavailable:
             log.error("LLM backend unavailable on %s; aborting the batch", job_path)
             raise                                      # infra: every later job hits the same wall
@@ -196,6 +200,9 @@ def main(argv=None) -> int:
                    help="cross-run UTC-day call ceiling; omit for no daily guard")
     r.add_argument("--spend-ledger", default=None,
                    help="spend ledger path (default <runs-dir>/foundry_spend.jsonl)")
+    r.add_argument("--pause-file", default=None,
+                   help="killswitch: if this file exists between hypotheses, the "
+                        "sweep stops cleanly and the run exits with EXIT_PAUSED (201)")
 
     args = ap.parse_args(argv)
     if args.cmd == "enqueue":
@@ -229,9 +236,11 @@ def main(argv=None) -> int:
             llm = build_llm(args.llm, model=args.model, max_tokens=args.max_tokens)
             shared = ForgeBudget(max_llm_calls=effective)
             record_error = None
+            summaries = None
             try:
-                reconcile_foundry_jobs(args.runs_dir, args.manifests_dir, llm, sandbox,
-                                       args.zoo_dir, shared_budget=shared)
+                summaries = reconcile_foundry_jobs(args.runs_dir, args.manifests_dir, llm, sandbox,
+                                                   args.zoo_dir, shared_budget=shared,
+                                                   pause_file=args.pause_file)
             finally:
                 if daily is not None:
                     try:
@@ -243,7 +252,8 @@ def main(argv=None) -> int:
             if record_error is not None:
                 return 2
             print(f"foundry run complete. tokens used (reported): {getattr(llm, 'total_tokens', 0)}")
-            return 0
+            paused = any(s.get("killswitch_paused") for s in (summaries or []) if isinstance(s, dict))
+            return EXIT_PAUSED if paused else 0
     except AlreadyRunning as exc:
         print(f"refusing: {exc}")
         return 2

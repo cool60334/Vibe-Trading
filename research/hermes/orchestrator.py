@@ -281,7 +281,8 @@ def _align_ohlcv(ohlcv, feature_index, min_coverage: float = 0.95):
 
 def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
                 oos_start, ohlcv, val_frac=0.2, derived_top_k=5,
-                daily_regime=None, run_sandbox=None, forge_budget=None) -> dict:
+                daily_regime=None, run_sandbox=None, forge_budget=None,
+                pause_file=None) -> dict:
     """Sweep the hypothesis queue for one symbol under Budget + early stopping.
 
     zoo_dir is REQUIRED (agy 4c: build_queue does Path(zoo_dir).rglob -> Path(None)
@@ -354,11 +355,17 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
     # so spend is counted across the whole batch, not reset per job.
     forge_budget = forge_budget or ForgeBudget(max_llm_calls=budget.max_llm_calls)
     budget_exhausted = False
+    summary_paused = False
     # `existing` is captured once above and never updated per-iteration: a factor
     # that passes/fails mid-sweep is NOT deduped against by later factors in the
     # SAME run. Deliberate choice (plan Task 4) to keep the loop simple; same-night
     # self-dedup is deferred to the next run, which reloads candidates+graveyard.
     for hyp in queue:
+        if pause_file and Path(pause_file).exists():
+            log.warning("%s: killswitch pause file present — stopping the sweep", symbol)
+            budget_exhausted = False
+            summary_paused = True
+            break
         try:
             outcomes.append(process_hypothesis(hyp, panel, ohlcv, daily_regime, existing,
                                                symbol, manifests_dir, cfg, llm, run_sb,
@@ -383,6 +390,8 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
         summary["budget_exhausted"] = True
     summary["queue_composition"] = dict(Counter(h.source for h in queue))
     summary["features_range"] = [str(features.index.min()), str(features.index.max())]
+    if summary_paused:
+        summary["killswitch_paused"] = True
     return summary
 
 
@@ -408,7 +417,7 @@ def enqueue_foundry_job(symbol, runs_dir, params: dict) -> Path:
 
 
 def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, ohlcv, budget=None,
-                    forge_budget=None) -> dict:
+                    forge_budget=None, pause_file=None) -> dict:
     """Foundry runner reconcile: read job.json, run_foundry, mark done.
 
     On any exception from run_foundry, the job file is rewritten with
@@ -427,7 +436,7 @@ def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, ohlcv, budge
         summary = run_foundry(job["symbol"], manifests_dir, cfg, llm, sandbox,
                               budget or Budget(), zoo_dir=zoo_dir, ohlcv=ohlcv,
                               oos_start=p["oos_start"], val_frac=p.get("val_frac", 0.2),
-                              forge_budget=forge_budget)
+                              forge_budget=forge_budget, pause_file=pause_file)
     except Exception as e:
         job["status"] = "failed"; job["error"] = str(e); job["finished_at"] = _now()
         _write_job_json(job_path, job)
