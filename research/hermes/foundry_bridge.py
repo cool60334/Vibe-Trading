@@ -31,6 +31,7 @@ from research.factor_regime import classify_stability, refine_verdict   # noqa: 
 from research.hermes.candidate_store import _candidate_path, load_candidate_code  # noqa: E402
 from research.hermes.evidence_card import VERDICT_CANDIDATE               # noqa: E402
 from research.hermes.evidence_store import load_cards                    # noqa: E402
+from research.hermes.foundry_runner import resolve_image_id               # noqa: E402
 from research.lib.factor_io import _symbol_short                         # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -198,9 +199,9 @@ def main(argv=None) -> int:
                     help="fallback horizon when a factor's code meta lacks one")
     args = ap.parse_args(argv)
 
-    from research.hermes.foundry_runner import resolve_image_id, load_ohlcv
+    from research.hermes.foundry_runner import load_ohlcv
     from research.hermes.orchestrator import make_run_sandbox
-    from research.hermes.sandbox import DockerSandbox
+    from research.hermes.sandbox import DockerSandbox, SandboxError
     from research.lib.factor_io import _default_manifests_dir, load_features
     from pipeline.config import load_config
 
@@ -212,12 +213,16 @@ def main(argv=None) -> int:
     ohlcv = load_ohlcv(mdir / f"ohlcv_{_symbol_short(args.symbol)}.parquet")
     panel = features.join(ohlcv, how="left")
 
-    sandbox = DockerSandbox(image=resolve_image_id(args.image),
-                            timeout_s=args.timeout_s, allow_unpinned=False)
-    run_sandbox = make_run_sandbox(sandbox, mdir / "_foundry_scratch")
-
-    df, entries = build_overlay(args.symbol, mdir, panel, run_sandbox, oos_start,
-                                horizon_h=args.horizon_h, cap=args.cap)
+    try:
+        sandbox = DockerSandbox(image=resolve_image_id(args.image),
+                                timeout_s=args.timeout_s, allow_unpinned=False)
+        run_sandbox = make_run_sandbox(sandbox, mdir / "_foundry_scratch")
+        df, entries = build_overlay(args.symbol, mdir, panel, run_sandbox, oos_start,
+                                    horizon_h=args.horizon_h, cap=args.cap)
+    except SandboxError as exc:
+        log.warning("bridge: sandbox unavailable (%s); writing empty overlay so the "
+                    "pipeline still runs on library factors", exc)
+        df, entries = pd.DataFrame(index=panel.index).iloc[:, :0], []
     write_overlay(args.overlay_dir, args.symbol, df, entries)
     print(f"foundry bridge: {len(entries)} candidate(s) -> {args.overlay_dir}")
     return 0

@@ -251,3 +251,33 @@ def test_build_overlay_drops_a_factor_whose_oos_window_is_entirely_nan(tmp_path,
     df, entries = build_overlay("eth", tmp_path, panel, run, _OOS, horizon_h=24)
 
     assert df.empty and entries == []
+
+
+def test_bridge_soft_fails_to_empty_overlay_when_docker_unavailable(tmp_path, monkeypatch):
+    # If docker is down, the bridge must NOT fail the discovery_pipeline job —
+    # the stages still need to run on library factors. Empty overlay + exit 0.
+    from research.hermes import foundry_bridge as fb
+    from research.hermes.sandbox import SandboxError
+
+    def boom(*a, **k):
+        raise SandboxError("docker daemon unavailable")
+    monkeypatch.setattr(fb, "resolve_image_id", boom)
+
+    # main() loads production features + ohlcv BEFORE touching the sandbox
+    # (load_features/load_ohlcv are real reads, unrelated to docker), so seed
+    # both parquets in manifests-dir the same way stage0a would, with disjoint
+    # column names so the features.join(ohlcv) inside main() doesn't collide.
+    idx = pd.date_range("2024-11-01", periods=50, freq="1h", tz="UTC")
+    pd.DataFrame({"mom_20": np.arange(50.0)}, index=idx).to_parquet(
+        tmp_path / "features_eth.parquet")
+    pd.DataFrame({"close": np.arange(50.0) + 100.0}, index=idx).to_parquet(
+        tmp_path / "ohlcv_eth.parquet")
+
+    ov = tmp_path / "ov"
+    rc = fb.main(["--symbol", "eth", "--overlay-dir", str(ov),
+                  "--image", "talos-sandbox:test",
+                  "--manifests-dir", str(tmp_path)])
+
+    assert rc == 0
+    assert (ov / "foundry_overlay_eth.parquet").exists()   # empty overlay written
+    assert pd.read_parquet(ov / "foundry_overlay_eth.parquet").shape[1] == 0
