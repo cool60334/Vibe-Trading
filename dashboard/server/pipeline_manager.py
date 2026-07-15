@@ -115,7 +115,6 @@ class Manager:
         # Tests inject `runner` to fake out every step (stage AND command) via
         # a single seam; production leaves this None so _command_runner takes
         # the real subprocess path below.
-        self._injected_runner = runner
 
     def reconcile_startup(self) -> None:
         """A job left ``running`` means the runner died mid-step; mark it failed
@@ -229,8 +228,8 @@ class Manager:
         job's steps regardless of whether a step is a command step or a
         research.pipeline stage.
         """
-        if self._injected_runner is not None:
-            return self._injected_runner(
+        if self._runner is not _default_runner:
+            return self._runner(
                 self.repo_root, step_id, job.get("symbol"), log_fp,
                 config=job.get("config"),
             )
