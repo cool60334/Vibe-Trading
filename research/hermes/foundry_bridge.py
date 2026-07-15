@@ -32,7 +32,7 @@ from research.hermes.candidate_store import _candidate_path, load_candidate_code
 from research.hermes.evidence_card import VERDICT_CANDIDATE               # noqa: E402
 from research.hermes.evidence_store import load_cards                    # noqa: E402
 from research.hermes.foundry_runner import resolve_image_id               # noqa: E402
-from research.lib.factor_io import _symbol_short                         # noqa: E402
+from research.lib.factor_io import _atomic_to_parquet, _symbol_short      # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,35 @@ def recompute_full_span(code: str, panel: pd.DataFrame, run_sandbox) -> pd.Serie
     if not series.index.equals(panel.index):
         series = series.reindex(panel.index)
     return series
+
+
+def cached_recompute(code: str, code_sha: str, panel: pd.DataFrame, run_sandbox,
+                     cache_dir) -> pd.Series:
+    """Reuse a previously recomputed full-span series when the code sha matches,
+    so the nightly cadence never re-runs the sandbox for an unchanged factor.
+
+    The cache is keyed on code_sha alone, not on the panel's index — the panel
+    can grow between nightly runs (new bars appended) while the factor's code
+    stays byte-identical. Reindexing the cached series onto the current panel
+    index reproduces exactly what a fresh recompute would have produced on the
+    overlapping range, and yields legitimate NaN (not silently wrong values)
+    for any new rows the cached run never saw. Those NaN rows fail
+    `reconciles_pre_oos`/the OOS-all-NaN guard downstream if they matter, so a
+    stale-but-shorter cache entry cannot slip a wrong value into the panel.
+    """
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / f"{code_sha}.parquet"
+    if cached.exists():
+        s = pd.read_parquet(cached).iloc[:, 0]
+        # Normalise the name away: the parquet column is always literally "v",
+        # while a freshly computed series is typically unnamed. Without this,
+        # a cache hit and a cache miss would return series that compare
+        # unequal on .name alone even though the values are identical.
+        return s.reindex(panel.index).rename(None)
+    series = recompute_full_span(code, panel, run_sandbox)
+    _atomic_to_parquet(series.to_frame("v"), cached)
+    return series.rename(None)
 
 
 def reconciles_pre_oos(recomputed: pd.Series, stored: pd.Series,
@@ -144,7 +173,9 @@ def build_overlay(symbol, manifests_dir, panel, run_sandbox, oos_start,
         _h = meta.get("horizon_h")
         h = int(_h) if _h is not None else int(horizon_h)
         try:
-            series = recompute_full_span(code, panel, run_sandbox)
+            cache_dir = Path(manifests_dir) / "candidate_features" / "recompute_cache"
+            series = cached_recompute(code, meta.get("code_sha256") or fid, panel,
+                                      run_sandbox, cache_dir)
         except Exception as exc:                     # noqa: BLE001 - degrade, never crash
             log.warning("bridge: recompute failed for %s (%s); skipping", fid, exc)
             continue

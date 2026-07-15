@@ -281,3 +281,20 @@ def test_bridge_soft_fails_to_empty_overlay_when_docker_unavailable(tmp_path, mo
     assert rc == 0
     assert (ov / "foundry_overlay_eth.parquet").exists()   # empty overlay written
     assert pd.read_parquet(ov / "foundry_overlay_eth.parquet").shape[1] == 0
+
+
+def test_cached_recompute_skips_sandbox_on_sha_hit(tmp_path):
+    from research.hermes.foundry_bridge import cached_recompute
+    idx = pd.date_range("2024-01-01", periods=20, freq="1h", tz="UTC")
+    panel = pd.DataFrame({"close": np.arange(20.0)}, index=idx)
+    calls = {"n": 0}
+    def run(code, p):
+        calls["n"] += 1
+        return pd.Series(np.arange(float(len(p))), index=p.index)
+    cache = tmp_path / "cache"
+
+    a = cached_recompute("code", "sha_x", panel, run, cache)     # miss → runs
+    b = cached_recompute("code", "sha_x", panel, run, cache)     # hit → no run
+
+    assert calls["n"] == 1
+    pd.testing.assert_series_equal(a, b)
