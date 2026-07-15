@@ -1,6 +1,6 @@
 # PROJECT_STATE.md — 專案狀態總覽
 
-> 最後更新：2026-07-13（branch: `quant-trading-dashboard`）
+> 最後更新：2026-07-15（branch: `quant-trading-dashboard`）
 > 維護規則：每次重大改動或新功能完成後更新本檔。AI 助手應主動更新。
 > 本檔是「濃縮快照」；細節見 `docs/talos/`、`docs/superpowers/`、memory。
 
@@ -48,23 +48,25 @@
 - LLM client 泛化：OpenRouter + OpenAI provider seam
 - 待做：Phase 1E evidence card（plan 已寫）
 
-## 目前狀態（2026-07-13）
+## 目前狀態（2026-07-15）
 
-**Talos Foundry 整弧完成 + 首次真跑 against 真 manifests**
-- OHLCV refresh 已實作+push（`research/pipeline/refresh_ohlcv.py`、`scripts/refresh_foundry_ohlcv.sh`）；btc/eth/sol 全 span 2022–2026 `ohlcv_<sym>.parquet` 本機產好（gitignored）
-- 全生產路徑真付費跑通（真 OpenAI gpt-4o-mini→真 Docker 沙盒→gatekeeper→graveyard）
-- **2026-07-13 首次對真 eth manifests 真跑，揪修 2 個 regime gate 真 bug**（TDD）：
-  - `_load_daily_regime` 回 tz-naive index → regime_ic 對 tz-aware factor 崩（`utc=True` 修）
-  - `regime_ic` 用 factor 短 index 的 mask 去切 ohlcv 寬 index 的 fwd_ret → `Unalignable`（`fwd_ret.reindex(factor.index)` 修）
-  - 觸發條件＝某幣有 `regime_<sym>.json` + ohlcv 比 features 寬（OHLCV refresh 拉寬 span 造出）；舊測試 naive fixtures + 等長 factor/fwd + monkeypatch 全躲過
-  - 真跑 done：4 hypotheses 全 rejected、budget cap 乾淨停、OOS 鎖完好；research suite 1619 pass
+**Foundry 自主發掘鏈 B+A 全弧完成並 push（HEAD 01ef6bf）**
 
-**掛著待決：**
-- eth_s5 / sol_s1 停用（regime 泄漏），**無現役可信策略運行中**（`runs/testnet/` 僅 `eth_s5_live_smoke`）
-- Paper trader lookback 壞死（live 200 根 < 需 1080 → 訊號恆 0，從未成交）；F1/F3 修復**待使用者核准**
-- Foundry backlog（非阻塞）：①其餘 6 幣（bnb/xrp/doge/ada/ltc/bch）缺 features 要先跑 stage0a；②runner 該 `resolve()` mount 路徑（relative `--manifests-dir` 在 Windows docker mount 會被當 volume name）；③calls≠USD 成本換算；④server cron 需 root（fable_ro 唯讀進不去）；⑤`agent/.env:14` 忘記的 OpenAI key 待自查/rotate
-- 未 commit：~19 個 plans/specs 文件 + `eth_s5_half_size/real_funding_recompute.json`
-- Backlog：HTF-gate（pipeline hardening ⑤）、stage2 archetype factory
+一個 session 走完「Foundry 因子→自動策略」缺的兩個斷点，各自 brainstorm→spec→agy 多輪硬審→plan→subagent 實作→驗證→push：
+
+- **斷点 B — Foundry→pipeline 橋**（commit bc907d1 起）：Foundry 嚴選因子經 bridge 重算全 span→per-run overlay→`load_factor_values(include_foundry)`→stage2/3/5。決策：信任 foundry 閘直達 stage2、發掘自動部署人工閘、production `features_<sym>.parquet` 不碰。前置：foundry 持久化 forge 碼（原本丟掉）。修 2 個讀碼驗出的阻斷點（值只到 pre-oos 要重算、碼沒存）。
+- **斷点 A — 自動排程**（commit 43a9d86 起）：**解耦**——Foundry 離開 pipeline critical path 當背景挖礦（`foundry_miner_scheduler`），pipeline 自排跑「庫內 ∪ overlay」（`discovery_pipeline_scheduler`），兩獨立 cadence。both 走現有 serial `pipeline_manager`（command-step model + `EXIT_PAUSED=201` + 非機密 config 快照）。agy 否決「用 Foundry 取代 stage0」（會弄丟 funding_z 等庫內 alpha，reject≥0.7 天生正交）→ 定調並存+畢業。
+- **驗證**：research 1675 + dashboard 284 全綠；空跑兩 tick 正確 enqueue；job.json 無機密（key 由 subprocess 從 .env 讀）；production 未碰。
+- 詳見 memory [[project_talos_foundry_pipeline_bridge]]、[[project_talos_foundry_auto_scheduler]]；spec/plan 在 `docs/superpowers/{specs,plans}/2026-07-1{4,5}-foundry-*`。
+
+**下一步／掛著待決：**
+- **真跑一個 discovery job 過 manager 尚未做**（需 docker+LLM key+花錢+授權；建議先本機證，勿直接上 server）
+- **畢業機制**（Foundry 碼→production 因子庫）＝上線真價值的關鍵 follow-on；沒它，選出的 foundry 策略被 B 的 promote guard 擋住無法上 live
+- 斷点 C server 部署需 root（fable_ro 唯讀進不去）
+- eth_s5 / sol_s1 停用（regime 泄漏），**無現役可信策略運行中**
+- Paper trader lookback 壞死（F1/F3 修復待核准）
+- Foundry 舊 backlog：其餘 6 幣缺 features、runner relative-path mount 可攜性、calls≠USD、`agent/.env:14` 忘記的 key 自查
+- Backlog：HTF-gate、stage2 archetype factory
 
 ## 關鍵設定（research_config.yaml）
 
