@@ -41,6 +41,25 @@ def _active(repo_root, symbol, now, max_age_sec):
     return None
 
 
+def _oos_start(repo_root) -> str:
+    """The train/OOS split governs look-ahead, so read it from research_config
+    (the single source of truth) rather than duplicating the literal — a drift
+    here would leak OOS data into the foundry gate. Env override for tests/ops;
+    fallback only if the research package can't be imported."""
+    v = os.environ.get("DISCOVERY_OOS_START")
+    if v:
+        return v
+    import sys
+    for p in (str(Path(repo_root) / "research"), str(Path(repo_root) / "dashboard" / "server")):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from pipeline.config import load_config
+        return str(load_config().oos_start)
+    except Exception:  # noqa: BLE001 - fall back rather than crash the scheduler tick
+        return "2025-01-01"
+
+
 def _config(repo_root) -> dict:
     return {
         "image": os.environ.get("DISCOVERY_IMAGE", "talos-sandbox:test"),
@@ -51,6 +70,7 @@ def _config(repo_root) -> dict:
         "zoo_dir": os.environ.get("DISCOVERY_ZOO_DIR", str(Path(repo_root) / "agent" / "src" / "factors" / "zoo")),
         "manifests_dir": str(Path(repo_root) / "research" / "manifests"),
         "pause_file": os.environ.get("FOUNDRY_PAUSE_FILE", str(Path(repo_root) / "runs" / "foundry_auto.pause")),
+        "oos_start": _oos_start(repo_root),
     }
 
 

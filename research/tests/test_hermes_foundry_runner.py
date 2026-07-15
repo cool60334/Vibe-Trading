@@ -352,6 +352,31 @@ def _stub_run_deps(monkeypatch, fr, reconcile):
     monkeypatch.setattr(fr, "reconcile_foundry_jobs", reconcile)
 
 
+def test_mine_enqueues_a_job_before_running(tmp_path, monkeypatch):
+    # The auto-scheduler's foundry step runs `mine`, which must ENQUEUE a foundry
+    # job for the symbol and THEN reconcile it. Plain `run` on an empty queue
+    # forges nothing (the bug this fixes).
+    import json
+    from research.hermes import foundry_runner as fr
+    called = {"reconcile": 0}
+    _stub_run_deps(monkeypatch, fr,
+                   lambda *a, **k: (called.__setitem__("reconcile", called["reconcile"] + 1) or []))
+    rc = fr.main(["mine", "--symbol", "eth",
+                  "--runs-dir", str(tmp_path), "--manifests-dir", str(tmp_path),
+                  "--zoo-dir", str(tmp_path), "--image", "talos-sandbox:test",
+                  "--model", "gpt-4o-mini", "--oos-start", "2025-01-01",
+                  "--ohlcv-path", str(tmp_path / "ohlcv_eth.parquet"),
+                  "--i-will-spend-real-money"])
+    assert rc == 0
+    assert called["reconcile"] == 1                       # ran AFTER enqueue
+    jobs = list((tmp_path / "foundry_jobs").rglob("job.json"))
+    assert len(jobs) == 1                                 # exactly one job enqueued
+    j = json.loads(jobs[0].read_text(encoding="utf-8"))
+    assert j["symbol"] == "eth"
+    assert j["params"]["oos_start"] == "2025-01-01"
+    assert j["params"]["ohlcv_path"].endswith("ohlcv_eth.parquet")
+
+
 def test_remaining_zero_refuses_and_skips_reconcile(tmp_path, monkeypatch):
     import json
     from research.hermes import foundry_runner as fr

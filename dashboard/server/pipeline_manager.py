@@ -266,7 +266,7 @@ class Manager:
             runs_dir=c.get("runs_dir"), manifests_dir=c.get("manifests_dir"),
             zoo_dir=c.get("zoo_dir"), image=c.get("image"), llm=c.get("llm"),
             model=c.get("model"), daily_max=c.get("daily_max"),
-            pause_file=c.get("pause_file"),
+            pause_file=c.get("pause_file"), oos_start=c.get("oos_start"),
         )]
         env = stage_env({"PYTHONPATH": str(self.repo_root) + os.pathsep + os.environ.get("PYTHONPATH", "")})
         proc = subprocess.run(

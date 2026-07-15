@@ -80,14 +80,30 @@ def is_command_step(step_id: str) -> bool:
     return step_id in _STEP_COMMAND
 
 
+def _symbol_short(symbol) -> str:
+    s = str(symbol or "").strip()
+    if "/" in s:
+        s = s.split("/")[0]
+    if "-" in s:
+        s = s.split("-")[0]
+    return s.lower()
+
+
 def step_command(step_id, symbol, *, overlay_dir, runs_dir, manifests_dir, zoo_dir,
-                 image, llm, model, daily_max, pause_file) -> list[str]:
+                 image, llm, model, daily_max, pause_file, oos_start,
+                 interval="1H", horizon_h=24) -> list[str]:
     """argv tail for a command step (foundry_runner / foundry_bridge).
 
     Raises KeyError for an unknown step id.
     """
     if step_id == "foundry":
-        return ["-m", "research.hermes.foundry_runner", "run",
+        # `mine` = enqueue-then-run. Plain `run` reconciles an EMPTY queue and
+        # forges nothing, so the auto-scheduler must enqueue a job first.
+        ohlcv_path = str(Path(manifests_dir) / f"ohlcv_{_symbol_short(symbol)}.parquet")
+        return ["-m", "research.hermes.foundry_runner", "mine",
+                "--symbol", str(symbol), "--oos-start", str(oos_start),
+                "--ohlcv-path", ohlcv_path, "--interval", str(interval),
+                "--horizon-h", str(horizon_h),
                 "--runs-dir", str(runs_dir), "--manifests-dir", str(manifests_dir),
                 "--zoo-dir", str(zoo_dir), "--image", str(image),
                 "--llm", str(llm), "--model", str(model),

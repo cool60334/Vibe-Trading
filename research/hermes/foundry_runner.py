@@ -172,45 +172,31 @@ def build_llm(spec: str, *, model: str | None = None, max_tokens: int = 2048):
     raise ValueError(f"unknown llm spec {spec!r}")
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="foundry", description="Talos Factor Foundry runner")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    q = sub.add_parser("enqueue", help="write a queued foundry job.json")
-    q.add_argument("--symbol", required=True)
-    q.add_argument("--runs-dir", required=True)
-    q.add_argument("--oos-start", required=True)
-    q.add_argument("--ohlcv-path", required=True)
-    q.add_argument("--interval", default="1H")
-    q.add_argument("--horizon-h", type=int, default=24)
-
-    r = sub.add_parser("run", help="reconcile queued foundry jobs")
-    r.add_argument("--runs-dir", required=True)
-    r.add_argument("--manifests-dir", required=True)
-    r.add_argument("--zoo-dir", required=True)
-    r.add_argument("--image", required=True, help="sandbox image tag; resolved to an immutable id")
-    r.add_argument("--llm", default="openrouter")
-    r.add_argument("--timeout-s", type=int, default=120)
-    r.add_argument("--model", required=True, help="explicit OpenRouter model id (pinned)")
-    r.add_argument("--i-will-spend-real-money", action="store_true",
+def _add_run_args(p) -> None:
+    """Flags shared by the `run` and `mine` subcommands."""
+    p.add_argument("--runs-dir", required=True)
+    p.add_argument("--manifests-dir", required=True)
+    p.add_argument("--zoo-dir", required=True)
+    p.add_argument("--image", required=True, help="sandbox image tag; resolved to an immutable id")
+    p.add_argument("--llm", default="openrouter")
+    p.add_argument("--timeout-s", type=int, default=120)
+    p.add_argument("--model", required=True, help="explicit provider model id (pinned)")
+    p.add_argument("--i-will-spend-real-money", action="store_true",
                    help="required to actually call the paid LLM; without it, run refuses")
-    r.add_argument("--batch-max-llm-calls", type=_positive_int, default=6)
-    r.add_argument("--max-tokens", type=int, default=2048)
-    r.add_argument("--daily-max-llm-calls", type=_positive_int, default=None,
+    p.add_argument("--batch-max-llm-calls", type=_positive_int, default=6)
+    p.add_argument("--max-tokens", type=int, default=2048)
+    p.add_argument("--daily-max-llm-calls", type=_positive_int, default=None,
                    help="cross-run UTC-day call ceiling; omit for no daily guard")
-    r.add_argument("--spend-ledger", default=None,
+    p.add_argument("--spend-ledger", default=None,
                    help="spend ledger path (default <runs-dir>/foundry_spend.jsonl)")
-    r.add_argument("--pause-file", default=None,
+    p.add_argument("--pause-file", default=None,
                    help="killswitch: if this file exists between hypotheses, the "
                         "sweep stops cleanly and the run exits with EXIT_PAUSED (201)")
 
-    args = ap.parse_args(argv)
-    if args.cmd == "enqueue":
-        enqueue_foundry_job(args.symbol, args.runs_dir, {
-            "oos_start": args.oos_start, "interval": args.interval,
-            "horizon_h": args.horizon_h, "ohlcv_path": args.ohlcv_path})
-        return 0
 
+def _execute_run(args) -> int:
+    """Reconcile queued foundry jobs under the daily spend guard + single-instance
+    lock. Shared by the `run` and `mine` subcommands."""
     if not args.i_will_spend_real_money:
         print("refusing: a real run spends money. Re-run with "
               "--i-will-spend-real-money once your provider key is set.")
@@ -257,6 +243,46 @@ def main(argv=None) -> int:
     except AlreadyRunning as exc:
         print(f"refusing: {exc}")
         return 2
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="foundry", description="Talos Factor Foundry runner")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    q = sub.add_parser("enqueue", help="write a queued foundry job.json")
+    q.add_argument("--symbol", required=True)
+    q.add_argument("--runs-dir", required=True)
+    q.add_argument("--oos-start", required=True)
+    q.add_argument("--ohlcv-path", required=True)
+    q.add_argument("--interval", default="1H")
+    q.add_argument("--horizon-h", type=int, default=24)
+
+    r = sub.add_parser("run", help="reconcile queued foundry jobs")
+    _add_run_args(r)
+
+    # `mine` = enqueue-then-run for one symbol. `run` alone reconciles an EMPTY
+    # queue and forges nothing, so the auto-scheduler's foundry step uses `mine`.
+    m = sub.add_parser("mine", help="enqueue a foundry job for a symbol, then reconcile it")
+    m.add_argument("--symbol", required=True)
+    m.add_argument("--oos-start", required=True)
+    m.add_argument("--ohlcv-path", required=True)
+    m.add_argument("--interval", default="1H")
+    m.add_argument("--horizon-h", type=int, default=24)
+    _add_run_args(m)
+
+    args = ap.parse_args(argv)
+    if args.cmd == "enqueue":
+        enqueue_foundry_job(args.symbol, args.runs_dir, {
+            "oos_start": args.oos_start, "interval": args.interval,
+            "horizon_h": args.horizon_h, "ohlcv_path": args.ohlcv_path})
+        return 0
+
+    if args.cmd == "mine":
+        enqueue_foundry_job(args.symbol, args.runs_dir, {
+            "oos_start": args.oos_start, "interval": args.interval,
+            "horizon_h": args.horizon_h, "ohlcv_path": args.ohlcv_path})
+
+    return _execute_run(args)
 
 
 if __name__ == "__main__":
