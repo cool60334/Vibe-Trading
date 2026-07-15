@@ -58,6 +58,26 @@ def cleanup_overlay(job_dir) -> None:
             logger.warning("could not remove overlay cache %s: %s", p, exc)
 
 
+def gc_failed_overlays(repo_root, max_age_days: float = 7.0) -> int:
+    """Delete overlay caches retained by failed/canceled/paused jobs that are
+    older than ``max_age_days``. Since ``execute_job`` now only cleans up the
+    overlay on the success path (so a failed job's overlay survives for
+    debugging), these caches would otherwise accumulate forever across old
+    failed runs. Called at manager startup. Returns the count removed."""
+    root = pj.jobs_dir(repo_root)
+    if not root.exists():
+        return 0
+    removed = 0
+    cutoff = time.time() - max_age_days * 86400
+    for p in root.glob("*/foundry_overlay_*.parquet"):
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink(); removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def _default_runner(repo_root: Path, stage_id: str, symbol: Optional[str], log_fp,
                     stress: bool = False, interval: str = "1H",
                     live_refresh: bool = False, config: Optional[dict] = None) -> int:
@@ -125,14 +145,22 @@ class Manager:
                 job["error"] = "interrupted by runner restart"
                 job["finished_at"] = pj._now()
                 pj.write_job(self.repo_root, job)
+        # Failed/paused/canceled jobs retain their overlay cache for debugging
+        # (see execute_job); sweep away caches from old jobs so they don't
+        # accumulate on disk forever.
+        gc_failed_overlays(self.repo_root, float(os.environ.get("OVERLAY_FAILED_RETENTION_DAYS", "7")))
 
     def _oldest_queued(self) -> Optional[dict]:
         queued = [j for j in pj.list_jobs(self.repo_root, limit=10000)
                   if j.get("status") == "queued"]
         # live_refresh jobs jump ahead of research jobs so the hourly factor
         # refresh never starves behind a manually-queued full pipeline.
-        queued.sort(key=lambda j: (0 if j.get("kind") == "live_refresh" else 1,
-                                   j.get("created_at", "")))
+        # foundry_mine jobs sort last (behind discovery_pipeline/stage/etc.) so
+        # background factor mining never delays user-triggered research runs.
+        queued.sort(key=lambda j: (
+            0 if j.get("kind") == "live_refresh" else
+            2 if j.get("kind") == "foundry_mine" else 1,
+            j.get("created_at", "")))
         return queued[0] if queued else None
 
     def execute_job(self, job: dict) -> None:
@@ -144,75 +172,73 @@ class Manager:
         lp.parent.mkdir(parents=True, exist_ok=True)
         job_dir = lp.parent
 
-        try:
-            for step in job["steps"]:
-                fresh = pj.read_job(self.repo_root, job["job_id"]) or job
-                if fresh.get("cancel"):
-                    job["status"] = "canceled"
-                    job["finished_at"] = pj._now()
-                    pj.write_job(self.repo_root, job)
-                    logger.info("job %s canceled before stage %s", job["job_id"], step["stage"])
-                    return
-
-                step["status"] = "running"
+        for step in job["steps"]:
+            fresh = pj.read_job(self.repo_root, job["job_id"]) or job
+            if fresh.get("cancel"):
+                job["status"] = "canceled"
+                job["finished_at"] = pj._now()
                 pj.write_job(self.repo_root, job)
-                logger.info("job %s running stage %s", job["job_id"], step["stage"])
+                logger.info("job %s canceled before stage %s", job["job_id"], step["stage"])
+                return
 
-                with open(lp, "a", encoding="utf-8") as fp:
-                    fp.write(f"\n===== stage {step['stage']} @ {pj._now()} =====\n")
-                    fp.flush()
-                    if pj.is_command_step(step["stage"]):
-                        rc = self._command_runner(job, step["stage"], fp)
-                    else:
-                        step_symbol = (
-                            job.get("symbol")
-                            if job.get("symbol") and pj.stage_uses_symbol(step["stage"])
-                            else None
-                        )
-                        # A discovery_pipeline job's stage steps run after the
-                        # "bridge" step materialized the Foundry overlay
-                        # parquet -- carry overlay_dir (+ any other non-secret
-                        # config) so the stage subprocess can pick it up.
-                        step_config = (
-                            {**job.get("config", {}), "overlay_dir": job["overlay_dir"]}
-                            if job.get("kind") == "discovery_pipeline" else None
-                        )
-                        rc = self._runner(
-                            self.repo_root, step["stage"], step_symbol, fp,
-                            job.get("stress", False), job.get("interval", "1H"),
-                            job.get("kind") == "live_refresh" and step["stage"] == "0a",
-                            config=step_config,
-                        )
-
-                step["exit_code"] = rc
-                step["status"] = "succeeded" if rc == 0 else "failed"
-                pj.write_job(self.repo_root, job)
-
-                if rc == EXIT_PAUSED:
-                    step["exit_code"] = rc
-                    step["status"] = "paused"
-                    job["status"] = "paused"
-                    job["exit_code"] = rc
-                    job["finished_at"] = pj._now()
-                    pj.write_job(self.repo_root, job)
-                    logger.info("job %s paused by killswitch at %s", job["job_id"], step["stage"])
-                    return
-
-                if rc != 0:
-                    job["status"] = "failed"
-                    job["exit_code"] = rc
-                    job["error"] = f"stage {step['stage']} exited {rc}"
-                    job["finished_at"] = pj._now()
-                    pj.write_job(self.repo_root, job)
-                    logger.warning("job %s failed at stage %s (rc=%s)", job["job_id"], step["stage"], rc)
-                    return
-
-            job["status"] = "succeeded"
-            job["finished_at"] = pj._now()
+            step["status"] = "running"
             pj.write_job(self.repo_root, job)
-            logger.info("job %s succeeded", job["job_id"])
-        finally:
-            cleanup_overlay(job_dir)
+            logger.info("job %s running stage %s", job["job_id"], step["stage"])
+
+            with open(lp, "a", encoding="utf-8") as fp:
+                fp.write(f"\n===== stage {step['stage']} @ {pj._now()} =====\n")
+                fp.flush()
+                if pj.is_command_step(step["stage"]):
+                    rc = self._command_runner(job, step["stage"], fp)
+                else:
+                    step_symbol = (
+                        job.get("symbol")
+                        if job.get("symbol") and pj.stage_uses_symbol(step["stage"])
+                        else None
+                    )
+                    # A discovery_pipeline job's stage steps run after the
+                    # "bridge" step materialized the Foundry overlay
+                    # parquet -- carry overlay_dir (+ any other non-secret
+                    # config) so the stage subprocess can pick it up.
+                    step_config = (
+                        {**job.get("config", {}), "overlay_dir": job["overlay_dir"]}
+                        if job.get("kind") == "discovery_pipeline" else None
+                    )
+                    rc = self._runner(
+                        self.repo_root, step["stage"], step_symbol, fp,
+                        job.get("stress", False), job.get("interval", "1H"),
+                        job.get("kind") == "live_refresh" and step["stage"] == "0a",
+                        config=step_config,
+                    )
+
+            step["exit_code"] = rc
+            step["status"] = "succeeded" if rc == 0 else "failed"
+            pj.write_job(self.repo_root, job)
+
+            if rc == EXIT_PAUSED:
+                step["exit_code"] = rc
+                step["status"] = "paused"
+                job["status"] = "paused"
+                job["exit_code"] = rc
+                job["finished_at"] = pj._now()
+                pj.write_job(self.repo_root, job)
+                logger.info("job %s paused by killswitch at %s", job["job_id"], step["stage"])
+                return
+
+            if rc != 0:
+                job["status"] = "failed"
+                job["exit_code"] = rc
+                job["error"] = f"stage {step['stage']} exited {rc}"
+                job["finished_at"] = pj._now()
+                pj.write_job(self.repo_root, job)
+                logger.warning("job %s failed at stage %s (rc=%s)", job["job_id"], step["stage"], rc)
+                return
+
+        job["status"] = "succeeded"
+        cleanup_overlay(job_dir)
+        job["finished_at"] = pj._now()
+        pj.write_job(self.repo_root, job)
+        logger.info("job %s succeeded", job["job_id"])
 
     def _command_runner(self, job: dict, step_id: str, log_fp) -> int:
         """Run a command step ("foundry" / "bridge") -- a direct

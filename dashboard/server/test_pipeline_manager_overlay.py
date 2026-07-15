@@ -25,8 +25,9 @@ def test_stage_env_inherits_the_parent_environment(monkeypatch):
     assert env["RESEARCH_INCLUDE_FOUNDRY"] == "1"
 
 
-def test_cleanup_overlay_runs_on_job_failure(tmp_path):
-    # the finally block must run even on failure to prevent accumulating orphans.
+def test_cleanup_overlay_retained_on_job_failure(tmp_path):
+    # Task 6: cleanup only runs on the success path now, so a failed job's
+    # overlay cache survives for debugging (a GC sweep reaps stale ones later).
     job = pj.create_job(tmp_path, kind="stage", stage="1")
 
     # Set up overlay files in the log directory before running
@@ -43,8 +44,8 @@ def test_cleanup_overlay_runs_on_job_failure(tmp_path):
     mgr = Manager(tmp_path, runner=failing_runner)
     mgr.execute_job(job)
 
-    # Job should be marked failed, but overlay files must be cleaned up
+    # Job should be marked failed, and overlay files must be retained.
     result = pj.read_job(tmp_path, job["job_id"])
     assert result["status"] == "failed"
-    assert not (log_dir / "foundry_overlay_eth.parquet").exists()
-    assert not (log_dir / "foundry_manifest_eth.json").exists()
+    assert (log_dir / "foundry_overlay_eth.parquet").exists()
+    assert (log_dir / "foundry_manifest_eth.json").exists()
