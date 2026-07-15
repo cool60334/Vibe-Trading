@@ -25,11 +25,18 @@ def _active(repo_root, symbol, now, max_age_sec):
     for j in pj.list_jobs(repo_root, limit=10000):
         if j.get("kind") != "foundry_mine" or j.get("symbol") != symbol:
             continue
-        if j.get("status") not in ("queued", "running"):
+        status = j.get("status")
+        if status not in ("queued", "running"):
             continue
-        created = j.get("created_at")
-        if created and (now - datetime.fromisoformat(created)).total_seconds() > max_age_sec:
-            continue
+        # A queued job is never "dead" -- foundry_mine is deliberately
+        # low-priority (pipeline_manager sorts it last), so it can legitimately
+        # sit queued far past max_age_sec while just waiting its turn. Only a
+        # `running` job past the window plausibly reflects a runner that died
+        # mid-step, so staleness only applies there.
+        if status == "running":
+            created = j.get("created_at")
+            if created and (now - datetime.fromisoformat(created)).total_seconds() > max_age_sec:
+                continue
         return j
     return None
 
