@@ -71,6 +71,35 @@ def stage_command(stage_id: str) -> list[str]:
     return ["-m", f"research.pipeline.{module}"]
 
 
+# Step ids that run as a direct subprocess command (research.hermes.* modules)
+# rather than a research.pipeline stage module — see step_command().
+_STEP_COMMAND = {"foundry", "bridge"}
+
+
+def is_command_step(step_id: str) -> bool:
+    return step_id in _STEP_COMMAND
+
+
+def step_command(step_id, symbol, *, overlay_dir, runs_dir, manifests_dir, zoo_dir,
+                 image, llm, model, daily_max, pause_file) -> list[str]:
+    """argv tail for a command step (foundry_runner / foundry_bridge).
+
+    Raises KeyError for an unknown step id.
+    """
+    if step_id == "foundry":
+        return ["-m", "research.hermes.foundry_runner", "run",
+                "--runs-dir", str(runs_dir), "--manifests-dir", str(manifests_dir),
+                "--zoo-dir", str(zoo_dir), "--image", str(image),
+                "--llm", str(llm), "--model", str(model),
+                "--i-will-spend-real-money", "--daily-max-llm-calls", str(daily_max),
+                "--pause-file", str(pause_file)]
+    if step_id == "bridge":
+        return ["-m", "research.hermes.foundry_bridge", "--symbol", str(symbol),
+                "--overlay-dir", str(overlay_dir), "--image", str(image),
+                "--manifests-dir", str(manifests_dir)]
+    raise KeyError(f"not a command step: {step_id!r}")
+
+
 def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
@@ -118,7 +147,7 @@ def list_jobs(repo_root, limit: int = 50) -> list[dict]:
 
 def create_job(repo_root, kind: str, stage: Optional[str] = None,
                symbol: Optional[str] = None, stress: bool = False,
-               interval: str = "1H") -> dict:
+               interval: str = "1H", config: Optional[dict] = None) -> dict:
     if interval not in SUPPORTED_INTERVALS:
         raise ValueError(
             f"invalid interval {interval!r}; valid: {sorted(SUPPORTED_INTERVALS)}"
@@ -135,11 +164,19 @@ def create_job(repo_root, kind: str, stage: Optional[str] = None,
         stage = None
         steps = [{"stage": s, "status": "pending", "exit_code": None}
                  for s in ("0a", "1")]
+    elif kind == "foundry_mine":
+        stage = None
+        steps = [{"stage": "foundry", "status": "pending", "exit_code": None}]
+    elif kind == "discovery_pipeline":
+        stage = None
+        steps = [{"stage": s, "status": "pending", "exit_code": None}
+                 for s in ["bridge", *pipeline_sequence()]]
     else:
         raise ValueError(f"invalid kind {kind!r}")
 
+    jid = _new_job_id()
     job = {
-        "job_id": _new_job_id(),
+        "job_id": jid,
         "kind": kind,
         "stage": stage,
         "symbol": symbol,
@@ -153,6 +190,8 @@ def create_job(repo_root, kind: str, stage: Optional[str] = None,
         "exit_code": None,
         "error": None,
         "cancel": False,
+        "config": dict(config or {}),
+        "overlay_dir": str(log_path(repo_root, jid).parent),
     }
     write_job(repo_root, job)
     return job
