@@ -40,13 +40,13 @@ def stage_env(overrides: dict) -> dict:
 
 
 def cleanup_overlay(job_dir) -> None:
-    """Delete the per-run Foundry overlay cache.
-
-    NOTE: the automated job runner does not currently enable or materialize
-    the overlay (RESEARCH_INCLUDE_FOUNDRY/RESEARCH_FOUNDRY_OVERLAY_DIR are
-    never set here) -- that wiring is deferred to a future spec. This
-    cleanup is a no-op until that wiring exists; it only matters for the
-    manual CLI path (research.hermes.foundry_bridge).
+    """Delete the per-job Foundry overlay cache (foundry_overlay_*.parquet and
+    foundry_manifest_*.json). Called from execute_job only on the SUCCESS path;
+    failed/canceled/paused jobs retain their overlay for debugging. The overlay
+    is materialized by the 'bridge' command step for discovery_pipeline jobs and
+    consumed by downstream research stages via RESEARCH_INCLUDE_FOUNDRY and
+    RESEARCH_FOUNDRY_OVERLAY_DIR (set by _default_runner when config carries
+    overlay_dir).
     """
     d = Path(job_dir)
     if not d.exists():
