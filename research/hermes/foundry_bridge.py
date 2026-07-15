@@ -60,23 +60,31 @@ def cached_recompute(code: str, code_sha: str, panel: pd.DataFrame, run_sandbox,
 
     The cache is keyed on code_sha alone, not on the panel's index — the panel
     can grow between nightly runs (new bars appended) while the factor's code
-    stays byte-identical. Reindexing the cached series onto the current panel
-    index reproduces exactly what a fresh recompute would have produced on the
-    overlapping range, and yields legitimate NaN (not silently wrong values)
-    for any new rows the cached run never saw. Those NaN rows fail
-    `reconciles_pre_oos`/the OOS-all-NaN guard downstream if they matter, so a
-    stale-but-shorter cache entry cannot slip a wrong value into the panel.
+    stays byte-identical. A cache hit is only trusted if the CACHED data's own
+    index (before any reindexing) already covers the panel's current tail
+    (`cached_max >= panel_max`); reindexing a shorter cached series onto a
+    longer panel would otherwise return legitimate-looking NaN for every new
+    bar forever, since a code-sha hit would keep matching on every future call
+    and the cache would never regenerate. When the panel has grown past what's
+    cached, this is treated as a miss: recompute over the full (now-longer)
+    span and overwrite the cache file with the fresh, fully-covering result.
     """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{code_sha}.parquet"
     if cached.exists():
         s = pd.read_parquet(cached).iloc[:, 0]
-        # Normalise the name away: the parquet column is always literally "v",
-        # while a freshly computed series is typically unnamed. Without this,
-        # a cache hit and a cache miss would return series that compare
-        # unequal on .name alone even though the values are identical.
-        return s.reindex(panel.index).rename(None)
+        if s.index.max() >= panel.index.max():
+            # Normalise the name away: the parquet column is always literally
+            # "v", while a freshly computed series is typically unnamed.
+            # Without this, a cache hit and a cache miss would return series
+            # that compare unequal on .name alone even though the values are
+            # identical.
+            return s.reindex(panel.index).rename(None)
+        # Cached data's tail is older than the panel's current tail — the
+        # panel has grown since this cache entry was written. Fall through
+        # to a full recompute rather than returning a series whose newest
+        # rows would be silently (and permanently) NaN.
     series = recompute_full_span(code, panel, run_sandbox)
     _atomic_to_parquet(series.to_frame("v"), cached)
     return series.rename(None)
@@ -173,7 +181,8 @@ def build_overlay(symbol, manifests_dir, panel, run_sandbox, oos_start,
         _h = meta.get("horizon_h")
         h = int(_h) if _h is not None else int(horizon_h)
         try:
-            cache_dir = Path(manifests_dir) / "candidate_features" / "recompute_cache"
+            cache_dir = (Path(manifests_dir) / "candidate_features" / "recompute_cache"
+                        / _symbol_short(symbol))
             series = cached_recompute(code, meta.get("code_sha256") or fid, panel,
                                       run_sandbox, cache_dir)
         except Exception as exc:                     # noqa: BLE001 - degrade, never crash

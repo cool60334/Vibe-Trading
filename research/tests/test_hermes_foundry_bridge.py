@@ -298,3 +298,137 @@ def test_cached_recompute_skips_sandbox_on_sha_hit(tmp_path):
 
     assert calls["n"] == 1
     pd.testing.assert_series_equal(a, b)
+
+
+def test_cached_recompute_scopes_cache_dir_per_symbol(tmp_path):
+    # Two different symbols using the same code_sha must NOT share a cache
+    # entry even though cached_recompute itself is symbol-agnostic — the
+    # caller (build_overlay) is responsible for handing in a per-symbol
+    # cache_dir. Simulate that here by calling cached_recompute directly with
+    # two distinct cache_dir paths for the same sha.
+    from research.hermes.foundry_bridge import cached_recompute
+    idx = pd.date_range("2024-01-01", periods=20, freq="1h", tz="UTC")
+    panel = pd.DataFrame({"close": np.arange(20.0)}, index=idx)
+    calls = {"eth": 0, "sol": 0}
+
+    def run_eth(code, p):
+        calls["eth"] += 1
+        return pd.Series(np.full(len(p), 1.0), index=p.index)
+
+    def run_sol(code, p):
+        calls["sol"] += 1
+        return pd.Series(np.full(len(p), 2.0), index=p.index)
+
+    cache_eth = tmp_path / "recompute_cache" / "eth"
+    cache_sol = tmp_path / "recompute_cache" / "sol"
+
+    a = cached_recompute("code", "sha_shared", panel, run_eth, cache_eth)
+    b = cached_recompute("code", "sha_shared", panel, run_sol, cache_sol)
+
+    # Each symbol's own sandbox ran once — neither read the other's cache.
+    assert calls["eth"] == 1
+    assert calls["sol"] == 1
+    assert (a == 1.0).all()
+    assert (b == 2.0).all()
+    # And the cache files landed in genuinely separate directories.
+    assert (cache_eth / "sha_shared.parquet").exists()
+    assert (cache_sol / "sha_shared.parquet").exists()
+
+
+def test_build_overlay_uses_a_per_symbol_cache_dir(tmp_path, monkeypatch):
+    # Same code_sha256 for two different symbols must not collide: build_overlay
+    # is responsible for scoping cache_dir by symbol before calling
+    # cached_recompute, so seed the SAME candidate id + sha under two symbols
+    # and confirm both get their own recompute rather than one serving stale
+    # cached values to the other.
+    panel = _panel(100)
+    pre = panel.index < pd.Timestamp(_OOS, tz="UTC")
+    for sym in ("eth", "sol"):
+        # _seed() hardcodes "eth"; seed each symbol's own candidate parquet +
+        # stored code directly so both get a genuinely independent manifest.
+        cand = pd.DataFrame(
+            {"zoo_shared": pd.Series(np.arange(float(len(panel))), index=panel.index)[pre]})
+        p = _candidate_path(sym, tmp_path); p.parent.mkdir(parents=True, exist_ok=True)
+        cand.to_parquet(p)
+        write_candidate_code("zoo_shared", sym, tmp_path, "code", {"code_sha256": ""})
+    monkeypatch.setattr("research.hermes.foundry_bridge.load_cards",
+                        lambda s, d: [_Card("zoo_shared")])
+    calls = {"n": 0}
+
+    def run(code, p):
+        calls["n"] += 1
+        return pd.Series(np.arange(float(len(p))), index=p.index)
+
+    build_overlay("eth", tmp_path, panel, run, _OOS, horizon_h=24)
+    build_overlay("sol", tmp_path, panel, run, _OOS, horizon_h=24)
+
+    # If the cache were shared across symbols, the second build_overlay call
+    # would have hit eth's cache entry and never invoked run() again.
+    assert calls["n"] == 2
+    cache_root = tmp_path / "candidate_features" / "recompute_cache"
+    assert (cache_root / "eth").is_dir()
+    assert (cache_root / "sol").is_dir()
+
+
+def test_cached_recompute_recomputes_when_cache_does_not_cover_panel_tail(tmp_path):
+    # A cache entry written when the panel was shorter must NOT be returned
+    # as-is once the panel has grown past it — that would reindex onto NaN
+    # for every new bar, forever, since the sha never changes. Confirm a
+    # stale cache triggers a fresh recompute AND the cache file gets
+    # overwritten with the fully-covering result.
+    from research.hermes.foundry_bridge import cached_recompute
+    cache = tmp_path / "cache"
+    short_idx = pd.date_range("2024-01-01", periods=20, freq="1h", tz="UTC")
+    short_panel = pd.DataFrame({"close": np.arange(20.0)}, index=short_idx)
+    calls = {"n": 0}
+
+    def run(code, p):
+        calls["n"] += 1
+        return pd.Series(np.arange(float(len(p))), index=p.index)
+
+    first = cached_recompute("code", "sha_grow", short_panel, run, cache)
+    assert calls["n"] == 1
+    assert first.notna().all()
+
+    # Panel grows (new bars appended) between nightly runs; sha is unchanged.
+    long_idx = pd.date_range("2024-01-01", periods=40, freq="1h", tz="UTC")
+    long_panel = pd.DataFrame({"close": np.arange(40.0)}, index=long_idx)
+
+    second = cached_recompute("code", "sha_grow", long_panel, run, cache)
+
+    # Must have gone back to the sandbox instead of serving the stale cache.
+    assert calls["n"] == 2
+    assert second.index.equals(long_panel.index)
+    assert second.notna().all()          # no permanent NaN tail
+
+    # The cache file itself must now cover the full (longer) span so the
+    # NEXT call, with an unchanged panel, is a genuine hit.
+    on_disk = pd.read_parquet(cache / "sha_grow.parquet").iloc[:, 0]
+    assert on_disk.index.max() == long_panel.index.max()
+
+    third = cached_recompute("code", "sha_grow", long_panel, run, cache)
+    assert calls["n"] == 2               # this call was a true cache hit
+    pd.testing.assert_series_equal(second, third)
+
+
+def test_cached_recompute_hit_skips_sandbox_when_cache_already_covers_tail(tmp_path):
+    # Original Task 3 behaviour must not regress: when the cached data's max
+    # index already covers (>=) the panel's current max index, a same-sha
+    # call is a genuine cache hit and must NOT touch the sandbox again, even
+    # though a staleness check now runs on every hit.
+    from research.hermes.foundry_bridge import cached_recompute
+    idx = pd.date_range("2024-01-01", periods=20, freq="1h", tz="UTC")
+    panel = pd.DataFrame({"close": np.arange(20.0)}, index=idx)
+    calls = {"n": 0}
+
+    def run(code, p):
+        calls["n"] += 1
+        return pd.Series(np.arange(float(len(p))), index=p.index)
+
+    cache = tmp_path / "cache"
+    a = cached_recompute("code", "sha_stable", panel, run, cache)   # miss → runs
+    # Same panel (same tail) on the second call → must be a fast-path hit.
+    b = cached_recompute("code", "sha_stable", panel, run, cache)
+
+    assert calls["n"] == 1
+    pd.testing.assert_series_equal(a, b)
