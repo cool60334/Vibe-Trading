@@ -76,6 +76,7 @@ from lib.derived_factors import (
 from lib.orderflow_factors import orderflow_factors
 from lib.research_ledger import append_event
 from lib.timeframe import bars_per_hour
+from lib.inducted_factors import compute_inducted
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -208,6 +209,14 @@ def apply_ic_eval_transform(
 # ─── Pure-logic helpers ────────────────────────────────────────────────────────
 
 
+def _merge_inducted(features: dict, panel: pd.DataFrame, symbol) -> dict:
+    """Merge inducted factors into the feature dict, computed over the FULL
+    library panel (so an inducted factor may reference any library column)."""
+    if symbol:
+        features.update(compute_inducted(panel, symbol))
+    return features
+
+
 def build_feature_dict(
     candles: pd.DataFrame,
     config: ResearchConfig,
@@ -219,6 +228,7 @@ def build_feature_dict(
     usdt_usd_close: pd.Series | None = None,
     orderflow_df: pd.DataFrame | None = None,
     oi_ls_df: pd.DataFrame | None = None,
+    symbol=None,
 ) -> dict[str, pd.Series]:
     """Compute all features and return as a dict of name → Series.
 
@@ -242,6 +252,10 @@ def build_feature_dict(
         'toptrader_ls_positions' columns (Binance OI archive). Optional;
         enables global_ls_acct_z, toptrader_ls_z, ls_divergence factors.
         Reindexed without ffill.
+    symbol:
+        Symbol name (e.g. "eth"). Optional; when set, inducted factors
+        (research/lib/inducted/<symbol>/*.py) are computed over the full
+        library panel (candles + all already-built features) and merged in.
 
     Returns
     -------
@@ -320,6 +334,13 @@ def build_feature_dict(
     if oi_ls_df is not None and not oi_ls_df.empty:
         features.update(positioning_factors(oi_ls_df, candle_idx))
 
+    # Inducted factors LAST: they may reference any library column, so build the
+    # full-library panel first, then compute them over it.
+    if symbol:
+        panel = candles.copy()
+        for _name, _series in features.items():
+            panel[_name] = _series
+        _merge_inducted(features, panel, symbol)
     return features
 
 
@@ -648,6 +669,7 @@ def _process_symbol(
             usdt_usd_close=usdt_usd_close,
             orderflow_df=orderflow_df,
             oi_ls_df=oi_ls_df,
+            symbol=sym,
         )
         if not feature_dict:
             log.error("%s: feature dict is empty — skipping symbol", sym)
