@@ -303,6 +303,13 @@ class DockerSandbox(SandboxExecutor):
         self._ensure_image()
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+        # docker's `-v host:container` bind mount requires an ABSOLUTE host
+        # path; a relative one (e.g. a relative --manifests-dir on the CLI)
+        # gets misparsed as a named-volume identifier and Docker rejects it
+        # with "invalid characters for a local volume name". Resolve here,
+        # at the boundary that actually talks to docker, so every caller is
+        # covered regardless of whether it happened to pass an absolute path.
+        output_dir = str(Path(output_dir).resolve())
 
         tmp_source_path: str | None = None
         try:
@@ -310,13 +317,13 @@ class DockerSandbox(SandboxExecutor):
             with os.fdopen(fd, "w") as f:
                 f.write(source)
 
-            input_path = Path(input_parquet)
+            input_path = Path(input_parquet).resolve()
             container_input_path = f"/in/{input_path.name}"
 
             name = f"talos_sbx_{uuid.uuid4().hex[:12]}"
             cmd = self._build_command(
                 container_input_path,
-                str(output_dir),
+                output_dir,
                 runner=str(RUNNER_TEMPLATE_PATH),
                 source_mount=(tmp_source_path, "/app/user_source.py"),
                 input_mount=(str(input_path), container_input_path),

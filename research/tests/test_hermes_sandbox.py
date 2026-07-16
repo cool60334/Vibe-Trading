@@ -154,6 +154,45 @@ def test_digest_pinned_image_passes_validation():
 SAFE_SOURCE = "import pandas as pd\ndef compute(df):\n    return df['close']\n"
 
 
+def test_relative_host_paths_are_resolved_to_absolute_before_docker_run(tmp_path, monkeypatch):
+    # Real bug found only by a real `docker run` on Windows, never by these
+    # mocked tests: every other test here passes tmp_path (always absolute),
+    # so a relative --manifests-dir (this repo's own Task 9 CLI convention)
+    # was never exercised. Docker's own error names the root cause exactly:
+    # "includes invalid characters for a local volume name ... If you
+    # intended to pass a host directory, use absolute path".
+    from research.hermes.sandbox import DockerSandbox
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakePopen(returncode=0)
+
+    monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="sha256:e...\n", stderr=""))
+    monkeypatch.chdir(tmp_path)
+
+    sb = DockerSandbox(allow_unpinned=True, timeout_s=5)
+    sb.run(SAFE_SOURCE, input_parquet="in.parquet", output_dir="out_dir")
+
+    cmd = captured["cmd"]
+    mount_args = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "-v"]
+    # every -v mount's host-side path must be absolute, regardless of what
+    # the caller passed in. On Windows a drive-letter path itself contains a
+    # ":" (C:\foo\bar:/out:rw" splits into ["C", "\\foo\\bar", "/out", "rw"]),
+    # so rejoin the drive letter before checking.
+    for m in mount_args:
+        parts = m.split(":")
+        if os.name == "nt" and len(parts[0]) == 1:
+            host = parts[0] + ":" + parts[1]
+        else:
+            host = parts[0]
+        assert os.path.isabs(host), f"non-absolute host path passed to docker -v: {m!r}"
+
+
 def _patch_popen(monkeypatch, fake: FakePopen) -> None:
     monkeypatch.setattr("research.hermes.sandbox.is_docker_available", lambda: True)
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
