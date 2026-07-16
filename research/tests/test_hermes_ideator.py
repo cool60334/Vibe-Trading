@@ -107,3 +107,18 @@ def test_parse_ideas_raises_when_there_is_no_json_at_all():
 def test_parse_ideas_raises_when_entries_are_not_objects():
     with pytest.raises(IdeationParseError):
         parse_ideas('["just a string"]')
+
+
+def test_parse_ideas_skips_a_markdown_checklists_false_empty_array():
+    """回歸測試：`- [ ] ...` 待辦清單裡的 `[ ]` 是合法的空 JSON array，早期版本
+    一掃到就當作解析成功回傳 []，導致後面真正的想法陣列從沒被讀到，
+    IdeationParseError 也從沒觸發（正是本模組要防的 llm_raw=[] 老 bug）。"""
+    resp = '''我的想法如下：
+- [ ] funding volatility idea
+- [ ] positioning divergence idea
+
+[{"id": "funding_vol", "description": "funding volatility", "fields": ["funding_rate_raw"]}]'''
+    ideas = parse_ideas(resp)
+    assert ideas == [
+        {"id": "funding_vol", "description": "funding volatility",
+         "fields": ["funding_rate_raw"]}]

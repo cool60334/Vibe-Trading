@@ -72,13 +72,24 @@ class IdeationParseError(HermesGuardError, ValueError):
 
 
 def _first_json_value(text: str):
-    """Find the first balanced [...] or {...} and json-decode it.
+    """Find the first balanced [...] or {...} that decodes to a real payload.
 
-    raw_decode from the first bracket, rather than a regex: an idea's description
+    raw_decode from each bracket, rather than a regex: an idea's description
     can legitimately contain brackets, and a greedy/non-greedy regex mis-cuts on
     those. raw_decode stops exactly at the end of the first complete value, so
     trailing prose after the JSON is simply ignored.
+
+    A syntactically-valid but EMPTY `[]`/`{}` does not short-circuit the scan.
+    LLMs routinely precede the real payload with markdown checklists like
+    "- [ ] some idea" -- the `[ ]` there is a perfectly valid empty JSON array,
+    and accepting it on sight means the real array later in the text is never
+    reached, `parse_ideas` happily returns `[]`, and no IdeationParseError ever
+    fires (exactly the historical llm_raw=[] bug this module exists to catch).
+    So an empty match is remembered as a last-resort fallback but the scan keeps
+    going for a non-trivial list/dict first.
     """
+    fallback = None
+    have_fallback = False
     for i, ch in enumerate(text):
         if ch not in "[{":
             continue
@@ -86,9 +97,16 @@ def _first_json_value(text: str):
             # strict=False: LLMs emit literal tabs/newlines inside long Chinese
             # strings, which strict JSON rejects outright (existing repo lesson).
             value, _end = json.JSONDecoder(strict=False).raw_decode(text, i)
-            return value
         except json.JSONDecodeError:
             continue
+        if value == [] or value == {}:
+            if not have_fallback:
+                fallback = value
+                have_fallback = True
+            continue
+        return value
+    if have_fallback:
+        return fallback
     raise IdeationParseError(f"no decodable JSON value found in response: {text[:200]!r}")
 
 
