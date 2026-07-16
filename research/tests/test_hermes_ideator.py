@@ -55,3 +55,55 @@ def test_summarize_deaths_respects_limit_and_is_deterministic():
     out = summarize_deaths(cards, limit=3)
     assert len(out) == 3
     assert out == summarize_deaths(cards, limit=3)
+
+
+from research.hermes.ideator import IdeationParseError, parse_ideas
+
+
+def test_parse_ideas_reads_a_fenced_json_block():
+    resp = '''好的，以下是我的想法：
+```json
+[{"id": "funding_vol", "description": "funding volatility", "fields": ["funding_rate_raw"]}]
+```
+希望有幫助。'''
+    assert parse_ideas(resp) == [
+        {"id": "funding_vol", "description": "funding volatility",
+         "fields": ["funding_rate_raw"]}]
+
+
+def test_parse_ideas_falls_back_to_bare_json_without_a_fence():
+    """已知高頻故障：LLM 常常不吐 fence（stage0/2 swarm 的老問題）。"""
+    resp = '[{"id": "a", "description": "d", "fields": ["funding_z", "oi_z"]}]'
+    assert parse_ideas(resp)[0]["id"] == "a"
+
+
+def test_parse_ideas_handles_a_plain_python_fence():
+    resp = '```\n[{"id": "a", "description": "d", "fields": ["funding_z", "oi_z"]}]\n```'
+    assert parse_ideas(resp)[0]["id"] == "a"
+
+
+def test_parse_ideas_survives_control_chars_in_long_chinese_json():
+    """既有教訓：LLM 吐長中文 JSON 必須 json.loads(strict=False)。"""
+    resp = '[{"id": "a", "description": "資金費率\tz 分數與大戶部位背離", "fields": ["funding_z", "toptrader_ls_z"]}]'
+    assert "資金費率" in parse_ideas(resp)[0]["description"]
+
+
+def test_parse_ideas_accepts_an_object_wrapping_the_list():
+    resp = '{"ideas": [{"id": "a", "description": "d", "fields": ["funding_z", "oi_z"]}]}'
+    assert parse_ideas(resp)[0]["id"] == "a"
+
+
+def test_parse_ideas_raises_on_truncated_json():
+    """max_tokens 截斷是真實風險（見 plan Global Constraints）。"""
+    with pytest.raises(IdeationParseError):
+        parse_ideas('[{"id": "a", "description": "d", "fields": ["fund')
+
+
+def test_parse_ideas_raises_when_there_is_no_json_at_all():
+    with pytest.raises(IdeationParseError):
+        parse_ideas("抱歉，我無法完成這個請求。")
+
+
+def test_parse_ideas_raises_when_entries_are_not_objects():
+    with pytest.raises(IdeationParseError):
+        parse_ideas('["just a string"]')
