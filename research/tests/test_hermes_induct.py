@@ -38,6 +38,17 @@ def test_verify_gates_refuses_sha_mismatch(tmp_path, monkeypatch):
         verify_gates("foundry_x", "eth", tmp_path)
 
 
+def test_verify_gates_refuses_missing_sha(tmp_path, monkeypatch):
+    """Fail-closed: meta.json lacking a code_sha256 key at all must refuse,
+    not silently pass the tamper check (previously only an actual mismatch
+    refused; a missing key skipped the check entirely)."""
+    code = "def compute(df):\n    return df['close']\n"
+    write_candidate_code("foundry_x", "eth", tmp_path, code, {})  # no code_sha256 key
+    monkeypatch.setattr(ind, "load_cards", lambda s, d: [_card("foundry_x")])
+    with pytest.raises(InductRefused, match="sha"):
+        verify_gates("foundry_x", "eth", tmp_path)
+
+
 def test_verify_gates_refuses_unsafe_ast(tmp_path, monkeypatch):
     code = "import os\ndef compute(df):\n    return df['close']\n"
     write_candidate_code("foundry_x", "eth", tmp_path, code,

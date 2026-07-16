@@ -42,7 +42,12 @@ def verify_gates(factor_id: str, symbol: str, manifests_dir) -> str:
 
     code, meta = load_candidate_code(factor_id, symbol, manifests_dir)
     actual = hashlib.sha256(code.encode()).hexdigest()
-    if meta.get("code_sha256") and meta["code_sha256"] != actual:
+    stored_sha = meta.get("code_sha256")
+    # Fail-closed: a missing sha means tamper-freedom can't be verified at all,
+    # same philosophy as revalidate()'s fail-closed reconcile gate below.
+    if not stored_sha:
+        raise InductRefused(f"{symbol}:{factor_id} meta.json missing code_sha256 (cannot verify tamper-freedom)")
+    if stored_sha != actual:
         raise InductRefused(f"{symbol}:{factor_id} code sha mismatch (tamper?)")
     try:
         check_source(code)
