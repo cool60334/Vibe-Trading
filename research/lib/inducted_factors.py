@@ -80,7 +80,9 @@ def compute_inducted(panel, symbol: str, root=None) -> dict:
         try:
             compute = _load_compute(symbol, fid, d / f"{fid}.py")
             series = compute(panel)
-            out[fid] = series.reindex(panel.index) if hasattr(series, "reindex") else series
+            if not isinstance(series, pd.Series):
+                raise TypeError(f"compute() returned {type(series).__name__}, expected pd.Series")
+            out[fid] = series.reindex(panel.index)
         except Exception as exc:                    # noqa: BLE001 - soft-fail, never break the batch
             log.error("inducted factor %s failed (%s); NaN-filling for this run", fid, exc)
             out[fid] = pd.Series(float("nan"), index=panel.index)

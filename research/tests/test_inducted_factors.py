@@ -32,6 +32,22 @@ def test_compute_inducted_soft_fails_a_raising_factor(tmp_path):
     assert len(out["foundry_bad"]) == 10  # aligned to the 10-row panel, not empty/short
 
 
+def test_compute_inducted_nan_fills_a_non_series_return(tmp_path):
+    """A malformed compute() returning a scalar/ndarray instead of a pd.Series
+    must be treated like a raise: NaN-filled and logged, not stored raw and
+    unaligned to panel.index (which would corrupt the downstream feature dict)."""
+    _seed(tmp_path, "eth", "foundry_ok", "def compute(df):\n    return df['close']\n")
+    _seed(tmp_path, "eth", "foundry_scalar", "def compute(df):\n    return 42\n")
+    _seed(tmp_path, "eth", "foundry_array", "import numpy as np\ndef compute(df):\n    return np.arange(3)\n")
+    out = compute_inducted(_panel(), "eth", root=tmp_path)
+    assert "foundry_ok" in out
+    for fid in ("foundry_scalar", "foundry_array"):
+        assert fid in out
+        assert isinstance(out[fid], pd.Series)
+        assert out[fid].isna().all()
+        assert len(out[fid]) == 10  # aligned to the 10-row panel
+
+
 def test_compute_inducted_honours_kill_switch(tmp_path, monkeypatch):
     _seed(tmp_path, "eth", "foundry_x", "def compute(df):\n    return df['close']\n")
     bl = tmp_path / "bl.txt"; bl.write_text("foundry_x\n", encoding="utf-8")
