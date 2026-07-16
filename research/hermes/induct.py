@@ -61,9 +61,16 @@ def revalidate(code, factor_id, symbol, panel, run_sandbox, oos_start, manifests
         raise InductRefused(f"{symbol}:{factor_id} is non-deterministic (compute twice differs)")
 
     cand_path = _candidate_path(symbol, manifests_dir)
-    if cand_path.exists():
-        stored = pd.read_parquet(cand_path)
-        if factor_id in stored.columns and not reconciles_pre_oos(first, stored[factor_id], oos_start):
-            raise InductRefused(
-                f"{symbol}:{factor_id} recompute diverges from the stored Foundry values "
-                "(the strategy's backtest would not match live); refusing to induct")
+    if not cand_path.exists():
+        raise InductRefused(
+            f"{symbol}:{factor_id} has no stored candidate values at {cand_path} "
+            "(cannot verify path-consistency); refusing to induct")
+    stored = pd.read_parquet(cand_path)
+    if factor_id not in stored.columns:
+        raise InductRefused(
+            f"{symbol}:{factor_id} is not a column in the stored candidate values "
+            "(cannot verify path-consistency); refusing to induct")
+    if not reconciles_pre_oos(first, stored[factor_id], oos_start):
+        raise InductRefused(
+            f"{symbol}:{factor_id} recompute diverges from the stored Foundry values "
+            "(the strategy's backtest would not match live); refusing to induct")

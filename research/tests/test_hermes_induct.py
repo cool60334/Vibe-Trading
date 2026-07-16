@@ -75,3 +75,15 @@ def test_revalidate_refuses_bridge_divergence(tmp_path, monkeypatch):
     with pytest.raises(InductRefused, match="diverge|reconcile"):
         revalidate("code", "foundry_x", "eth", panel,
                    lambda c, p2: pd.Series(np.arange(120.0), index=panel.index), oos, tmp_path)
+
+
+def test_revalidate_fails_closed_no_candidate_parquet(tmp_path, monkeypatch):
+    """Fail-closed: refuse induction when no candidate parquet exists at all,
+    even if determinism passes."""
+    panel = _panel()
+    monkeypatch.setattr("research.hermes.induct.pit_check_via_sandbox", lambda *a, **k: None)
+    # run_sandbox returns the SAME series both times -> determinism passes
+    series = pd.Series(np.arange(120.0), index=panel.index)
+    with pytest.raises(InductRefused, match="no stored candidate|cannot verify"):
+        revalidate("code", "foundry_x", "eth", panel,
+                   lambda c, p: series, "2024-11-03", tmp_path)
