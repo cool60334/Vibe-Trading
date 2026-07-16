@@ -23,7 +23,7 @@ from research.hermes.sandbox_ast import check_source, UnsafeCodeError
 from research.hermes.foundry_bridge import recompute_full_span, reconciles_pre_oos
 from research.hermes.forge import pit_check_via_sandbox
 from research.hermes.pit import LookaheadError
-from research.lib.inducted_factors import inducted_dir
+from research.lib.inducted_factors import inducted_dir, inducted_names
 
 
 class InductRefused(HermesGuardError, RuntimeError):
@@ -83,7 +83,14 @@ def revalidate(code, factor_id, symbol, panel, run_sandbox, oos_start, manifests
             "(the strategy's backtest would not match live); refusing to induct")
 
 
-def write_induction(code, factor_id, symbol, fixture, expected, root=None, tests_root=None) -> None:
+def write_induction(code, factor_id, symbol, fixture, expected, root=None, tests_root=None,
+                     overwrite: bool = False) -> None:
+    # agy #8 (mirrored from promote.py): refuse to silently overwrite an
+    # already-inducted factor.
+    if factor_id in inducted_names(symbol, root=root) and not overwrite:
+        raise InductRefused(
+            f"{symbol}:{factor_id} already inducted; pass --overwrite to replace"
+        )
     d = inducted_dir(symbol, root=root); d.mkdir(parents=True, exist_ok=True)
     (d / f"{factor_id}.py").write_text(code, encoding="utf-8")
     (d / f"{factor_id}.meta.json").write_text(json.dumps({
@@ -122,6 +129,8 @@ def main(argv=None) -> int:
     ap.add_argument("--image", default="talos-sandbox:test")
     ap.add_argument("--oos-start", default=None)
     ap.add_argument("--confirm", action="store_true", help="required — without it, refuses")
+    ap.add_argument("--overwrite", action="store_true",
+                     help="allow replacing an existing inducted factor of the same name")
     args = ap.parse_args(argv)
 
     from research.hermes.foundry_runner import resolve_image_id, load_ohlcv
@@ -148,11 +157,15 @@ def main(argv=None) -> int:
             return 2
         fixture = panel.head(200)
         expected = run_sandbox(code, fixture)
-        write_induction(code, args.factor, args.symbol, fixture, expected)
+        write_induction(code, args.factor, args.symbol, fixture, expected, overwrite=args.overwrite)
         print(f"[induct] {args.symbol}:{args.factor} inducted. COMMIT the new files; "
               "then stage0a will compute it and the strategy can deploy.")
         return 0
-    except InductRefused as exc:
+    # agy (mirrored from promote.py): InductRefused IS a HermesGuardError, so this
+    # still catches everything it did before, plus infra failures during the gate/
+    # write flow — a down Docker daemon or bad --image (SandboxError, also a
+    # HermesGuardError subclass) and missing OHLCV/features parquet.
+    except (HermesGuardError, ValueError, FileNotFoundError) as exc:
         print(f"[induct] REFUSED: {exc}", file=sys.stderr)
         return 2
 

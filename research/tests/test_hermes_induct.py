@@ -124,3 +124,22 @@ def test_write_induction_writes_module_meta_and_golden(tmp_path):
     assert inducted_names("eth", root=tmp_path) == {"foundry_x"}
     assert (tmp_path / "t" / "foundry_x_fixture.parquet").exists()
     assert (tmp_path / "t" / "test_foundry_x.py").exists()
+
+
+def test_write_induction_refuses_overwrite_without_flag(tmp_path):
+    code = "def compute(df):\n    return df['close']\n"
+    fixture = _panel(6)
+    expected = fixture["close"]
+    write_induction(code, "foundry_x", "eth", fixture, expected,
+                    root=tmp_path, tests_root=tmp_path / "t")
+
+    with pytest.raises(InductRefused, match="already inducted"):
+        write_induction(code, "foundry_x", "eth", fixture, expected,
+                        root=tmp_path, tests_root=tmp_path / "t")
+
+    # overwrite=True allows the same factor_id to be re-inducted.
+    new_code = "def compute(df):\n    return df['close'] * 2\n"
+    write_induction(new_code, "foundry_x", "eth", fixture, expected,
+                    root=tmp_path, tests_root=tmp_path / "t", overwrite=True)
+    d = inducted_dir("eth", root=tmp_path)
+    assert (d / "foundry_x.py").read_text(encoding="utf-8") == new_code
