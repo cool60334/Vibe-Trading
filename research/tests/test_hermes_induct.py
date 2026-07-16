@@ -105,3 +105,22 @@ def test_revalidate_fails_closed_missing_factor_column(tmp_path, monkeypatch):
     with pytest.raises(InductRefused, match="is not a column|cannot verify path-consistency"):
         revalidate("code", "foundry_x", "eth", panel,
                    lambda c, p: series, oos, tmp_path)
+
+
+from research.hermes.induct import write_induction
+from research.lib.inducted_factors import inducted_dir, inducted_names
+
+
+def test_write_induction_writes_module_meta_and_golden(tmp_path):
+    code = "def compute(df):\n    return df['close']\n"
+    fixture = _panel(6)
+    expected = fixture["close"]
+    write_induction(code, "foundry_x", "eth", fixture, expected,
+                    root=tmp_path, tests_root=tmp_path / "t")
+
+    d = inducted_dir("eth", root=tmp_path)
+    assert (d / "foundry_x.py").read_text(encoding="utf-8") == code
+    assert (d / "foundry_x.meta.json").exists()
+    assert inducted_names("eth", root=tmp_path) == {"foundry_x"}
+    assert (tmp_path / "t" / "foundry_x_fixture.parquet").exists()
+    assert (tmp_path / "t" / "test_foundry_x.py").exists()
