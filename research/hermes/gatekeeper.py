@@ -28,7 +28,18 @@ def factor_to_weights(factor: pd.Series, span: int = 168) -> pd.Series:
 
     EMA (not SMA) softens window-start instability (agy #5). std==0 runs (a
     constant/discrete signal) are flat by definition — no variance to measure
-    extremity against — so z is set to 0 (not NaN) for the duration of the run."""
+    extremity against — so z is set to 0 (not NaN) for the duration of the run.
+
+    `factor` comes from an LLM-generated compute() (forge/sandbox) and is not
+    guaranteed to be numpy float64: a real Task 9 run hit a live
+    `ZeroDivisionError: float division by zero` at the division below, because
+    pandas' object-dtype Series division calls Python's own `/` operator
+    per-element (verified directly: `pd.Series([1.0], dtype=object) /
+    pd.Series([0.0], dtype=object)` raises the same exception), unlike float64
+    array division which returns inf/nan. Coercing to float64 up front removes
+    that whole class of dtype-dependent divide-by-zero behavior regardless of
+    what dtype the untrusted generated code happened to produce."""
+    factor = factor.astype("float64")
     mu = factor.ewm(span=span, adjust=False, min_periods=span // 4).mean()
     sd = factor.ewm(span=span, adjust=False, min_periods=span // 4).std(bias=True)
     z = (factor - mu) / sd

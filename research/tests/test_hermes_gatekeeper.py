@@ -17,6 +17,21 @@ def test_weights_clipped_and_discrete_signal_survives_zero_std():
     assert w.notna().sum() > 0                      # not all NaN despite std==0 runs
 
 
+def test_weights_survive_a_non_float64_factor_dtype():
+    # Real bug found only by a real Task 9 run against a real LLM-generated
+    # factor: pandas object-dtype Series division calls Python's own `/`
+    # per-element, which raises ZeroDivisionError on an exact 0.0 -- unlike
+    # float64 array division, which returns inf/nan (verified directly:
+    # pd.Series([1.0], dtype=object) / pd.Series([0.0], dtype=object) raises
+    # "ZeroDivisionError: float division by zero"). `factor` here comes from
+    # an untrusted LLM-generated compute(), so its dtype is not guaranteed.
+    # This locks factor_to_weights's defensive coercion to float64 up front.
+    f = _s([1.0] * 100 + [-1.0] * 100).astype(object)
+    w = factor_to_weights(f, span=48)                # must not raise
+    assert w.dtype == np.float64
+    assert w.abs().max() <= 1.0 + 1e-9
+
+
 def test_turnover_is_weight_change():
     w = pd.Series([0.0, 1.0, -1.0], index=pd.date_range("2024-01-01", periods=3, freq="1h"))
     assert turnover_of(w).fillna(0).tolist() == pytest.approx([0.0, 1.0, 2.0])
