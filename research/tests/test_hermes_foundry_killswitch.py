@@ -33,7 +33,7 @@ def test_run_foundry_stops_when_pause_file_appears(tmp_path, monkeypatch):
                           llm=object(), sandbox=object(),
                           budget=Budget(max_factors=5, early_stop_after=99),
                           zoo_dir=tmp_path, oos_start=_OOS, ohlcv=_ohlcv(idx),
-                          pause_file=str(pause))
+                          pause_file=str(pause), sources=())
 
     assert summary.get("killswitch_paused") is True
     assert calls["n"] == 0            # stopped before running any hypothesis

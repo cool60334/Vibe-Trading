@@ -238,7 +238,8 @@ def test_build_queue_assembles_dedupes_filters(tmp_path, monkeypatch):
         Hypothesis("acad_a", "close.rolling(20).mean()", SOURCE_ACADEMIC)])
     monkeypatch.setattr(hq, "_graveyard_fingerprints", lambda s, m: set())
     q = {h.id for h in hq.build_queue("eth", tmp_path, zoo_dir=tmp_path, llm_raw=[],
-                                      derived_bases=["close"])}
+                                      derived_bases=["close"],
+                                      sources=frozenset({"zoo", "derived", "academic"}))}
     assert "acad_a" in q and len(q & {"zoo_a", "der_a"}) == 1    # one of the dupes kept
 
 
@@ -271,7 +272,60 @@ def test_build_queue_never_reads_evidence_json(tmp_path, monkeypatch):
     monkeypatch.setattr(hq, "load_evidence", boom, raising=False)
 
     q = hq.build_queue(symbol="eth", manifests_dir=tmp_path, zoo_dir=tmp_path,
-                       llm_raw=[], derived_bases=["funding_z"])
+                       llm_raw=[], derived_bases=["funding_z"],
+                       sources=frozenset({"zoo", "derived"}))
     ids = {h.id for h in q}
     assert "zoo_a" in ids
     assert "der_funding_z_zscore" in ids     # derived came from the caller, not the manifest
+
+
+# ── Task 6: build_queue source toggle — default is llm-only (spec Q1/Q4) ──
+
+from research.hermes.hypothesis_queue import DEFAULT_SOURCES, build_queue
+
+
+def test_default_sources_is_llm_only():
+    """zoo/derived/academic 三條源在 crypto perp 上都是死的（spec §1、Q4）。"""
+    assert DEFAULT_SOURCES == frozenset({"llm"})
+
+
+def test_build_queue_defaults_to_llm_only(tmp_path):
+    q = build_queue(symbol="eth", manifests_dir=tmp_path,
+                    llm_raw=[{"id": "a", "description": "funding_z vs oi_z"}])
+    assert [h.source for h in q] == ["llm"]
+
+
+def test_build_queue_without_zoo_does_not_need_a_zoo_dir(tmp_path):
+    """預設不跑 zoo 時，不該逼呼叫端提供 zoo 路徑。"""
+    q = build_queue(symbol="eth", manifests_dir=tmp_path,
+                    llm_raw=[{"id": "a", "description": "d"}], derived_bases=["funding_z"])
+    assert [h.source for h in q] == ["llm"]      # derived 也不在預設集合裡
+
+
+def test_build_queue_can_re_enable_zoo(tmp_path, zoo_dir_with_one_factor):
+    q = build_queue(symbol="eth", manifests_dir=tmp_path,
+                    zoo_dir=zoo_dir_with_one_factor,
+                    llm_raw=[{"id": "a", "description": "d"}],
+                    sources=frozenset({"llm", "zoo"}))
+    assert {h.source for h in q} == {"llm", "zoo"}
+
+
+def test_build_queue_raises_if_zoo_enabled_without_a_zoo_dir(tmp_path):
+    """fail loud：Path(None).rglob 會拋一個看不懂的 TypeError。"""
+    with pytest.raises(ValueError, match="zoo_dir"):
+        build_queue(symbol="eth", manifests_dir=tmp_path, sources=frozenset({"zoo"}))
+
+
+def test_build_queue_rejects_an_unknown_source(tmp_path):
+    with pytest.raises(ValueError, match="unknown source"):
+        build_queue(symbol="eth", manifests_dir=tmp_path, sources=frozenset({"telepathy"}))
+
+
+@pytest.fixture
+def zoo_dir_with_one_factor(tmp_path):
+    d = tmp_path / "zoo"
+    d.mkdir()
+    (d / "f.py").write_text(
+        '__alpha_meta__ = {"id": "z1", "formula_latex": "close - open", "theme": ["trend"]}\n'
+        'def compute(panel):\n    return panel["close"]\n', encoding="utf-8")
+    return d

@@ -215,20 +215,53 @@ def hypotheses_from_llm(raw: list) -> list[Hypothesis]:
     ]
 
 
-def build_queue(symbol: str, manifests_dir, zoo_dir, llm_raw: list | None = None,
-                derived_bases=()) -> list[Hypothesis]:
-    """Assemble the full Foundry hypothesis queue: zoo + derivation + academic +
-    LLM sources, then dedupe (string-fingerprint collision) and filter_static
-    (graveyard + constitution dead classes).
+# zoo/derived/academic are all structurally dead on crypto perps, so the DEFAULT
+# is llm-only (spec Q1/Q4):
+#   zoo      — 456 equity/A-share technical alphas touching only close/volume. Worse
+#              than useless: their descriptions are LaTeX, so each costs 1-3 LLM
+#              calls to re-forge, draining the call budget around hypothesis 20.
+#              That is why eth had 6 evidence cards instead of 50.
+#   derived  — _DERIVE_TRANSFORMS is ("zscore", "rank"), applied to columns already
+#              IN the panel. rank(x) is strictly monotonic in x, and the dedup gate
+#              uses SPEARMAN, so it scores exactly 1.0 against its own parent:
+#              rejected as redundant with certainty.
+#   academic — the two seeds are equity OHLCV momentum/low-vol; the panel already
+#              carries roc_10 and rolling_std_20.
+# Nothing is deleted: re-enable any source per job via params["sources"] to rerun
+# one as a control, without a code change.
+DEFAULT_SOURCES = frozenset({SOURCE_LLM})
+_ALL_SOURCES = frozenset({SOURCE_ZOO, SOURCE_DERIVED, SOURCE_ACADEMIC, SOURCE_LLM})
+
+
+def build_queue(symbol: str, manifests_dir, zoo_dir=None, llm_raw: list | None = None,
+                derived_bases=(), sources=DEFAULT_SOURCES) -> list[Hypothesis]:
+    """Assemble the Foundry hypothesis queue from the ENABLED sources, then dedupe
+    (string-fingerprint collision) and filter_static (graveyard + dead classes).
+
+    `sources` selects which adapters contribute; see DEFAULT_SOURCES above for why
+    the default is llm-only.
+
+    `zoo_dir` is optional now that zoo is off by default -- but it is REQUIRED when
+    zoo is enabled, and that is checked up front: Path(None).rglob raises a TypeError
+    that says nothing about the real mistake.
 
     `derived_bases` is a caller-ranked list of base feature names. It is NOT read
     from evidence_<sym>.json: that file's IC spans the reserved OOS window, so
     selecting from it leaks OOS information into what Foundry chooses to try.
     """
-    collected = (
-        hypotheses_from_zoo(zoo_dir)
-        + hypotheses_from_derivation(derived_bases)
-        + hypotheses_from_academic()
-        + hypotheses_from_llm(llm_raw or [])
-    )
+    sources = frozenset(sources)
+    if unknown := sources - _ALL_SOURCES:
+        raise ValueError(f"unknown source(s) {sorted(unknown)}; known: {sorted(_ALL_SOURCES)}")
+    if SOURCE_ZOO in sources and zoo_dir is None:
+        raise ValueError("zoo_dir is required when 'zoo' is in sources")
+
+    collected: list = []
+    if SOURCE_ZOO in sources:
+        collected += hypotheses_from_zoo(zoo_dir)
+    if SOURCE_DERIVED in sources:
+        collected += hypotheses_from_derivation(derived_bases)
+    if SOURCE_ACADEMIC in sources:
+        collected += hypotheses_from_academic()
+    if SOURCE_LLM in sources:
+        collected += hypotheses_from_llm(llm_raw or [])
     return filter_static(dedupe(collected), symbol, manifests_dir)

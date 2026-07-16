@@ -1,0 +1,161 @@
+# research/hermes/field_schema.yaml
+#
+# Foundry ideator 的燃料：panel 每一欄的經濟含意。
+# 來源：research/lib/derived_factors.py + research/pipeline/stage0a_features.py
+# 由 test_hermes_field_schema.py 對帳 features_<sym>.parquet 的實際欄位。
+#
+# 每欄欄位：
+#   what     — 這是什麼（含計算式）
+#   positive — 正值代表什麼
+#   notes    — 已知陷阱／性質（LLM 必讀）
+#
+# ── crypto 原生：資金費 ────────────────────────────────────────────────
+funding_rate_raw:
+  what: "永續合約資金費率，8h 結算值 forward-fill 到 1H 網格"
+  positive: "多方付錢給空方 → 多方擁擠"
+  notes: >-
+    階梯函數：同一個值會連續重複 8 根 bar。在這上面做 1H 差分，
+    大多數 bar 得到 0，只有結算點跳動 —— 頻率錯配陷阱。
+    本 repo 實證為 contrarian 訊號（負 IC）。非平穩。
+funding_z:
+  what: "funding_rate_raw 的 30 天滾動 z 分數 (window=720h, min_periods=360)"
+  positive: "資金費率相對過去 30 天異常高"
+  notes: "現役 alpha。z 分數這個變換已被佔用，別重做。"
+funding_mom:
+  what: "funding_rate_raw - funding_rate_raw.shift(24)，24h 動能"
+  positive: "資金費率在過去 24h 上升"
+  notes: "動能／差分這個變換已被佔用，別重做。"
+
+# ── crypto 原生：基差 ──────────────────────────────────────────────────
+basis_rel:
+  what: "(永續價 - 現貨價) / 現貨價"
+  positive: "期貨溢價 —— 多方願付溢價持有槓桿多單"
+  notes: "現役 alpha。套利力量會把它壓回 0 附近，量級是 bps 級。"
+basis_z:
+  what: "basis_rel 的 30 天滾動 z 分數 (window=720h)"
+  positive: "基差相對過去 30 天異常高"
+  notes: "z 分數變換已被佔用。"
+basis_mom:
+  what: "basis_rel - basis_rel.shift(24)，24h 動能"
+  positive: "基差在過去 24h 擴大"
+  notes: "動能變換已被佔用。"
+
+# ── crypto 原生：未平倉合約 (OI) ───────────────────────────────────────
+oi_change_24h:
+  what: "未平倉合約量的 24h 變化率"
+  positive: "倉位在累積"
+  notes: "資料源是 Binance daily metrics archive（5 分鐘快照聚合到 1H）。"
+oi_z:
+  what: "OI 的 30 天滾動 z 分數 (window=720h)"
+  positive: "OI 相對過去 30 天異常高"
+  notes: "z 分數變換已被佔用。"
+oi_mom:
+  what: "OI 的 72h 變化率 oi.pct_change(72)"
+  positive: "OI 在過去 72h 增加"
+  notes: "動能變換已被佔用（72h 版）。"
+oi_price_divergence:
+  what: "oi.pct_change(24) * close.pct_change(24) —— 兩個變化率的『乘積』"
+  positive: "OI 與價格『同向』變動（同漲或同跌）"
+  notes: >-
+    名字騙人：它是同向共振的乘積，不是背離。負值才是背離
+    （OI 增但價跌 / OI 減但價漲）。
+
+# ── crypto 原生：多空持倉比 ────────────────────────────────────────────
+global_ls_acct_z:
+  what: "Binance 全市場多空『帳戶數』比的 30 天滾動 z (window=720h)"
+  positive: "散戶帳戶偏多的程度相對過去 30 天異常高"
+  notes: "散戶情緒代理（按帳戶數，一人一票）。缺口小時保持 NaN，未 ffill。"
+toptrader_ls_z:
+  what: "Binance 大戶多空『持倉加權』比的 30 天滾動 z (window=720h)"
+  positive: "大戶部位偏多的程度相對過去 30 天異常高"
+  notes: >-
+    聰明錢代理（按持倉量加權，較反映 PnL）。刻意不用帳戶數版本。
+    缺口小時保持 NaN，未 ffill。
+ls_divergence:
+  what: "global_ls_acct_z - toptrader_ls_z（散戶 z 減大戶 z）"
+  positive: "散戶比大戶更偏多 —— 典型的反向訊號設定"
+  notes: >-
+    ⚠️ 與 global_ls_acct_z / toptrader_ls_z 三者線性相依（rank-2）。
+    絕對不要把三個一起放進同一個因子 —— 那是線性重複。
+
+# ── crypto 原生：穩定幣／跨場溢價 ──────────────────────────────────────
+stablecoin_supply_z:
+  what: "穩定幣總供給量的滾動 z 分數"
+  positive: "場外資金（穩定幣）正在流入"
+  notes: >-
+    來自『日頻』序列 ffill 到 1H：24h 階梯函數，一天內 24 根 bar 同值。
+    1H 差分只在日界跳動 —— 頻率錯配陷阱。在 BTC 上驗證為有效訊號。
+depeg:
+  what: "USDT/USD 匯率 - 1（純 USDT 脫鉤，已與法幣溢價解耦）"
+  positive: "USDT 相對 USD 溢價"
+  notes: "已 wire 但薄。長時間近乎常數（USDT 本來就該貼著 1）。"
+depeg_z:
+  what: "depeg 的 30 天滾動 z 分數"
+  positive: "USDT 脫鉤程度相對過去 30 天異常高"
+  notes: "z 分數變換已被佔用。"
+fiat_prem:
+  what: "(OKX USDT 現貨價 × USDT/USD 匯率) / Massive USD 現貨價 - 1，離岸對美國法幣溢價（depeg 已扣除）"
+  positive: "離岸（OKX）比美國場內貴"
+  notes: >-
+    已被 REJECT 過（研究結論）。有資料品質護欄：|溢價|>5% 直接丟棄、
+    覆蓋率<50% 整欄拒為 NaN。可能整欄是 NaN。
+fiat_prem_z:
+  what: "fiat_prem 的 30 天滾動 z 分數"
+  positive: "法幣溢價相對過去 30 天異常高"
+  notes: "母體已被 REJECT。可能整欄是 NaN。"
+
+# ── OHLCV 技術指標（股票血統，crypto perp 上多半死）────────────────────
+rsi_14:
+  what: "14 期 RSI 相對強弱指標"
+  positive: "近期漲幅相對跌幅大（超買區）"
+  notes: "股票血統技術指標。crypto perp 上普遍偏弱。"
+macd_diff:
+  what: "MACD 柱狀圖（DIF - DEA）"
+  positive: "短期動能強過長期"
+  notes: "股票血統。"
+roc_10:
+  what: "10 期價格變化率"
+  positive: "價格在過去 10 根 bar 上漲"
+  notes: "股票血統。價格動能這條路已被佔用。"
+stoch_k:
+  what: "隨機指標 %K"
+  positive: "收盤價接近近期區間高點"
+  notes: "股票血統。"
+ema_cross_9_21:
+  what: "EMA9 與 EMA21 的交叉訊號"
+  positive: "短期均線在長期均線之上（多頭排列）"
+  notes: "股票血統趨勢類。"
+sma_cross_10_30:
+  what: "SMA10 與 SMA30 的交叉訊號"
+  positive: "短期均線在長期均線之上"
+  notes: "股票血統趨勢類。與 ema_cross_9_21 高度相關。"
+adx_14:
+  what: "14 期 ADX 趨勢強度"
+  positive: "趨勢強（不分方向）"
+  notes: "無方向性 —— 適合當條件式因子的『閘』而非方向訊號。"
+atr_14:
+  what: "14 期真實波幅均值"
+  positive: "波動大"
+  notes: "無方向性。價格尺度相依（非平穩）。適合當閘。"
+bb_width_20:
+  what: "20 期布林通道寬度"
+  positive: "波動擴張"
+  notes: "無方向性。適合當閘。"
+rolling_std_20:
+  what: "20 期報酬滾動標準差"
+  positive: "波動大"
+  notes: "無方向性。價格波動度這條路已被佔用。"
+obv:
+  what: "能量潮（On-Balance Volume），依漲跌方向累加成交量"
+  positive: "買盤累積"
+  notes: >-
+    ⚠️ 累積和 —— 非平穩、會無限漂移。直接對它算 Spearman IC 大部分
+    只是在量測時間趨勢。IC 評估時被強制套 zscore_720h 變換。
+mfi_14:
+  what: "14 期資金流量指標（成交量加權的 RSI）"
+  positive: "資金流入（超買區）"
+  notes: "股票血統。"
+volume_zscore_20:
+  what: "成交量的 20 期 z 分數"
+  positive: "成交量相對近期異常大"
+  notes: "無方向性。適合當閘。"
