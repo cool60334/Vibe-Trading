@@ -178,7 +178,7 @@ def test_run_foundry_respects_budget_and_early_stop(tmp_path, monkeypatch):
                           llm=object(), sandbox=object(),
                           budget=Budget(max_factors=20, early_stop_after=3),
                           zoo_dir=tmp_path, run_sandbox=object(), oos_start=_TEST_OOS,
-                          ohlcv=_ohlcv_for(idx))
+                          ohlcv=_ohlcv_for(idx), sources=())
     assert len(seen) == 3                             # stopped after 3 consecutive fails
     assert summary["forge_failed"] == 3 and summary["candidate"] == 0
 
@@ -211,7 +211,7 @@ def test_run_foundry_uses_a_passed_shared_forge_budget(tmp_path, monkeypatch):
                           llm=object(), sandbox=object(),
                           budget=Budget(max_factors=5, max_llm_calls=99),
                           zoo_dir=tmp_path, run_sandbox=object(), oos_start=_TEST_OOS,
-                          ohlcv=_ohlcv_for(idx), forge_budget=shared)
+                          ohlcv=_ohlcv_for(idx), forge_budget=shared, sources=())
     assert seen["is_shared"] is True
     assert summary.get("budget_exhausted") is True   # shared cap bit, not budget's 99
 
@@ -238,7 +238,7 @@ def test_run_foundry_summary_reports_queue_composition_and_features_range(tmp_pa
                           llm=object(), sandbox=object(),
                           budget=Budget(max_factors=20, early_stop_after=99),
                           zoo_dir=tmp_path, run_sandbox=object(), oos_start=_TEST_OOS,
-                          ohlcv=_ohlcv_for(idx))
+                          ohlcv=_ohlcv_for(idx), sources=())
     assert summary["queue_composition"] == {SOURCE_ZOO: 2, SOURCE_DERIVED: 1}
     assert summary["features_range"] == [str(idx.min()), str(idx.max())]
 
@@ -289,7 +289,7 @@ def test_run_foundry_wires_graveyard_values_into_existing_and_dead(tmp_path, mon
     run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                llm=object(), sandbox=object(),
                budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
-               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx))
+               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx), sources=())
 
     cols = captured["existing_and_dead"].columns
     assert "dead_factor_x" in cols            # came from the graveyard parquet
@@ -321,7 +321,7 @@ def test_run_foundry_daily_regime_fallback_is_neutral_and_daily_indexed(tmp_path
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                llm=object(), sandbox=object(),
                budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
-               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx))
+               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx), sources=())
 
     dr = captured["daily_regime"]
     assert (dr == "neutral").all()
@@ -366,7 +366,7 @@ def test_run_foundry_loads_daily_regime_from_regime_manifest_when_present(tmp_pa
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                llm=object(), sandbox=object(),
                budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
-               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx))
+               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx), sources=())
 
     dr = captured["daily_regime"]
     assert len(dr) == 3
@@ -418,7 +418,7 @@ def test_run_foundry_falls_back_to_neutral_when_regime_manifest_malformed(tmp_pa
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                llm=object(), sandbox=object(),
                budget=Budget(max_factors=5, early_stop_after=99), zoo_dir=tmp_path,
-               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx))
+               oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx), sources=())
 
     dr = captured["daily_regime"]
     assert (dr == "neutral").all()
@@ -509,7 +509,7 @@ def test_run_foundry_never_feeds_oos_rows_to_forge_or_evaluate(tmp_path, monkeyp
     run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                 llm=object(), sandbox=object(), budget=Budget(),
                 zoo_dir=tmp_path, run_sandbox=object(), oos_start=oos_start,
-                ohlcv=_ohlcv_for(idx))
+                ohlcv=_ohlcv_for(idx), sources=())
 
     cutoff = pd.Timestamp(oos_start, tz="UTC")
     assert seen["panel_max"] < cutoff, f"forge saw OOS data up to {seen['panel_max']}"
@@ -588,7 +588,7 @@ def test_run_foundry_smoke_on_real_feature_schema(tmp_path, monkeypatch):
 
     run_foundry("eth", tmp_path, GateConfig(interval="1H", horizon_h=24),
                 llm=object(), sandbox=object(), budget=Budget(), zoo_dir=tmp_path,
-                oos_start=_TEST_OOS, ohlcv=ohlcv, run_sandbox=object())
+                oos_start=_TEST_OOS, ohlcv=ohlcv, run_sandbox=object(), sources=())
 
     # forge's panel carries BOTH: 258/301 zoo alphas require close, 171 require volume
     assert {"rsi_14", "funding_z", "close", "volume"} <= seen["panel_cols"]
@@ -639,7 +639,7 @@ def test_run_foundry_passes_a_budget_into_forge(tmp_path, monkeypatch):
     run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                 llm=object(), sandbox=object(), budget=Budget(max_llm_calls=7),
                 zoo_dir=tmp_path, oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx),
-                run_sandbox=object())
+                run_sandbox=object(), sources=())
     assert isinstance(seen["budget"], ForgeBudget)
     assert seen["budget"].max_llm_calls == 7      # run-wide cap reached forge()
 
@@ -675,7 +675,7 @@ def test_run_foundry_stops_the_sweep_when_budget_trips(tmp_path, monkeypatch):
     summary = run_foundry("eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
                           llm=object(), sandbox=object(), budget=Budget(max_factors=10),
                           zoo_dir=tmp_path, oos_start=_TEST_OOS, ohlcv=_ohlcv_for(idx),
-                          run_sandbox=object())
+                          run_sandbox=object(), sources=())
     assert len(tried) == 3                       # stopped, did not grind through all 10
     assert summary.get("budget_exhausted") is True
 
@@ -782,3 +782,133 @@ def test_process_hypothesis_does_not_persist_code_for_rejected(tmp_path, monkeyp
     # Code must NOT be persisted for rejected factors
     with pytest.raises(FileNotFoundError):
         load_candidate_code("dead_zoo", "eth", tmp_path)
+
+
+# ── LLM ideation wiring: llm_raw was hardcoded to [] until this task ───────
+#
+# Everything downstream of the queue (build_queue, process_hypothesis, forge,
+# evaluate) is already covered above -- the one missing wire was run_foundry
+# actually calling generate_ideas() and feeding its output into build_queue's
+# llm_raw. These tests fake generate_ideas only and let the rest of the real
+# path (build_queue -> process_hypothesis -> forge -> sandbox -> gatekeeper)
+# run for real, so a regression anywhere in the wire shows up here rather than
+# only in a mock assertion.
+
+from research.hermes.orchestrator import Budget, run_foundry
+
+
+class _FakeIdeationLLM:
+    """.complete() is only ever reached via forge()'s codegen call in these
+    tests (generate_ideas itself is monkeypatched per-test), so this can
+    ignore the prompt and return one fixed, safe compute() that reads a real
+    panel column -- enough for forge() to succeed on the first attempt."""
+    def complete(self, prompt: str) -> str:
+        return "```python\ndef compute(df):\n    return df['funding_z'].fillna(0.0)\n```"
+
+
+def _fake_run_sandbox(code, panel):
+    """In-process stand-in for make_run_sandbox(sandbox, ...): exec the code
+    and call compute() directly -- no Docker/parquet round-trip needed here."""
+    ns: dict = {}
+    exec(code, {"pd": pd, "np": np}, ns)
+    return ns["compute"](panel)
+
+
+@pytest.fixture
+def foundry_env(tmp_path):
+    """kwargs for run_foundry(**foundry_env): a real features parquet carrying
+    two field_schema.yaml columns (funding_z, oi_z), a matching injected ohlcv,
+    and a fake llm/run_sandbox that let forge() succeed on the first attempt --
+    so a test only has to fake generate_ideas and still exercises the real
+    build_queue/process_hypothesis/forge/evaluate path end to end."""
+    from research.lib.factor_io import dump_features
+    from research.hermes.gatekeeper import GateConfig
+
+    idx = pd.date_range("2022-01-01", periods=400, freq="1h", tz="UTC")
+    rng = np.random.default_rng(0)
+    dump_features("eth", {
+        "funding_z": pd.Series(rng.normal(size=len(idx)), index=idx),
+        "oi_z": pd.Series(rng.normal(size=len(idx)), index=idx),
+    }, manifests_dir=tmp_path)
+    close = 100 + np.cumsum(rng.normal(size=len(idx)))
+    ohlcv = pd.DataFrame({"open": close, "high": close, "low": close,
+                         "close": close, "volume": np.ones(len(idx))}, index=idx)
+    return dict(
+        symbol="eth", manifests_dir=tmp_path,
+        cfg=GateConfig(interval="1H", horizon_h=24),
+        llm=_FakeIdeationLLM(), sandbox=object(), budget=Budget(),
+        oos_start=_TEST_OOS, ohlcv=ohlcv, run_sandbox=_fake_run_sandbox,
+    )
+
+
+def test_budget_defaults_match_the_single_source_reality():
+    b = Budget()
+    assert b.max_factors == 20
+    # only one source is left, no next source to skip to -> early stop would
+    # only truncate the quality-measuring sample (spec Q5)
+    assert b.early_stop_after >= b.max_factors
+    assert b.max_llm_calls == 60          # hard cap does not move
+
+
+def test_run_foundry_wires_llm_ideas_into_the_queue(foundry_env, monkeypatch):
+    """The single most important test in this file: llm_raw was hardcoded to []."""
+    import research.hermes.orchestrator as orch
+
+    seen = {}
+
+    def fake_generate(llm, schema, deaths, n_ideas, budget=None, **kw):
+        seen["schema_cols"] = sorted(schema)
+        seen["n_ideas"] = n_ideas
+        return [{"id": "fz_oi", "description": "funding_z conditional on oi_z",
+                 "fields": ["funding_z", "oi_z"]}], [], None
+
+    monkeypatch.setattr(orch, "generate_ideas", fake_generate)
+    summary = run_foundry(**foundry_env)
+
+    assert summary["queue_composition"] == {"llm": 1}
+    assert summary["ideas_accepted"] == 1
+    assert "zoo" not in summary["queue_composition"]
+    assert seen["n_ideas"] == 25          # ask for 25, take the first 20 (spec §5.3)
+
+
+def test_run_foundry_records_ideation_failure_without_crashing(foundry_env, monkeypatch):
+    """A nightly cron must not die just because the LLM returned garbage."""
+    import research.hermes.orchestrator as orch
+    monkeypatch.setattr(orch, "generate_ideas",
+                        lambda *a, **k: ([], [], "IdeationParseError: no JSON"))
+    summary = run_foundry(**foundry_env)
+
+    assert summary["ideation_failed"] == "IdeationParseError: no JSON"
+    assert summary["candidate"] == 0
+    assert summary["queue_composition"] == {}
+
+
+def test_run_foundry_surfaces_rejected_ideas_in_the_summary(foundry_env, monkeypatch):
+    """The hallucinated-field rejection rate must be visible -- it's the signal
+    for whether field_schema is doing its job."""
+    import research.hermes.orchestrator as orch
+    monkeypatch.setattr(orch, "generate_ideas", lambda *a, **k: (
+        [{"id": "ok", "description": "d", "fields": ["funding_z", "oi_z"]}],
+        [{"id": "bad", "reason": "unknown panel columns: ['liquidation_z']"}], None))
+    summary = run_foundry(**foundry_env)
+    assert summary["ideas_accepted"] == 1
+    assert summary["ideas_rejected"] == [
+        {"id": "bad", "reason": "unknown panel columns: ['liquidation_z']"}]
+
+
+def test_run_foundry_only_offers_documented_panel_columns(foundry_env, monkeypatch):
+    """When schema and panel disagree, the runtime takes the intersection +
+    warns instead of crashing (spec §6)."""
+    import research.hermes.orchestrator as orch
+    monkeypatch.setattr(orch, "load_field_schema", lambda: {
+        "funding_z": {"what": "w", "positive": "p", "notes": "n"},
+        "long_gone_column": {"what": "w", "positive": "p", "notes": "n"}})
+    seen = {}
+
+    def fake_generate(llm, schema, deaths, n_ideas, budget=None, **kw):
+        seen["cols"] = sorted(schema)
+        return [{"id": "a", "description": "d", "fields": ["funding_z"]}], [], None
+
+    monkeypatch.setattr(orch, "generate_ideas", fake_generate)
+    run_foundry(**foundry_env)
+    assert seen["cols"] == ["funding_z"]          # the stale column was never offered to the LLM

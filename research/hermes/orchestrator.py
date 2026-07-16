@@ -19,10 +19,13 @@ import pandas as pd
 
 from research.hermes.candidate_store import CANDIDATE_SUBDIR, _candidate_path, write_candidate, write_candidate_code
 from research.hermes.evidence_card import EvidenceCard, VERDICT_CANDIDATE, VERDICT_GRAVEYARD
-from research.hermes.evidence_store import upsert_card
+from research.hermes.evidence_store import load_cards, upsert_card
+from research.hermes.field_schema import load_field_schema, reconcile_schema
 from research.hermes.forge import forge, BudgetExhausted, ForgeBudget
 from research.hermes.gatekeeper import evaluate, forward_returns, gross_ic, GateConfig
-from research.hermes.hypothesis_queue import build_queue
+from research.hermes.hypothesis import SOURCE_LLM
+from research.hermes.hypothesis_queue import DEFAULT_SOURCES, build_queue
+from research.hermes.ideator import generate_ideas, summarize_deaths
 from research.hermes.sandbox import SandboxExecutor
 from research.hermes.split import foundry_split
 from research.lib.factor_io import _atomic_to_parquet, _symbol_short, load_features
@@ -187,11 +190,19 @@ def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
 
 @dataclass(frozen=True)
 class Budget:
-    max_factors: int = 50           # per-run cap on hypotheses tried
-    early_stop_after: int = 8       # consecutive non-candidate outcomes -> stop the night
+    # 20, not 50: the queue is llm-only now, and the ideator asks for 25 ideas per
+    # run (a few die in validation). 50 was sized for a 456-strong zoo queue.
+    max_factors: int = 20           # per-run cap on hypotheses tried
+    # Effectively OFF (>= max_factors). early_stop_after existed to bail out of a
+    # diverging night and move the budget on -- but with a single source there is
+    # nothing to move on TO, so it would only truncate the sample. The first runs
+    # exist precisely to MEASURE idea quality, and 8 outcomes cannot tell "the
+    # ideas are bad" from "the draw was unlucky".
+    early_stop_after: int = 20      # consecutive non-candidate outcomes -> stop the night
     # early_stop_after only fires BETWEEN hypotheses; a single hypothesis whose
     # code keeps failing spends one LLM call per retry. max_llm_calls is the
-    # run-wide circuit breaker charged inside forge()'s repair loop.
+    # run-wide circuit breaker charged inside forge()'s repair loop AND by
+    # generate_ideas. Unchanged: this is the real circuit breaker.
     max_llm_calls: int = 60
 
 
@@ -279,14 +290,15 @@ def _align_ohlcv(ohlcv, feature_index, min_coverage: float = 0.95):
     return aligned
 
 
-def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
+def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir=None, *,
                 oos_start, ohlcv, val_frac=0.2, derived_top_k=5,
                 daily_regime=None, run_sandbox=None, forge_budget=None,
-                pause_file=None) -> dict:
+                pause_file=None, sources=DEFAULT_SOURCES, n_ideas=25) -> dict:
     """Sweep the hypothesis queue for one symbol under Budget + early stopping.
 
-    zoo_dir is REQUIRED (agy 4c: build_queue does Path(zoo_dir).rglob -> Path(None)
-    raises TypeError). oos_start is REQUIRED and keyword-only: the pipeline's
+    zoo_dir is optional: zoo is off by default (see hypothesis_queue.DEFAULT_SOURCES).
+    It is required only when 'zoo' is in `sources`, and build_queue checks that.
+    oos_start is REQUIRED and keyword-only: the pipeline's
     walk-forward OOS window is reserved, so Foundry must never let forge() or
     evaluate() see index >= oos_start. Passing it explicitly (dependency
     injection) keeps run_foundry a pure function of its inputs; the caller reads
@@ -347,13 +359,42 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
     derived_bases = _preoos_top_features(features, ohlcv, cfg, top_k=derived_top_k)
     log.info("%s: derived bases ranked on pre-oos data: %s", symbol, derived_bases)
 
-    queue = build_queue(symbol=symbol, manifests_dir=manifests_dir, zoo_dir=zoo_dir,
-                        llm_raw=[], derived_bases=derived_bases)[: budget.max_factors]
-    outcomes: list = []
-    # One breaker for the whole sweep, charged inside forge()'s repair loop.
-    # A caller sweeping multiple jobs (reconcile) can pass a shared ForgeBudget
-    # so spend is counted across the whole batch, not reset per job.
+    # One breaker for the whole sweep, charged inside forge()'s repair loop AND by
+    # generate_ideas. Must exist BEFORE ideation: an ideation call is real spend.
+    # A caller sweeping multiple jobs (reconcile) can pass a shared ForgeBudget so
+    # spend is counted across the whole batch, not reset per job.
     forge_budget = forge_budget or ForgeBudget(max_llm_calls=budget.max_llm_calls)
+
+    # ── ideation ─────────────────────────────────────────────────────────────
+    # This is what was missing: llm_raw was hardcoded to [], so the LLM never
+    # proposed anything and the queue was 100% zoo -- 456 equity alphas that only
+    # read close/volume, on a panel whose crypto-native columns (funding/basis/OI/
+    # long-short) no hypothesis had ever touched.
+    ideation_failed = None
+    llm_raw: list = []
+    ideas_rejected: list = []
+    if SOURCE_LLM in sources:
+        # Intersect the hand-written schema with the panel's REAL columns. The test
+        # asserts these match exactly; the runtime only warns, because stage0a
+        # adding a column must not crash that night's cron (spec §6).
+        schema, undocumented, stale = reconcile_schema(load_field_schema(), features.columns)
+        if undocumented or stale:
+            log.warning("%s: field_schema drift -- undocumented panel columns %s, "
+                        "stale schema entries %s; offering the LLM only the %d "
+                        "columns that are in both", symbol, undocumented, stale, len(schema))
+        # Deaths are fed as CATEGORIES with no numbers attached: handing the LLM
+        # "IC 0.029 < 0.03" invites it to bolt on a log() until the bar clears,
+        # which is automated p-hacking (spec §4.1).
+        deaths = summarize_deaths(load_cards(symbol, manifests_dir))
+        llm_raw, ideas_rejected, ideation_failed = generate_ideas(
+            llm, schema, deaths, n_ideas=n_ideas, budget=forge_budget)
+        if ideation_failed:
+            log.warning("%s: ideation produced nothing usable: %s", symbol, ideation_failed)
+
+    queue = build_queue(symbol=symbol, manifests_dir=manifests_dir, zoo_dir=zoo_dir,
+                        llm_raw=llm_raw, derived_bases=derived_bases,
+                        sources=sources)[: budget.max_factors]
+    outcomes: list = []
     budget_exhausted = False
     summary_paused = False
     # `existing` is captured once above and never updated per-iteration: a factor
@@ -392,6 +433,10 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir, *,
     summary["features_range"] = [str(features.index.min()), str(features.index.max())]
     if summary_paused:
         summary["killswitch_paused"] = True
+    summary["ideas_accepted"] = len(llm_raw)
+    summary["ideas_rejected"] = ideas_rejected
+    if ideation_failed:
+        summary["ideation_failed"] = ideation_failed
     return summary
 
 
