@@ -3,9 +3,12 @@ from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
 from research.hermes.forge import build_prompt, LLMCoder
 
 
+_COLS = ["open", "high", "low", "close", "volume", "funding_z", "oi_z"]
+
+
 def test_prompt_includes_hypothesis_and_contract():
     h = Hypothesis("h1", "zscore(funding_z)", SOURCE_LLM)
-    p = build_prompt(h, prior_error=None)
+    p = build_prompt(h, _COLS, prior_error=None)
     assert "zscore(funding_z)" in p
     assert "compute(df)" in p                       # required entrypoint contract
     assert "DatetimeIndex" in p                     # index contract (backlog #2)
@@ -13,10 +16,72 @@ def test_prompt_includes_hypothesis_and_contract():
 
 def test_prompt_appends_prior_code_and_error_for_repair():
     h = Hypothesis("h1", "x", SOURCE_LLM)
-    p = build_prompt(h, prior_code="def compute(df):\n    return foo",
+    p = build_prompt(h, _COLS, prior_code="def compute(df):\n    return foo",
                      prior_error="NameError: name 'foo' is not defined")
     assert "NameError" in p and "foo" in p            # agy 5b: prior CODE included too
     assert "previous" in p.lower()
+
+
+def test_prompt_lists_the_panels_actual_columns():
+    """The first real ideation run buried 11/20 hypotheses on forge errors, and
+    the sandbox tracebacks said why: KeyError 'open_interest', KeyError
+    'stablecoin_supply'. Those columns do not exist -- the panel carries oi_z,
+    oi_mom, oi_change_24h and stablecoin_supply_z. The prompt never told the LLM
+    what df holds, so it had to guess the names."""
+    h = Hypothesis("h1", "short when OI rises and funding is high", SOURCE_LLM)
+    p = build_prompt(h, _COLS)
+    for col in _COLS:
+        assert col in p, f"{col} missing from the prompt's column list"
+
+
+def test_prompt_column_list_is_deterministic_and_preserves_caller_order():
+    h = Hypothesis("h1", "x", SOURCE_LLM)
+    # real column names, not single letters: "a"/"b" also occur inside the
+    # prompt's own prose ("a pandas Series"), so .index() would match that.
+    cols = ["oi_z", "funding_z"]
+    assert build_prompt(h, cols) == build_prompt(h, cols)
+    p = build_prompt(h, cols)
+    assert p.index("oi_z") < p.index("funding_z")
+
+
+def test_prompt_accepts_a_pandas_index_not_just_a_list():
+    """forge passes panel.columns, which is an Index, not a list."""
+    import pandas as pd
+    h = Hypothesis("h1", "x", SOURCE_LLM)
+    p = build_prompt(h, pd.DataFrame(columns=["funding_z", "oi_z"]).columns)
+    assert "funding_z" in p and "oi_z" in p
+
+
+def test_build_prompt_requires_columns():
+    """No default: a caller that forgets the column list would silently
+    reintroduce the exact bug this fixes."""
+    h = Hypothesis("h1", "x", SOURCE_LLM)
+    with pytest.raises(TypeError):
+        build_prompt(h)
+
+
+def test_forge_hands_the_panels_columns_to_the_llm():
+    """The end-to-end contract: whatever columns the panel really has are what
+    the code-writing model is told about."""
+    import pandas as pd
+    from research.hermes.forge import forge
+
+    panel = pd.DataFrame(
+        {"close": [1.0, 2.0, 3.0], "funding_z": [0.1, 0.2, 0.3], "oi_z": [1.0, 2.0, 3.0]},
+        index=pd.date_range("2024-01-01", periods=3, freq="h", tz="UTC"))
+    seen = []
+
+    class CapturingLLM:
+        def complete(self, prompt):
+            seen.append(prompt)
+            return "```python\ndef compute(df):\n    return df['funding_z']\n```"
+
+    forge(Hypothesis("h1", "use funding", SOURCE_LLM), CapturingLLM(),
+          lambda code, p: p["funding_z"], panel, max_retries=1)
+
+    assert seen, "forge never called the LLM"
+    for col in ("close", "funding_z", "oi_z"):
+        assert col in seen[0]
 
 
 def test_extract_code_pulls_fenced_block():

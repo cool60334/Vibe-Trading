@@ -27,8 +27,14 @@ _PROMPT = """You are writing a single Python factor for a crypto perp research p
 
 Hypothesis to implement: {desc}
 
+`df` has EXACTLY these columns and nothing else:
+{columns}
+
 Hard contract (violating any of these fails the attempt):
 - Define exactly one function `compute(df)` that returns a pandas Series.
+- Read ONLY the column names listed above, spelled exactly as listed. They are the
+  only data that exists. A name that merely sounds right (e.g. 'open_interest' when
+  the list says 'oi_z') does not exist and fails the attempt.
 - The returned Series MUST keep df's DatetimeIndex unchanged (do not reset/strip/reindex it).
 - Use ONLY: pandas, numpy, scipy, ta, math, statistics. No I/O, no network, no os/sys.
 - Point-in-time: a value at row t may depend only on rows <= t. No .shift(-k), no bfill/backfill.
@@ -40,14 +46,34 @@ class LLMCoder(Protocol):
     def complete(self, prompt: str) -> str: ...
 
 
-def build_prompt(hypothesis: Hypothesis, prior_code: Optional[str] = None,
+def build_prompt(hypothesis: Hypothesis, columns, prior_code: Optional[str] = None,
                  prior_error: Optional[str] = None) -> str:
+    """Prompt the code-writing model for one factor.
+
+    `columns` is REQUIRED and has no default on purpose. The first real ideation
+    run buried 11 of 20 hypotheses in forge, and the sandbox tracebacks named the
+    cause: KeyError 'open_interest', KeyError 'stablecoin_supply'. Neither column
+    exists -- the panel carries oi_z/oi_mom/oi_change_24h and
+    stablecoin_supply_z. The prompt described the hypothesis in prose ("short
+    when OI rises") and never said what df actually holds, so the model had no
+    way to know the real names and guessed.
+
+    That also explains why the repair loop could not converge: 6 of those 11 died
+    as "LLM repeated identical code". Feeding back KeyError 'open_interest'
+    without a column list asks the model to fix a name it still cannot see, so it
+    re-emitted the same code and seen_shas buried it. The feedback was
+    unactionable, not ignored.
+
+    A default of None here would let a future caller silently reintroduce exactly
+    that bug, so there isn't one.
+    """
     # agy 5b: feed back the previous CODE as well as the error, else the LLM
     # cannot tell which lines failed and re-emits the same mistake.
     repair = "" if not prior_error else (
         f"\nYour previous code:\n```python\n{prior_code or ''}\n```\n"
         f"failed with:\n{prior_error}\nFix it.")
-    return _PROMPT.format(desc=hypothesis.description, repair=repair)
+    return _PROMPT.format(desc=hypothesis.description, repair=repair,
+                          columns="\n".join(f"- {c}" for c in columns))
 
 
 def extract_code(response: str) -> str:
@@ -165,7 +191,11 @@ def forge(hypothesis: Hypothesis, llm: LLMCoder, run_sandbox, panel,
     for attempt in range(1, max_retries + 1):
         if budget is not None:
             budget.charge_call()          # trips BEFORE spending the call; propagates
-        prompt = build_prompt(hypothesis, prior_code, prior_error)
+        # panel.columns, not the idea's declared `fields`: forge already holds the
+        # real frame, so this is the ground truth the sandbox will actually see,
+        # and it covers every source (zoo/derived/academic/llm) uniformly rather
+        # than only the ones that carry a declaration.
+        prompt = build_prompt(hypothesis, panel.columns, prior_code, prior_error)
         code = extract_code(llm.complete(prompt))
         last_code = code                             # agy 5c: keep even if this attempt fails
         code_sha = hashlib.sha256(code.encode()).hexdigest()
