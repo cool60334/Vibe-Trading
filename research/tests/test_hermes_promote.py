@@ -70,15 +70,35 @@ def test_promote_refuses_a_strategy_depending_on_a_foundry_factor():
     # stale immediately and pause the trader. Refuse, don't dead-end.
     from research.hermes.promote import assert_promotable_factor_names, PromoteRefused
 
-    assert_promotable_factor_names(["funding_z", "basis_rel"])      # library-only: fine
+    assert_promotable_factor_names(["funding_z", "basis_rel"], "eth")      # library-only: fine
 
     with pytest.raises(PromoteRefused, match="foundry_zoo_mom"):
-        assert_promotable_factor_names(["funding_z", "foundry_zoo_mom"])
+        assert_promotable_factor_names(["funding_z", "foundry_zoo_mom"], "eth")
 
 
 def test_promote_candidate_refuses_foundry_factor_early(tmp_path):
     # The guard fires BEFORE evidence card / candidate parquet checks, so even
     # with an empty manifests_dir (no fixtures), promotion of a foundry_ factor
     # is refused immediately with a clear error message.
-    with pytest.raises(PromoteRefused, match="strategy depends on Foundry factor"):
+    with pytest.raises(PromoteRefused, match="strategy depends on non-inducted Foundry factor"):
         promote_candidate("foundry_zoo_mom", "eth", manifests_dir=tmp_path, confirm=True)
+
+
+def test_promote_guard_allows_an_inducted_factor_for_that_symbol(tmp_path, monkeypatch):
+    import pytest
+    from research.hermes import promote as pm
+    from research.hermes.promote import assert_promotable_factor_names, PromoteRefused
+
+    # eth has foundry_x inducted; btc does not
+    from research.lib.inducted_factors import inducted_dir
+    d = inducted_dir("eth", root=tmp_path); d.mkdir(parents=True)
+    (d / "foundry_x.py").write_text("def compute(df):\n    return df['close']\n", encoding="utf-8")
+    (d / "foundry_x.meta.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(pm, "inducted_names",
+                        lambda symbol: __import__("research.lib.inducted_factors",
+                        fromlist=["inducted_names"]).inducted_names(symbol, root=tmp_path))
+
+    assert_promotable_factor_names(["funding_z", "foundry_x"], "eth")     # inducted -> allowed
+
+    with pytest.raises(PromoteRefused, match="foundry_x"):
+        assert_promotable_factor_names(["foundry_x"], "btc")             # not inducted for btc

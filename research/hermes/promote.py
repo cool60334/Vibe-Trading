@@ -30,6 +30,7 @@ from research.hermes.foundry_bridge import FOUNDRY_PREFIX
 from research.lib.factor_io import (
     append_feature_column, load_features_meta, _default_manifests_dir, _symbol_short,
 )
+from research.lib.inducted_factors import inducted_names
 from research.lib.research_ledger import append_event
 
 
@@ -37,27 +38,18 @@ class PromoteRefused(HermesGuardError, RuntimeError):
     """Raised when a promotion is not allowed (no confirm / not a candidate / clash / missing)."""
 
 
-def assert_promotable_factor_names(names: list[str]) -> None:
-    """Refuse a strategy that depends on a Foundry factor.
-
-    The bridge makes Foundry factors available to RESEARCH only. Production
-    factor values are recomputed periodically from the FACTOR LIBRARY's code
-    (scripts/refresh_factors.sh -> factor_values_<sym>.parquet, read by the live
-    trader). A forged Foundry factor's code is not in that library, so once
-    promoted its values would never refresh: the trader would trip its
-    `factor data stale:` guard and pause.
-
-    Promoting the factor's CODE into the production library is a separate piece
-    of work; until it exists, this refuses loudly instead of letting a selected
-    strategy dead-end at deployment.
-    """
-    offenders = [n for n in names if str(n).startswith(FOUNDRY_PREFIX)]
+def assert_promotable_factor_names(names, symbol) -> None:
+    """Refuse a strategy that depends on a Foundry factor NOT yet inducted for
+    this symbol. An inducted factor's code is in the production library, so the
+    trader can recompute it -> the strategy is safe to deploy."""
+    inducted = inducted_names(symbol)
+    offenders = [n for n in names
+                 if str(n).startswith(FOUNDRY_PREFIX) and n not in inducted]
     if offenders:
         raise PromoteRefused(
-            f"strategy depends on Foundry factor(s) {offenders}: their code is not in "
-            "the production factor library, so production could never refresh them "
-            "(the trader would pause on stale factor data). Promote the factor CODE "
-            "into the production feature path first."
+            f"strategy depends on non-inducted Foundry factor(s) {offenders} for "
+            f"{symbol}: induct them first (research.hermes.induct) so production "
+            "can recompute them, or the trader would pause on stale factor data."
         )
 
 
@@ -80,7 +72,7 @@ def promote_candidate(factor_id: str, symbol: str, manifests_dir=None,
     # agy #1: resolve default BEFORE any Path(manifests_dir) — Path(None) crashes.
     mdir = Path(manifests_dir) if manifests_dir is not None else _default_manifests_dir()
 
-    assert_promotable_factor_names([factor_id])
+    assert_promotable_factor_names([factor_id], symbol)
 
     cards = {c.factor_id: c for c in load_cards(symbol, mdir)}
     card = cards.get(factor_id)
