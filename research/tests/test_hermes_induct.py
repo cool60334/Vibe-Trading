@@ -87,3 +87,21 @@ def test_revalidate_fails_closed_no_candidate_parquet(tmp_path, monkeypatch):
     with pytest.raises(InductRefused, match="no stored candidate|cannot verify"):
         revalidate("code", "foundry_x", "eth", panel,
                    lambda c, p: series, "2024-11-03", tmp_path)
+
+
+def test_revalidate_fails_closed_missing_factor_column(tmp_path, monkeypatch):
+    """Fail-closed: refuse induction when factor_id is not a column in the
+    stored candidate parquet, even if determinism passes."""
+    panel = _panel()
+    monkeypatch.setattr("research.hermes.induct.pit_check_via_sandbox", lambda *a, **k: None)
+    # run_sandbox returns the SAME series both times -> determinism passes
+    series = pd.Series(np.arange(120.0), index=panel.index)
+    # Write a candidate parquet with a different factor column (not "foundry_x")
+    oos = "2024-11-03"
+    pre = panel.index < pd.Timestamp(oos, tz="UTC")
+    cand = pd.DataFrame({"some_other_factor": pd.Series(np.arange(120.0), index=panel.index)[pre]})
+    from research.hermes.candidate_store import _candidate_path
+    p = _candidate_path("eth", tmp_path); p.parent.mkdir(parents=True, exist_ok=True); cand.to_parquet(p)
+    with pytest.raises(InductRefused, match="is not a column|cannot verify path-consistency"):
+        revalidate("code", "foundry_x", "eth", panel,
+                   lambda c, p: series, oos, tmp_path)
