@@ -189,3 +189,102 @@ def test_write_induction_normalizes_symbol_consistently(tmp_path):
     test_src = (tmp_path / "t" / "test_foundry_y.py").read_text(encoding="utf-8")
     assert f"_SYM = {normalized!r}" in test_src
     assert f"_SYM = {raw_symbol!r}" not in test_src
+
+
+# --- main() end-to-end: the CLI glue (arg wiring, join, gate ordering,
+# --confirm/--overwrite threading, the broadened except) was previously only
+# smoke-tested via --help. verify_gates/revalidate's own logic is already
+# covered above, so these tests stub them out and focus purely on main()'s
+# own orchestration.
+
+def _panel_idx(n=5):
+    return pd.date_range("2024-06-01", periods=n, freq="1h", tz="UTC")
+
+
+def _stub_main_infra(monkeypatch, idx):
+    """Stub every lazily-imported dependency main() wires together, so a call
+    reaches the confirm-gate / write path without touching Docker, the
+    network, or any real file outside tmp_path."""
+    import research.lib.factor_io as factor_io
+    import research.hermes.foundry_runner as foundry_runner
+    import research.hermes.sandbox as sandbox_mod
+    import research.hermes.orchestrator as orchestrator
+
+    # features and ohlcv must not share columns, mirroring production (feature
+    # store columns vs. raw OHLCV) -- .join() raises on overlapping columns.
+    features = pd.DataFrame({"some_factor": np.arange(len(idx), dtype=float)}, index=idx)
+    ohlcv = pd.DataFrame({"close": np.arange(len(idx), dtype=float)}, index=idx)
+    monkeypatch.setattr(factor_io, "load_features", lambda symbol, manifests_dir=None, **k: features)
+    monkeypatch.setattr(foundry_runner, "load_ohlcv", lambda path: ohlcv.copy())
+    monkeypatch.setattr(foundry_runner, "resolve_image_id", lambda tag: "fake-image-id")
+
+    class _DummySandbox:
+        def __init__(self, **kwargs):
+            pass
+    monkeypatch.setattr(sandbox_mod, "DockerSandbox", _DummySandbox)
+    monkeypatch.setattr(orchestrator, "make_run_sandbox",
+                        lambda sandbox, scratch_dir: (lambda code, panel: panel["close"]))
+
+
+def test_main_refuses_without_confirm(tmp_path, monkeypatch, capsys):
+    idx = _panel_idx()
+    _stub_main_infra(monkeypatch, idx)
+    monkeypatch.setattr(ind, "verify_gates", lambda factor_id, symbol, mdir: "def compute(df):\n    return df['close']\n")
+    monkeypatch.setattr(ind, "revalidate", lambda *a, **k: None)
+    write_calls = []
+    monkeypatch.setattr(ind, "write_induction", lambda *a, **k: write_calls.append((a, k)))
+
+    rc = ind.main(["--symbol", "eth", "--factor", "foundry_x",
+                   "--manifests-dir", str(tmp_path), "--oos-start", "2024-06-02"])
+
+    assert rc == 2
+    assert write_calls == []  # confirm-gate: no write without --confirm
+    out = capsys.readouterr().out
+    assert "Re-run with --confirm" in out
+
+
+def test_main_writes_with_confirm(tmp_path, monkeypatch, capsys):
+    idx = _panel_idx()
+    _stub_main_infra(monkeypatch, idx)
+    monkeypatch.setattr(ind, "verify_gates", lambda factor_id, symbol, mdir: "def compute(df):\n    return df['close']\n")
+    revalidate_calls = []
+    monkeypatch.setattr(ind, "revalidate", lambda *a, **k: revalidate_calls.append((a, k)))
+    write_calls = []
+    monkeypatch.setattr(ind, "write_induction", lambda *a, **k: write_calls.append((a, k)))
+
+    rc = ind.main(["--symbol", "eth", "--factor", "foundry_x",
+                   "--manifests-dir", str(tmp_path), "--oos-start", "2024-06-02",
+                   "--confirm", "--overwrite"])
+
+    assert rc == 0
+    assert len(write_calls) == 1
+    args, kwargs = write_calls[0]
+    # code, factor_id, symbol, fixture, expected positional args + overwrite kwarg threaded through
+    assert args[0] == "def compute(df):\n    return df['close']\n"
+    assert args[1] == "foundry_x"
+    assert args[2] == "eth"
+    assert kwargs.get("overwrite") is True
+    assert len(revalidate_calls) == 1
+    out = capsys.readouterr().out
+    assert "inducted" in out
+
+
+def test_main_broadened_except_catches_infra_failure_cleanly(tmp_path, monkeypatch, capsys):
+    """A Docker/infra failure (SandboxError, a HermesGuardError subclass) must
+    produce a clean [induct] REFUSED: message and exit 2, not a raw traceback."""
+    from research.hermes.sandbox import SandboxError
+    idx = _panel_idx()
+    _stub_main_infra(monkeypatch, idx)
+    import research.hermes.foundry_runner as foundry_runner
+    def _boom(tag):
+        raise SandboxError(f"sandbox image {tag!r} does not resolve on this host")
+    monkeypatch.setattr(foundry_runner, "resolve_image_id", _boom)
+    monkeypatch.setattr(ind, "verify_gates", lambda factor_id, symbol, mdir: "def compute(df):\n    return df['close']\n")
+
+    rc = ind.main(["--symbol", "eth", "--factor", "foundry_x",
+                   "--manifests-dir", str(tmp_path), "--oos-start", "2024-06-02", "--confirm"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "[induct] REFUSED:" in err
+    assert "does not resolve on this host" in err
