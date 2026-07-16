@@ -33,3 +33,51 @@ def inducted_names(symbol: str, root=None) -> set:
         return set()
     return {p.stem for p in d.glob("*.py")
             if p.stem != "__init__" and (d / f"{p.stem}.meta.json").exists()}
+
+
+import importlib.util
+import logging
+import os
+
+log = logging.getLogger(__name__)
+
+
+def _blacklisted() -> set:
+    p = os.environ.get("INDUCTED_BLACKLIST_FILE", str(_REPO_ROOT / "runs" / "inducted_blacklist.txt"))
+    path = Path(p)
+    if not path.exists():
+        return set()
+    return {ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()}
+
+
+def _load_compute(symbol: str, factor_id: str, path: Path):
+    # A globally-unique module name -> no sys.modules cache clobber across
+    # symbols, and each module is its own namespace (helpers can't collide).
+    name = f"inducted_{_symbol_short(symbol)}_{factor_id}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.compute
+
+
+def compute_inducted(panel, symbol: str, root=None) -> dict:
+    """Compute every inducted factor for `symbol` over the full-library `panel`.
+
+    Soft-fails per factor: a factor that raises (e.g. a missing column) is
+    dropped with a log line -- it must never break stage0a's daily batch. A
+    blacklisted factor (hot kill-switch) is skipped entirely.
+    """
+    d = inducted_dir(symbol, root=root)
+    black = _blacklisted()
+    out: dict = {}
+    for fid in sorted(inducted_names(symbol, root=root)):
+        if fid in black:
+            log.warning("inducted factor %s is blacklisted (kill-switch); skipping", fid)
+            continue
+        try:
+            compute = _load_compute(symbol, fid, d / f"{fid}.py")
+            series = compute(panel)
+            out[fid] = series.reindex(panel.index) if hasattr(series, "reindex") else series
+        except Exception as exc:                    # noqa: BLE001 - soft-fail, never break the batch
+            log.error("inducted factor %s failed (%s); dropping for this run", fid, exc)
+    return out
