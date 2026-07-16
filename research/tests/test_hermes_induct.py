@@ -1,7 +1,8 @@
 import hashlib, json
+import numpy as np, pandas as pd
 import pytest
 from research.hermes import induct as ind
-from research.hermes.induct import verify_gates, InductRefused
+from research.hermes.induct import verify_gates, InductRefused, revalidate
 from research.hermes.candidate_store import write_candidate_code
 
 
@@ -44,3 +45,33 @@ def test_verify_gates_refuses_unsafe_ast(tmp_path, monkeypatch):
     monkeypatch.setattr(ind, "load_cards", lambda s, d: [_card("foundry_x")])
     with pytest.raises(InductRefused, match="AST|import"):
         verify_gates("foundry_x", "eth", tmp_path)
+
+
+def _panel(n=120, start="2024-11-01"):
+    idx = pd.date_range(start, periods=n, freq="1h", tz="UTC")
+    return pd.DataFrame({"close": np.arange(float(n))}, index=idx)
+
+
+def test_revalidate_refuses_non_deterministic(tmp_path, monkeypatch):
+    panel = _panel()
+    # run_sandbox returns a DIFFERENT series each call -> non-deterministic
+    seq = iter([pd.Series(np.arange(120.0), index=panel.index),
+                pd.Series(np.arange(120.0) + 1, index=panel.index)])
+    monkeypatch.setattr("research.hermes.induct.pit_check_via_sandbox", lambda *a, **k: None)
+    with pytest.raises(InductRefused, match="determinism|deterministic"):
+        revalidate("code", "foundry_x", "eth", panel,
+                   lambda c, p: next(seq), "2024-11-03", tmp_path)
+
+
+def test_revalidate_refuses_bridge_divergence(tmp_path, monkeypatch):
+    panel = _panel()
+    monkeypatch.setattr("research.hermes.induct.pit_check_via_sandbox", lambda *a, **k: None)
+    # stored cand values differ from the recompute -> diverges
+    oos = "2024-11-03"
+    pre = panel.index < pd.Timestamp(oos, tz="UTC")
+    cand = pd.DataFrame({"foundry_x": pd.Series(np.arange(120.0) + 999, index=panel.index)[pre]})
+    from research.hermes.candidate_store import _candidate_path
+    p = _candidate_path("eth", tmp_path); p.parent.mkdir(parents=True, exist_ok=True); cand.to_parquet(p)
+    with pytest.raises(InductRefused, match="diverge|reconcile"):
+        revalidate("code", "foundry_x", "eth", panel,
+                   lambda c, p2: pd.Series(np.arange(120.0), index=panel.index), oos, tmp_path)

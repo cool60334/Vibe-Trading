@@ -7,12 +7,16 @@ research.hermes.__init__; it runs only when a human invokes it.
 from __future__ import annotations
 
 import hashlib
+import pandas as pd
 
-from research.hermes.candidate_store import load_candidate_code
+from research.hermes.candidate_store import load_candidate_code, _candidate_path
 from research.hermes.errors import HermesGuardError
 from research.hermes.evidence_card import VERDICT_CANDIDATE
 from research.hermes.evidence_store import load_cards
 from research.hermes.sandbox_ast import check_source, UnsafeCodeError
+from research.hermes.foundry_bridge import recompute_full_span, reconciles_pre_oos
+from research.hermes.forge import pit_check_via_sandbox
+from research.hermes.pit import LookaheadError
 
 
 class InductRefused(HermesGuardError, RuntimeError):
@@ -38,3 +42,28 @@ def verify_gates(factor_id: str, symbol: str, manifests_dir) -> str:
     except UnsafeCodeError as exc:
         raise InductRefused(f"{symbol}:{factor_id} failed AST allowlist: {exc}") from exc
     return code
+
+
+def revalidate(code, factor_id, symbol, panel, run_sandbox, oos_start, manifests_dir) -> None:
+    """The heavy re-validation gates. Raises InductRefused on any failure.
+      - full-span PIT re-check (no future leak in the non-sandboxed prod path)
+      - determinism (compute twice -> identical; catches leaked RNG/global state)
+      - path-consistency (recompute's pre-oos == the values Foundry stored, i.e.
+        what the strategy was backtested on -> live matches the backtest)."""
+    first = recompute_full_span(code, panel, run_sandbox)
+    try:
+        pit_check_via_sandbox(code, panel, first, run_sandbox)
+    except LookaheadError as exc:
+        raise InductRefused(f"{symbol}:{factor_id} peeks into the future: {exc}") from exc
+
+    second = recompute_full_span(code, panel, run_sandbox)
+    if not first.equals(second):
+        raise InductRefused(f"{symbol}:{factor_id} is non-deterministic (compute twice differs)")
+
+    cand_path = _candidate_path(symbol, manifests_dir)
+    if cand_path.exists():
+        stored = pd.read_parquet(cand_path)
+        if factor_id in stored.columns and not reconciles_pre_oos(first, stored[factor_id], oos_start):
+            raise InductRefused(
+                f"{symbol}:{factor_id} recompute diverges from the stored Foundry values "
+                "(the strategy's backtest would not match live); refusing to induct")
