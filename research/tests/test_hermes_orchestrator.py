@@ -912,3 +912,50 @@ def test_run_foundry_only_offers_documented_panel_columns(foundry_env, monkeypat
     monkeypatch.setattr(orch, "generate_ideas", fake_generate)
     run_foundry(**foundry_env)
     assert seen["cols"] == ["funding_z"]          # the stale column was never offered to the LLM
+
+
+# ── job params -> sources passthrough ───────────────────────────────────────
+#
+# run_foundry_job hardcoded no `sources` kwarg to run_foundry, so every queued
+# job silently fell back to run_foundry's own default (llm-only). Re-running
+# zoo (or any other combination) as a control required editing code instead of
+# enqueueing a job with params["sources"] set -- this wires that override
+# through, the same dependency-injection path oos_start/ohlcv already use.
+
+@pytest.fixture
+def job_env(tmp_path):
+    """kwargs for run_foundry_job(**job_env): a queued job.json (oos_start set,
+    per the OOS-lock contract) plus the object()/None stand-ins the existing
+    reconcile tests (test_enqueue_writes_job_and_runner_reconciles et al.)
+    already use for llm/sandbox/ohlcv."""
+    from research.hermes.orchestrator import enqueue_foundry_job
+    job_path = enqueue_foundry_job("eth", runs_dir=tmp_path,
+                                   params={"interval": "1D", "horizon_h": 24,
+                                           "oos_start": _TEST_OOS})
+    return dict(job_path=job_path, manifests_dir=tmp_path, llm=object(),
+               sandbox=object(), zoo_dir=tmp_path, ohlcv=None)
+
+
+def test_run_foundry_job_defaults_to_llm_only(tmp_path, monkeypatch, job_env):
+    import research.hermes.orchestrator as orch
+    seen = {}
+    monkeypatch.setattr(orch, "run_foundry",
+                        lambda *a, **kw: seen.update(kw) or {"candidate": 0})
+    orch.run_foundry_job(**job_env)
+    assert seen["sources"] == frozenset({"llm"})
+
+
+def test_run_foundry_job_honours_an_explicit_sources_list(tmp_path, monkeypatch, job_env):
+    """重跑 zoo 當對照組：enqueue params.sources=["llm","zoo"]，不必改碼。"""
+    import json
+    from pathlib import Path
+    import research.hermes.orchestrator as orch
+    job = json.loads(Path(job_env["job_path"]).read_text(encoding="utf-8"))
+    job["params"]["sources"] = ["llm", "zoo"]
+    Path(job_env["job_path"]).write_text(json.dumps(job), encoding="utf-8")
+
+    seen = {}
+    monkeypatch.setattr(orch, "run_foundry",
+                        lambda *a, **kw: seen.update(kw) or {"candidate": 0})
+    orch.run_foundry_job(**job_env)
+    assert seen["sources"] == frozenset({"llm", "zoo"})

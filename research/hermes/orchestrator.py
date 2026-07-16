@@ -481,7 +481,10 @@ def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, ohlcv, budge
         summary = run_foundry(job["symbol"], manifests_dir, cfg, llm, sandbox,
                               budget or Budget(), zoo_dir=zoo_dir, ohlcv=ohlcv,
                               oos_start=p["oos_start"], val_frac=p.get("val_frac", 0.2),
-                              forge_budget=forge_budget, pause_file=pause_file)
+                              forge_budget=forge_budget, pause_file=pause_file,
+                              # Per-job override of the enabled sources. Re-running
+                              # zoo as a control is an enqueue, not a code change.
+                              sources=frozenset(p.get("sources", DEFAULT_SOURCES)))
     except Exception as e:
         job["status"] = "failed"; job["error"] = str(e); job["finished_at"] = _now()
         _write_job_json(job_path, job)
