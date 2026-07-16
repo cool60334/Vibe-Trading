@@ -39,6 +39,8 @@ import importlib.util
 import logging
 import os
 
+import pandas as pd
+
 log = logging.getLogger(__name__)
 
 
@@ -79,5 +81,6 @@ def compute_inducted(panel, symbol: str, root=None) -> dict:
             series = compute(panel)
             out[fid] = series.reindex(panel.index) if hasattr(series, "reindex") else series
         except Exception as exc:                    # noqa: BLE001 - soft-fail, never break the batch
-            log.error("inducted factor %s failed (%s); dropping for this run", fid, exc)
+            log.error("inducted factor %s failed (%s); NaN-filling for this run", fid, exc)
+            out[fid] = pd.Series(float("nan"), index=panel.index)
     return out

@@ -26,7 +26,9 @@ def test_compute_inducted_soft_fails_a_raising_factor(tmp_path):
     _seed(tmp_path, "eth", "foundry_ok", "def compute(df):\n    return df['close']\n")
     _seed(tmp_path, "eth", "foundry_bad", "def compute(df):\n    return df['missing_col']\n")
     out = compute_inducted(_panel(), "eth", root=tmp_path)
-    assert "foundry_ok" in out and "foundry_bad" not in out       # bad one dropped, good one survived
+    assert "foundry_ok" in out
+    assert "foundry_bad" in out
+    assert out["foundry_bad"].isna().all()
 
 
 def test_compute_inducted_honours_kill_switch(tmp_path, monkeypatch):
