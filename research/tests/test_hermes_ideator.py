@@ -184,3 +184,119 @@ def test_validate_rejects_non_list_fields():
         [{"id": "a", "description": "d", "fields": "funding_z"}], _PANEL)
     assert accepted == []
     assert "list" in rejected[0]["reason"]
+
+
+from research.hermes.forge import BudgetExhausted, ForgeBudget
+from research.hermes.ideator import build_ideation_prompt, generate_ideas
+
+_SCHEMA = {
+    "funding_z": {"what": "rolling z of funding", "positive": "funding high",
+                  "notes": "z-score transform already taken"},
+    "oi_z": {"what": "rolling z of OI", "positive": "OI high", "notes": "n"},
+}
+
+
+class FakeLLM:
+    """CI 絕不呼叫付費 API。"""
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.prompts = []
+
+    def complete(self, prompt):
+        self.prompts.append(prompt)
+        return self.responses.pop(0) if self.responses else "{}"
+
+
+_GOOD = '```json\n[{"id": "fz_oi", "description": "short when funding high and OI falling", "fields": ["funding_z", "oi_z"]}]\n```'
+
+
+def test_prompt_contains_every_schema_field_with_its_meaning():
+    p = build_ideation_prompt(_SCHEMA, [], 5)
+    for col, entry in _SCHEMA.items():
+        assert col in p
+        assert entry["what"] in p
+        assert entry["positive"] in p
+
+
+def test_prompt_bans_monotonic_transforms():
+    """spec §3.2 結論 1：單調變換 Spearman 恆等於 1.0，是數學恆等式。"""
+    p = build_ideation_prompt(_SCHEMA, [], 5).lower()
+    assert "monotonic" in p
+    for banned in ("rank(", "log("):
+        assert banned in p
+
+
+def test_prompt_states_the_requested_idea_count():
+    assert "7" in build_ideation_prompt(_SCHEMA, [], 7)
+
+
+def test_prompt_includes_death_categories_but_no_numbers():
+    deaths = [{"formula": "funding_z * oi_z", "category": "redundant"}]
+    p = build_ideation_prompt(_SCHEMA, deaths, 5)
+    assert "funding_z * oi_z" in p
+    assert "redundant" in p
+
+
+def test_prompt_repair_variant_feeds_back_the_prior_error():
+    p = build_ideation_prompt(_SCHEMA, [], 5, prior_error="IdeationParseError: no JSON")
+    assert "IdeationParseError: no JSON" in p
+
+
+def test_generate_ideas_returns_validated_ideas():
+    llm = FakeLLM(_GOOD)
+    ideas, rejected, failure = generate_ideas(llm, _SCHEMA, [], n_ideas=5)
+    assert failure is None
+    assert [i["id"] for i in ideas] == ["fz_oi"]
+    assert rejected == []
+    assert len(llm.prompts) == 1
+
+
+def test_generate_ideas_reports_rejected_ideas_alongside_accepted():
+    """spec §6：淘汰要看得見，否則幻覺欄名的淘汰率無從觀測。"""
+    llm = FakeLLM('[{"id": "ok", "description": "d", "fields": ["funding_z"]},'
+                  ' {"id": "bad", "description": "d", "fields": ["liquidation_z"]}]')
+    ideas, rejected, failure = generate_ideas(llm, _SCHEMA, [], n_ideas=5)
+    assert failure is None
+    assert [i["id"] for i in ideas] == ["ok"]
+    assert rejected == [{"id": "bad", "reason": "unknown panel columns: ['liquidation_z']"}]
+
+
+def test_generate_ideas_validates_against_the_schema_keys_not_the_panel():
+    """schema 已被 reconcile_schema 收斂成 panel 交集，所以 schema keys 就是
+    ideator 能用的欄位全集。"""
+    llm = FakeLLM('[{"id": "x", "description": "d", "fields": ["not_a_column"]}]',
+                  '[{"id": "x", "description": "d", "fields": ["not_a_column"]}]')
+    ideas, rejected, failure = generate_ideas(llm, _SCHEMA, [], n_ideas=5)
+    assert ideas == []
+    assert failure is not None and "not_a_column" in failure
+    assert rejected[0]["id"] == "x"
+
+
+def test_generate_ideas_retries_once_on_bad_json_then_succeeds():
+    """LLM 不吐 fence 是已知高頻故障 —— 給 1 次重試 + 錯誤回饋。"""
+    llm = FakeLLM("抱歉，我無法完成。", _GOOD)
+    ideas, rejected, failure = generate_ideas(llm, _SCHEMA, [], n_ideas=5)
+    assert failure is None and len(ideas) == 1
+    assert len(llm.prompts) == 2
+    assert "IdeationParseError" in llm.prompts[1]
+
+
+def test_generate_ideas_gives_up_after_max_attempts():
+    llm = FakeLLM("nope", "still nope")
+    ideas, rejected, failure = generate_ideas(llm, _SCHEMA, [], n_ideas=5)
+    assert ideas == []
+    assert failure is not None and "IdeationParseError" in failure
+    assert len(llm.prompts) == 2
+
+
+def test_generate_ideas_charges_the_shared_forge_budget():
+    budget = ForgeBudget(max_llm_calls=5)
+    generate_ideas(FakeLLM(_GOOD), _SCHEMA, [], n_ideas=5, budget=budget)
+    assert budget.used == 1
+
+
+def test_generate_ideas_propagates_budget_exhausted():
+    """預算耗盡是基礎設施耗盡，不是 ideation 失敗 —— 必須往外拋。"""
+    budget = ForgeBudget(max_llm_calls=0)
+    with pytest.raises(BudgetExhausted):
+        generate_ideas(FakeLLM(_GOOD), _SCHEMA, [], n_ideas=5, budget=budget)
