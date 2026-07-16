@@ -80,7 +80,7 @@ def test_promote_candidate_refuses_foundry_factor_early(tmp_path):
     # The guard fires BEFORE evidence card / candidate parquet checks, so even
     # with an empty manifests_dir (no fixtures), promotion of a foundry_ factor
     # is refused immediately with a clear error message.
-    with pytest.raises(PromoteRefused, match="strategy depends on non-inducted Foundry factor"):
+    with pytest.raises(PromoteRefused, match="strategy depends on non-inducted or blacklisted Foundry factor"):
         promote_candidate("foundry_zoo_mom", "eth", manifests_dir=tmp_path, confirm=True)
 
 
@@ -102,3 +102,25 @@ def test_promote_guard_allows_an_inducted_factor_for_that_symbol(tmp_path, monke
 
     with pytest.raises(PromoteRefused, match="foundry_x"):
         assert_promotable_factor_names(["foundry_x"], "btc")             # not inducted for btc
+
+
+def test_promote_guard_refuses_a_blacklisted_inducted_factor(tmp_path, monkeypatch):
+    # An inducted-but-blacklisted (emergency kill-switch) factor is NaN-filled
+    # daily by stage0a -- a strategy depending on it must not pass promotion,
+    # or the trader deploys on an all-NaN signal.
+    from research.hermes import promote as pm
+    from research.hermes.promote import assert_promotable_factor_names, PromoteRefused
+    from research.lib.inducted_factors import inducted_dir
+
+    d = inducted_dir("eth", root=tmp_path); d.mkdir(parents=True)
+    (d / "foundry_x.py").write_text("def compute(df):\n    return df['close']\n", encoding="utf-8")
+    (d / "foundry_x.meta.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(pm, "inducted_names",
+                        lambda symbol: __import__("research.lib.inducted_factors",
+                        fromlist=["inducted_names"]).inducted_names(symbol, root=tmp_path))
+
+    bl = tmp_path / "bl.txt"; bl.write_text("foundry_x\n", encoding="utf-8")
+    monkeypatch.setenv("INDUCTED_BLACKLIST_FILE", str(bl))
+
+    with pytest.raises(PromoteRefused, match="foundry_x"):
+        assert_promotable_factor_names(["foundry_x"], "eth")             # inducted but blacklisted

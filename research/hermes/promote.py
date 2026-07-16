@@ -30,7 +30,7 @@ from research.hermes.foundry_bridge import FOUNDRY_PREFIX
 from research.lib.factor_io import (
     append_feature_column, load_features_meta, _default_manifests_dir, _symbol_short,
 )
-from research.lib.inducted_factors import inducted_names
+from research.lib.inducted_factors import inducted_names, _blacklisted
 from research.lib.research_ledger import append_event
 
 
@@ -40,16 +40,21 @@ class PromoteRefused(HermesGuardError, RuntimeError):
 
 def assert_promotable_factor_names(names, symbol) -> None:
     """Refuse a strategy that depends on a Foundry factor NOT yet inducted for
-    this symbol. An inducted factor's code is in the production library, so the
-    trader can recompute it -> the strategy is safe to deploy."""
+    this symbol, or on one that IS inducted but currently kill-switch
+    blacklisted. An inducted factor's code is in the production library, so
+    the trader can recompute it -> the strategy is safe to deploy -- unless
+    it's blacklisted, in which case stage0a NaN-fills it daily and a strategy
+    depending on it would deploy on an all-NaN signal."""
     inducted = inducted_names(symbol)
+    blacklisted = _blacklisted()
     offenders = [n for n in names
-                 if str(n).startswith(FOUNDRY_PREFIX) and n not in inducted]
+                 if str(n).startswith(FOUNDRY_PREFIX) and (n not in inducted or n in blacklisted)]
     if offenders:
         raise PromoteRefused(
-            f"strategy depends on non-inducted Foundry factor(s) {offenders} for "
-            f"{symbol}: induct them first (research.hermes.induct) so production "
-            "can recompute them, or the trader would pause on stale factor data."
+            f"strategy depends on non-inducted or blacklisted Foundry factor(s) "
+            f"{offenders} for {symbol}: induct them first (research.hermes.induct) "
+            "so production can recompute them, or the trader would pause/deploy "
+            "on stale or NaN factor data."
         )
 
 
