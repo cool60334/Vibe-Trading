@@ -143,3 +143,38 @@ def test_write_induction_refuses_overwrite_without_flag(tmp_path):
                     root=tmp_path, tests_root=tmp_path / "t", overwrite=True)
     d = inducted_dir("eth", root=tmp_path)
     assert (d / "foundry_x.py").read_text(encoding="utf-8") == new_code
+
+
+def test_write_induction_normalizes_symbol_consistently(tmp_path):
+    """Regression (final-review Important finding): write_induction() must write
+    the module under the NORMALIZED symbol dir (inducted_dir's _symbol_short),
+    and the generated golden test's _SYM / mod_path must reference that same
+    normalized value -- not the raw, un-normalized `symbol` argument. Before the
+    fix, passing "ETH" wrote the module to inducted/eth/ (normalized) but baked
+    _SYM='ETH' into the golden test, so its mod_path pointed at inducted/ETH/
+    -- a directory that doesn't exist on a case-sensitive filesystem."""
+    code = "def compute(df):\n    return df['close']\n"
+    fixture = _panel(6)
+    expected = fixture["close"]
+    raw_symbol = "ETH"
+
+    write_induction(code, "foundry_y", raw_symbol, fixture, expected,
+                    root=tmp_path, tests_root=tmp_path / "t")
+
+    normalized = inducted_dir(raw_symbol, root=tmp_path).name
+    assert normalized == "eth"  # sanity: this symbol DOES change under normalization
+
+    # Module was written under the normalized dir, not a raw "ETH" dir.
+    d = inducted_dir(raw_symbol, root=tmp_path)
+    assert (d / "foundry_y.py").exists()
+    assert not (tmp_path / "ETH").exists()
+
+    # .meta.json's "symbol" field is the normalized value.
+    meta = json.loads((d / "foundry_y.meta.json").read_text(encoding="utf-8"))
+    assert meta["symbol"] == normalized
+
+    # The generated golden test's _SYM matches the normalized value (and thus
+    # its mod_path agrees with where the module actually landed).
+    test_src = (tmp_path / "t" / "test_foundry_y.py").read_text(encoding="utf-8")
+    assert f"_SYM = {normalized!r}" in test_src
+    assert f"_SYM = {raw_symbol!r}" not in test_src

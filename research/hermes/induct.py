@@ -92,9 +92,15 @@ def write_induction(code, factor_id, symbol, fixture, expected, root=None, tests
             f"{symbol}:{factor_id} already inducted; pass --overwrite to replace"
         )
     d = inducted_dir(symbol, root=root); d.mkdir(parents=True, exist_ok=True)
+    # inducted_dir() normalizes symbol via inducted_factors._symbol_short (e.g.
+    # "ETH" / "ETH/USDT" -> "eth"). d.name IS that normalized value -- reuse it
+    # (rather than re-import the private helper) so the module dir, .meta.json,
+    # and the golden test's _SYM/mod_path all agree, even off the repo's
+    # current already-short symbol convention.
+    sym = d.name
     (d / f"{factor_id}.py").write_text(code, encoding="utf-8")
     (d / f"{factor_id}.meta.json").write_text(json.dumps({
-        "factor_id": factor_id, "symbol": symbol,
+        "factor_id": factor_id, "symbol": sym,
         "code_sha256": hashlib.sha256(code.encode()).hexdigest(),
         "inducted_at": datetime.now(timezone.utc).isoformat(),
     }, indent=2), encoding="utf-8")
@@ -108,7 +114,7 @@ def write_induction(code, factor_id, symbol, fixture, expected, root=None, tests
         "import pandas as pd\n"
         "from pathlib import Path\n"
         "import importlib.util\n\n"
-        f"_ID = {factor_id!r}\n_SYM = {symbol!r}\n"
+        f"_ID = {factor_id!r}\n_SYM = {sym!r}\n"
         "_HERE = Path(__file__).resolve().parent\n\n"
         "def test_inducted_logic_unchanged():\n"
         "    fx = pd.read_parquet(_HERE / f'{_ID}_fixture.parquet')\n"
