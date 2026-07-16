@@ -1008,3 +1008,71 @@ def test_job_failure_records_the_traceback_not_just_the_message(tmp_path, monkey
     assert "ZeroDivisionError" in job["traceback"]
     assert "boom" in job["traceback"]           # names the frame that raised
     assert "orchestrator.py" in job["traceback"]
+
+
+def _iso_env(monkeypatch, exc):
+    """run_foundry wired so hypothesis #2 of 3 raises `exc` inside process_hypothesis."""
+    import research.hermes.orchestrator as orch
+    calls = []
+
+    def fake_process(hyp, *a, **kw):
+        calls.append(hyp.id)
+        if hyp.id == "llm_b":
+            raise exc
+        return orch.OUTCOME_REJECTED
+
+    monkeypatch.setattr(orch, "process_hypothesis", fake_process)
+    # distinct descriptions: dedupe() collapses on the description fingerprint, so
+    # three ideas all saying "d" would arrive at the sweep as a single hypothesis.
+    monkeypatch.setattr(orch, "generate_ideas", lambda *a, **k: (
+        [{"id": i, "description": f"hypothesis {i}", "fields": ["funding_z", "oi_z"]}
+         for i in "abc"],
+        [], None))
+    return calls
+
+
+def test_one_hypothesis_exception_does_not_kill_the_whole_run(foundry_env, monkeypatch):
+    """A single bad factor must not take the night's other 19 down with it.
+    The real run lost 20 hypotheses to one uncaught ZeroDivisionError."""
+    calls = _iso_env(monkeypatch, ZeroDivisionError("float division by zero"))
+    summary = run_foundry(**foundry_env)
+
+    assert calls == ["llm_a", "llm_b", "llm_c"], "the sweep stopped at the bad hypothesis"
+    assert summary["errored"] == 1
+    assert summary["rejected"] == 2
+
+
+def test_an_isolated_exception_keeps_its_traceback_visible(foundry_env, monkeypatch):
+    """Isolation must not become concealment: catching the error is only
+    legitimate if the evidence survives in full."""
+    _iso_env(monkeypatch, ZeroDivisionError("float division by zero"))
+    summary = run_foundry(**foundry_env)
+
+    errors = summary["errors"]
+    assert [e["factor_id"] for e in errors] == ["llm_b"]
+    assert "ZeroDivisionError" in errors[0]["traceback"]
+    assert "float division by zero" in errors[0]["traceback"]
+
+
+def test_isolated_exception_writes_a_graveyard_card_with_the_traceback(foundry_env, monkeypatch):
+    from research.hermes.evidence_store import load_cards
+    from research.hermes.evidence_card import VERDICT_GRAVEYARD
+
+    _iso_env(monkeypatch, ZeroDivisionError("float division by zero"))
+    run_foundry(**foundry_env)
+
+    card = [c for c in load_cards(foundry_env["symbol"], foundry_env["manifests_dir"])
+            if c.factor_id == "llm_b"][0]
+    assert card.verdict == VERDICT_GRAVEYARD
+    assert "ZeroDivisionError" in card.death_reason
+    assert "Traceback" in card.death_reason
+
+
+def test_infra_sandbox_error_still_aborts_the_run(foundry_env, monkeypatch):
+    """SandboxError (docker daemon down) is NOT a factor verdict. reconcile_foundry_jobs
+    relies on it propagating to abort the whole batch -- every later job hits the
+    same wall. Isolation must not swallow it."""
+    from research.hermes.sandbox import SandboxError
+    _iso_env(monkeypatch, SandboxError("docker daemon is down"))
+    with pytest.raises(SandboxError):
+        run_foundry(**foundry_env)

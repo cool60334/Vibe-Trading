@@ -27,7 +27,7 @@ from research.hermes.gatekeeper import evaluate, forward_returns, gross_ic, Gate
 from research.hermes.hypothesis import SOURCE_LLM
 from research.hermes.hypothesis_queue import DEFAULT_SOURCES, build_queue
 from research.hermes.ideator import generate_ideas, summarize_deaths
-from research.hermes.sandbox import SandboxExecutor
+from research.hermes.sandbox import SandboxError, SandboxExecutor
 from research.hermes.split import foundry_split
 from research.lib.factor_io import _atomic_to_parquet, _symbol_short, load_features
 from research.lib.research_ledger import append_event
@@ -45,6 +45,10 @@ MAX_FORGE_RETRIES = 3          # P5: bounded repair, then bury
 OUTCOME_FORGE_FAILED = "forge_failed"
 OUTCOME_CANDIDATE = "candidate"
 OUTCOME_REJECTED = "rejected"
+# Not a verdict about the factor: process_hypothesis itself blew up in a way
+# nobody anticipated. Kept distinct from forge_failed (the LLM's code was bad) so
+# a summary never launders our own bugs into "the idea didn't work".
+OUTCOME_ERRORED = "errored"
 
 
 def make_run_sandbox(sandbox: SandboxExecutor, scratch_dir: str | Path):
@@ -412,6 +416,7 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir=None, 
     outcomes: list = []
     budget_exhausted = False
     summary_paused = False
+    errors: list = []                 # {factor_id, traceback} for isolated faults
     # `existing` is captured once above and never updated per-iteration: a factor
     # that passes/fails mid-sweep is NOT deduped against by later factors in the
     # SAME run. Deliberate choice (plan Task 4) to keep the loop simple; same-night
@@ -433,12 +438,41 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir=None, 
                         symbol, exc, len(outcomes))
             budget_exhausted = True
             break
+        except SandboxError:
+            # infra, not a factor verdict: the daemon is down / the image is gone,
+            # so every later hypothesis hits the same wall. reconcile_foundry_jobs
+            # relies on this propagating to abort the whole batch — isolation below
+            # must never swallow it.
+            raise
+        except Exception as exc:                       # noqa: BLE001 — fault isolation
+            # One hypothesis must not take the night's other 19 with it. A real eth
+            # run lost all 20 to a single uncaught ZeroDivisionError: the loop only
+            # caught BudgetExhausted, so anything else killed run_foundry outright
+            # and job.json recorded one bare string.
+            #
+            # Isolation must not become concealment. The full traceback goes BOTH
+            # into the run summary and into the factor's graveyard card, so a
+            # caught error is strictly more visible than the crash it replaces --
+            # and diagnosable offline, without paying for another live run.
+            tb = traceback.format_exc()
+            log.exception("%s: %s raised an unexpected error; isolating it and "
+                          "continuing the sweep", symbol, hyp.id)
+            errors.append({"factor_id": hyp.id, "traceback": tb})
+            upsert_card(EvidenceCard(
+                factor_id=hyp.id, symbol=symbol, source=hyp.source, code_sha256="",
+                generated_at=_now(), trial_step=0, interval=cfg.interval,
+                formula=hyp.description, rationale=f"foundry {hyp.source}",
+                verdict=VERDICT_GRAVEYARD,
+                death_reason=f"unexpected {type(exc).__name__}: {exc}\n{tb}",
+            ), symbol, manifests_dir)
+            outcomes.append(OUTCOME_ERRORED)
         if should_early_stop(outcomes, budget):
             break
-    # seed all three outcome literals at 0 so callers/tests can always index
-    # summary["candidate"]/["rejected"]/["forge_failed"] without a KeyError,
-    # even on a night where one outcome never occurred.
-    summary = Counter({OUTCOME_FORGE_FAILED: 0, OUTCOME_CANDIDATE: 0, OUTCOME_REJECTED: 0})
+    # seed all four outcome literals at 0 so callers/tests can always index
+    # summary["candidate"]/["rejected"]/["forge_failed"]/["errored"] without a
+    # KeyError, even on a night where one outcome never occurred.
+    summary = Counter({OUTCOME_FORGE_FAILED: 0, OUTCOME_CANDIDATE: 0, OUTCOME_REJECTED: 0,
+                       OUTCOME_ERRORED: 0})
     summary.update(outcomes)
     summary = dict(summary)
     summary["llm_calls_used"] = forge_budget.used
@@ -448,6 +482,8 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir=None, 
     summary["features_range"] = [str(features.index.min()), str(features.index.max())]
     if summary_paused:
         summary["killswitch_paused"] = True
+    if errors:
+        summary["errors"] = errors
     summary["ideas_accepted"] = len(llm_raw)
     summary["ideas_rejected"] = ideas_rejected
     if ideation_failed:
