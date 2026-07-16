@@ -122,3 +122,65 @@ def test_parse_ideas_skips_a_markdown_checklists_false_empty_array():
     assert ideas == [
         {"id": "funding_vol", "description": "funding volatility",
          "fields": ["funding_rate_raw"]}]
+
+
+from research.hermes.ideator import validate_ideas
+
+_PANEL = ["funding_z", "oi_z", "toptrader_ls_z", "close", "volume"]
+
+
+def test_validate_accepts_a_well_formed_idea():
+    ideas = [{"id": "a", "description": "d", "fields": ["funding_z", "oi_z"]}]
+    accepted, rejected = validate_ideas(ideas, _PANEL)
+    assert accepted == ideas
+    assert rejected == []
+
+
+def test_validate_accepts_a_single_field_idea():
+    """spec §3.2：非單調的單欄時序變換（如 rolling_std(funding,168)）實測
+    max|spearman| 只有 0.617，過得了 0.7 閘。不可封殺。"""
+    ideas = [{"id": "fvol", "description": "rolling volatility of funding",
+              "fields": ["funding_z"]}]
+    accepted, rejected = validate_ideas(ideas, _PANEL)
+    assert len(accepted) == 1
+    assert rejected == []
+
+
+def test_validate_rejects_a_hallucinated_column():
+    """在花 3 次 forge call 撞 KeyError 之前就死。"""
+    ideas = [{"id": "bad", "description": "d", "fields": ["liquidation_z", "funding_z"]}]
+    accepted, rejected = validate_ideas(ideas, _PANEL)
+    assert accepted == []
+    assert rejected[0]["id"] == "bad"
+    assert "liquidation_z" in rejected[0]["reason"]
+
+
+def test_validate_rejects_missing_or_empty_fields():
+    accepted, rejected = validate_ideas(
+        [{"id": "nofields", "description": "d"},
+         {"id": "empty", "description": "d", "fields": []}], _PANEL)
+    assert accepted == []
+    assert {r["id"] for r in rejected} == {"nofields", "empty"}
+
+
+def test_validate_rejects_missing_id_or_description():
+    accepted, rejected = validate_ideas(
+        [{"description": "d", "fields": ["funding_z"]},
+         {"id": "nodesc", "fields": ["funding_z"]}], _PANEL)
+    assert accepted == []
+    assert len(rejected) == 2
+
+
+def test_validate_rejects_duplicate_ids():
+    ideas = [{"id": "dup", "description": "one", "fields": ["funding_z"]},
+             {"id": "dup", "description": "two", "fields": ["oi_z"]}]
+    accepted, rejected = validate_ideas(ideas, _PANEL)
+    assert len(accepted) == 1 and accepted[0]["description"] == "one"
+    assert rejected[0]["id"] == "dup"
+
+
+def test_validate_rejects_non_list_fields():
+    accepted, rejected = validate_ideas(
+        [{"id": "a", "description": "d", "fields": "funding_z"}], _PANEL)
+    assert accepted == []
+    assert "list" in rejected[0]["reason"]

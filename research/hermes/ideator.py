@@ -129,3 +129,54 @@ def parse_ideas(response: str) -> list:
     if not all(isinstance(x, dict) for x in value):
         raise IdeationParseError("every idea must be a JSON object")
     return value
+
+
+def validate_ideas(ideas: list, panel_columns) -> tuple:
+    """Deterministic pre-filter. Returns (accepted, rejected[{id, reason}]).
+
+    ONE substantive rule: every declared field must exist in the panel. A
+    hallucinated column (the LLM inventing `liquidation_z`) would otherwise cost
+    three forge calls before dying on a KeyError inside the sandbox. Killing it
+    here is purely about not paying for a certain failure.
+
+    There is deliberately NO "must span >= 2 columns" rule. That rule was
+    proposed on the premise that single-column transforms are always killed by
+    the 0.7 Spearman dedup gate -- which is only true for MONOTONIC transforms
+    (rank/global-zscore give Spearman exactly 1.0). Measured on real eth pre-oos
+    data, rolling_std(funding_rate_raw, 168) scores max |Spearman| 0.617 against
+    all 31 panel columns and passes the gate. Banning single-column ideas would
+    kill that whole class -- funding volatility is not in the panel and is
+    economically meaningful -- for a reason that does not exist.
+
+    Note this is an ADVISORY filter, not a guarantee: `fields` is what the LLM
+    DECLARED, while the code is written later by forge. A declaration of two
+    columns does not bind the code to use two. The real backstop is the gate.
+    """
+    cols = set(panel_columns)
+    accepted, rejected, seen = [], [], set()
+    for i, idea in enumerate(ideas):
+        fid = idea.get("id")
+        if not fid or not str(fid).strip():
+            rejected.append({"id": f"<index {i}>", "reason": "missing 'id'"})
+            continue
+        fid = str(fid)
+        if not str(idea.get("description", "")).strip():
+            rejected.append({"id": fid, "reason": "missing 'description'"})
+            continue
+        if fid in seen:
+            rejected.append({"id": fid, "reason": "duplicate id"})
+            continue
+        fields = idea.get("fields")
+        if not isinstance(fields, list):
+            rejected.append({"id": fid, "reason": "'fields' must be a list of panel columns"})
+            continue
+        if not fields:
+            rejected.append({"id": fid, "reason": "'fields' is empty"})
+            continue
+        unknown = sorted({str(f) for f in fields} - cols)
+        if unknown:
+            rejected.append({"id": fid, "reason": f"unknown panel columns: {unknown}"})
+            continue
+        seen.add(fid)
+        accepted.append(idea)
+    return accepted, rejected
