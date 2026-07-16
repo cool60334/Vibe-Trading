@@ -29,6 +29,7 @@ def test_compute_inducted_soft_fails_a_raising_factor(tmp_path):
     assert "foundry_ok" in out
     assert "foundry_bad" in out
     assert out["foundry_bad"].isna().all()
+    assert len(out["foundry_bad"]) == 10  # aligned to the 10-row panel, not empty/short
 
 
 def test_compute_inducted_honours_kill_switch(tmp_path, monkeypatch):

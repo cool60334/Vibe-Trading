@@ -66,7 +66,8 @@ def compute_inducted(panel, symbol: str, root=None) -> dict:
     """Compute every inducted factor for `symbol` over the full-library `panel`.
 
     Soft-fails per factor: a factor that raises (e.g. a missing column) is
-    dropped with a log line -- it must never break stage0a's daily batch. A
+    NaN-filled (Series of NaN aligned to panel.index) with a log line -- the
+    key is always present and the batch schema never varies. A
     blacklisted factor (hot kill-switch) is skipped entirely.
     """
     d = inducted_dir(symbol, root=root)
