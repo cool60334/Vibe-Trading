@@ -113,17 +113,20 @@ def write_induction(code, factor_id, symbol, fixture, expected, root=None, tests
     tr = Path(tests_root) if tests_root is not None else \
         (Path(__file__).resolve().parents[2] / "research" / "tests" / "inducted")
     tr.mkdir(parents=True, exist_ok=True)
-    fixture.to_parquet(tr / f"{factor_id}_fixture.parquet")
-    expected.to_frame("expected").to_parquet(tr / f"{factor_id}_expected.parquet")
-    (tr / f"test_{factor_id}.py").write_text(
+    # Golden filenames carry the symbol: two symbols can each own a `foundry_x`,
+    # so an un-namespaced name would let one induction overwrite another's golden
+    # test/fixture and silently lose regression coverage (agy acceptance finding).
+    fixture.to_parquet(tr / f"{sym}_{factor_id}_fixture.parquet")
+    expected.to_frame("expected").to_parquet(tr / f"{sym}_{factor_id}_expected.parquet")
+    (tr / f"test_{sym}_{factor_id}.py").write_text(
         "import pandas as pd\n"
         "from pathlib import Path\n"
         "import importlib.util\n\n"
         f"_ID = {factor_id!r}\n_SYM = {sym!r}\n"
         "_HERE = Path(__file__).resolve().parent\n\n"
         "def test_inducted_logic_unchanged():\n"
-        "    fx = pd.read_parquet(_HERE / f'{_ID}_fixture.parquet')\n"
-        "    exp = pd.read_parquet(_HERE / f'{_ID}_expected.parquet')['expected']\n"
+        "    fx = pd.read_parquet(_HERE / f'{_SYM}_{_ID}_fixture.parquet')\n"
+        "    exp = pd.read_parquet(_HERE / f'{_SYM}_{_ID}_expected.parquet')['expected']\n"
         "    mod_path = Path(__file__).resolve().parents[2] / 'lib' / 'inducted' / _SYM / f'{_ID}.py'\n"
         "    spec = importlib.util.spec_from_file_location(f'ind_{_SYM}_{_ID}', mod_path)\n"
         "    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
@@ -166,7 +169,10 @@ def main(argv=None) -> int:
             print(f"[induct] all gates pass for {args.symbol}:{args.factor}. "
                   "Re-run with --confirm to write it into the production library.")
             return 2
-        fixture = panel.head(200)
+        # Sample a VALUED tail segment, not panel.head: a long-lookback factor
+        # (e.g. 30d rolling) is all-NaN in the first rows, which would make the
+        # golden test assert NaN==NaN and protect nothing (agy acceptance finding).
+        fixture = panel.dropna(subset=["close"]).tail(500)
         expected = run_sandbox(code, fixture)
         write_induction(code, args.factor, args.symbol, fixture, expected, overwrite=args.overwrite)
         print(f"[induct] {args.symbol}:{args.factor} inducted. COMMIT the new files; "

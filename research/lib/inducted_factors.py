@@ -68,14 +68,21 @@ def compute_inducted(panel, symbol: str, root=None) -> dict:
     Soft-fails per factor: a factor that raises (e.g. a missing column) is
     NaN-filled (Series of NaN aligned to panel.index) with a log line -- the
     key is always present and the batch schema never varies. A
-    blacklisted factor (hot kill-switch) is skipped entirely.
+    blacklisted factor (hot kill-switch) is NaN-filled (schema stays stable; the
+    trader's own NaN-guard then pauses the strategy).
     """
     d = inducted_dir(symbol, root=root)
     black = _blacklisted()
     out: dict = {}
     for fid in sorted(inducted_names(symbol, root=root)):
         if fid in black:
-            log.warning("inducted factor %s is blacklisted (kill-switch); skipping", fid)
+            # NaN-fill (not skip): keeping the column present holds the feature
+            # schema stable so the trader never KeyErrors on a missing column;
+            # an all-NaN signal makes its own NaN-guard pause the strategy -- the
+            # intended kill-switch effect, without a crash. (Same reasoning as the
+            # failed-factor branch below.)
+            log.warning("inducted factor %s is blacklisted (kill-switch); NaN-filling", fid)
+            out[fid] = pd.Series(float("nan"), index=panel.index)
             continue
         try:
             compute = _load_compute(symbol, fid, d / f"{fid}.py")

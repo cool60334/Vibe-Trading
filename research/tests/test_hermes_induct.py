@@ -133,8 +133,23 @@ def test_write_induction_writes_module_meta_and_golden(tmp_path):
     assert (d / "foundry_x.py").read_text(encoding="utf-8") == code
     assert (d / "foundry_x.meta.json").exists()
     assert inducted_names("eth", root=tmp_path) == {"foundry_x"}
-    assert (tmp_path / "t" / "foundry_x_fixture.parquet").exists()
-    assert (tmp_path / "t" / "test_foundry_x.py").exists()
+    assert (tmp_path / "t" / "eth_foundry_x_fixture.parquet").exists()
+    assert (tmp_path / "t" / "test_eth_foundry_x.py").exists()
+
+
+def test_golden_files_are_symbol_namespaced_no_cross_symbol_overwrite(tmp_path):
+    # agy acceptance finding: two symbols can each have a `foundry_x`. Golden
+    # test/fixture filenames MUST carry the symbol, or inducting btc:foundry_x
+    # would physically overwrite eth:foundry_x's golden test -> lost coverage.
+    code = "def compute(df):\n    return df['close']\n"
+    fx = _panel(6); exp = fx["close"]
+    write_induction(code, "foundry_x", "eth", fx, exp, root=tmp_path, tests_root=tmp_path / "t")
+    write_induction(code, "foundry_x", "btc", fx, exp, root=tmp_path, tests_root=tmp_path / "t")
+
+    assert (tmp_path / "t" / "test_eth_foundry_x.py").exists()
+    assert (tmp_path / "t" / "test_btc_foundry_x.py").exists()          # both survive
+    assert (tmp_path / "t" / "eth_foundry_x_fixture.parquet").exists()
+    assert (tmp_path / "t" / "btc_foundry_x_fixture.parquet").exists()
 
 
 def test_write_induction_refuses_overwrite_without_flag(tmp_path):
@@ -186,7 +201,7 @@ def test_write_induction_normalizes_symbol_consistently(tmp_path):
 
     # The generated golden test's _SYM matches the normalized value (and thus
     # its mod_path agrees with where the module actually landed).
-    test_src = (tmp_path / "t" / "test_foundry_y.py").read_text(encoding="utf-8")
+    test_src = (tmp_path / "t" / "test_eth_foundry_y.py").read_text(encoding="utf-8")
     assert f"_SYM = {normalized!r}" in test_src
     assert f"_SYM = {raw_symbol!r}" not in test_src
 

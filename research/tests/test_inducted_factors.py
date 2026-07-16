@@ -52,7 +52,10 @@ def test_compute_inducted_honours_kill_switch(tmp_path, monkeypatch):
     _seed(tmp_path, "eth", "foundry_x", "def compute(df):\n    return df['close']\n")
     bl = tmp_path / "bl.txt"; bl.write_text("foundry_x\n", encoding="utf-8")
     monkeypatch.setenv("INDUCTED_BLACKLIST_FILE", str(bl))
-    assert compute_inducted(_panel(), "eth", root=tmp_path) == {}   # blacklisted -> skipped
+    out = compute_inducted(_panel(), "eth", root=tmp_path)
+    # NaN-filled (schema stays stable; the trader's NaN-guard pauses the strategy),
+    # not dropped — a missing column would KeyError the trader.
+    assert out["foundry_x"].isna().all()
 
 
 def test_same_named_helpers_dont_clobber_across_factors(tmp_path):
