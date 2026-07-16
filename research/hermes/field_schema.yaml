@@ -84,7 +84,7 @@ stablecoin_supply_z:
   positive: "場外資金（穩定幣）正在流入"
   notes: >-
     來自『日頻』序列 ffill 到 1H：24h 階梯函數，一天內 24 根 bar 同值。
-    1H 差分只在日界跳動 —— 頻率錯配陷阱。BTC 上 IC +0.104。
+    1H 差分只在日界跳動 —— 頻率錯配陷阱。在 BTC 上驗證為有效訊號。
 depeg:
   what: "USDT/USD 匯率 - 1（純 USDT 脫鉤，已與法幣溢價解耦）"
   positive: "USDT 相對 USD 溢價"
@@ -108,7 +108,7 @@ fiat_prem_z:
 rsi_14:
   what: "14 期 RSI 相對強弱指標"
   positive: "近期漲幅相對跌幅大（超買區）"
-  notes: "股票血統技術指標。crypto perp 上 IC 普遍 <0.03。"
+  notes: "股票血統技術指標。crypto perp 上普遍偏弱。"
 macd_diff:
   what: "MACD 柱狀圖（DIF - DEA）"
   positive: "短期動能強過長期"

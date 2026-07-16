@@ -300,3 +300,19 @@ def test_generate_ideas_propagates_budget_exhausted():
     budget = ForgeBudget(max_llm_calls=0)
     with pytest.raises(BudgetExhausted):
         generate_ideas(FakeLLM(_GOOD), _SCHEMA, [], n_ideas=5, budget=budget)
+
+
+from research.hermes.field_schema import load_field_schema
+
+
+def test_real_schema_notes_never_leak_ic_numbers_into_the_prompt():
+    """回歸測試：field_schema.yaml 的 notes 曾直接寫死 IC 數值（stablecoin_supply_z
+    的 'BTC 上 IC +0.104' 與 rsi_14 的 'crypto perp 上 IC 普遍 <0.03'），被
+    build_ideation_prompt 逐字渲染進 LLM prompt —— 直接違反 spec §4.1 的核心
+    約束（絕不讓 LLM 看到任何 IC/績效數值，否則 LLM 會逼著湊過某個門檻而不是
+    找新的經濟邏輯，等同自動化 p-hacking）。兩個數字已從 schema 移除；此測試
+    鎖住不再回歸。"""
+    schema = load_field_schema()
+    prompt = build_ideation_prompt(schema, [], 5)
+    assert "0.104" not in prompt
+    assert "0.03" not in prompt
