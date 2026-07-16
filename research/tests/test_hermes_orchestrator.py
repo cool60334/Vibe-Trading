@@ -979,3 +979,32 @@ def test_run_foundry_job_honours_an_explicit_sources_list(tmp_path, monkeypatch,
                         lambda *a, **kw: seen.update(kw) or {"candidate": 0})
     orch.run_foundry_job(**job_env)
     assert seen["sources"] == frozenset({"llm", "zoo"})
+
+
+def test_job_failure_records_the_traceback_not_just_the_message(tmp_path, monkeypatch):
+    """A real run buried two jobs under the bare string 'float division by zero'.
+    str(e) alone is unfalsifiable: it names no file, line or frame, and the bug
+    lives on a paid code path that a fake-LLM repro cannot reach. Without the
+    traceback there is no way to ever find it."""
+    import json
+    from pathlib import Path
+    import research.hermes.orchestrator as orch
+
+    job_path = orch.enqueue_foundry_job("eth", tmp_path, {"oos_start": "2025-01-01"})
+
+    def boom(*a, **kw):
+        one, zero = 1.0, 0.0
+        return one / zero                      # the real failure's shape
+
+    monkeypatch.setattr(orch, "run_foundry", boom)
+    with pytest.raises(ZeroDivisionError):
+        orch.run_foundry_job(job_path, manifests_dir=tmp_path, llm=None, sandbox=None,
+                             zoo_dir=None, ohlcv=None)
+
+    job = json.loads(Path(job_path).read_text(encoding="utf-8"))
+    assert job["status"] == "failed"
+    assert job["error"] == "float division by zero"
+    assert "traceback" in job, "job.json must carry the traceback, not just str(e)"
+    assert "ZeroDivisionError" in job["traceback"]
+    assert "boom" in job["traceback"]           # names the frame that raised
+    assert "orchestrator.py" in job["traceback"]

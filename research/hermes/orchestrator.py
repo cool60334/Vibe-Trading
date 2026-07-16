@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import tempfile
+import traceback
 import uuid
 from collections import Counter
 from dataclasses import dataclass
@@ -500,7 +501,17 @@ def run_foundry_job(job_path, manifests_dir, llm, sandbox, zoo_dir, ohlcv, budge
                               # zoo as a control is an enqueue, not a code change.
                               sources=frozenset(p.get("sources", DEFAULT_SOURCES)))
     except Exception as e:
-        job["status"] = "failed"; job["error"] = str(e); job["finished_at"] = _now()
+        # Record the TRACEBACK, not just str(e). Two real eth jobs died with the
+        # bare string "float division by zero" and nothing else, which named no
+        # file, line or frame. Hunting it statically found nothing: there is no
+        # arithmetic division anywhere in orchestrator/ideator/forge/split/
+        # llm_client/sandbox, and a fake-LLM run over the same real panel does not
+        # reproduce it. That leaves a paid code path (the LLM client stack or
+        # docker) that no offline repro can reach -- so the traceback from a real
+        # run is the only evidence that will ever exist.
+        job["status"] = "failed"; job["error"] = str(e)
+        job["traceback"] = traceback.format_exc()
+        job["finished_at"] = _now()
         _write_job_json(job_path, job)
         raise
     job["status"] = "done"; job["summary"] = summary; job["finished_at"] = _now()
