@@ -914,6 +914,26 @@ def test_run_foundry_only_offers_documented_panel_columns(foundry_env, monkeypat
     assert seen["cols"] == ["funding_z"]          # the stale column was never offered to the LLM
 
 
+def test_run_foundry_degrades_gracefully_when_ideation_budget_is_already_exhausted(foundry_env):
+    """Final whole-branch review finding: generate_ideas() raises BudgetExhausted
+    when the shared forge_budget is already spent, and that call sits BEFORE
+    build_queue with no exception handling -- it used to propagate out of
+    run_foundry, which makes run_foundry_job mark the job failed and re-raise,
+    which in turn aborts the entire reconcile_foundry_jobs batch (that function
+    only catches LLMUnavailable/SandboxError, not BudgetExhausted). Running out
+    of budget during ideation must degrade the same way the sweep loop's own
+    BudgetExhausted handling already does -- not crash depending on WHEN in the
+    run it happens."""
+    from research.hermes.forge import ForgeBudget
+
+    exhausted = ForgeBudget(max_llm_calls=0)          # already exhausted before any call
+    summary = run_foundry(**foundry_env, forge_budget=exhausted)
+
+    assert summary.get("budget_exhausted") is True
+    assert summary["ideas_accepted"] == 0
+    assert summary["candidate"] == 0                  # no ideas -> nothing to sweep, not a crash
+
+
 # ── job params -> sources passthrough ───────────────────────────────────────
 #
 # run_foundry_job hardcoded no `sources` kwarg to run_foundry, so every queued

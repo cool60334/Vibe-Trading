@@ -373,6 +373,11 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir=None, 
     ideation_failed = None
     llm_raw: list = []
     ideas_rejected: list = []
+    # Tracked separately from the sweep loop's own `budget_exhausted` below: that
+    # variable gets unconditionally reset to False on a killswitch pause, and this
+    # one must survive that (ideation running out of budget is a fact about the
+    # run regardless of whether the sweep also got paused).
+    ideation_budget_exhausted = False
     if SOURCE_LLM in sources:
         # Intersect the hand-written schema with the panel's REAL columns. The test
         # asserts these match exactly; the runtime only warns, because stage0a
@@ -386,8 +391,17 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir=None, 
         # "IC 0.029 < 0.03" invites it to bolt on a log() until the bar clears,
         # which is automated p-hacking (spec §4.1).
         deaths = summarize_deaths(load_cards(symbol, manifests_dir))
-        llm_raw, ideas_rejected, ideation_failed = generate_ideas(
-            llm, schema, deaths, n_ideas=n_ideas, budget=forge_budget)
+        try:
+            llm_raw, ideas_rejected, ideation_failed = generate_ideas(
+                llm, schema, deaths, n_ideas=n_ideas, budget=forge_budget)
+        except BudgetExhausted as exc:
+            # Mirrors the sweep loop's own BudgetExhausted handling below: running
+            # out of the shared forge_budget is infrastructure exhaustion, not a
+            # bad response, whether it happens during ideation or mid-sweep. Degrade
+            # the same way regardless of WHEN in the run it happens -- llm_raw stays
+            # [] and build_queue falls back to whatever non-LLM sources are enabled.
+            log.warning("%s: %s — skipping ideation", symbol, exc)
+            ideation_budget_exhausted = True
         if ideation_failed:
             log.warning("%s: ideation produced nothing usable: %s", symbol, ideation_failed)
 
@@ -427,7 +441,7 @@ def run_foundry(symbol, manifests_dir, cfg, llm, sandbox, budget, zoo_dir=None, 
     summary.update(outcomes)
     summary = dict(summary)
     summary["llm_calls_used"] = forge_budget.used
-    if budget_exhausted:
+    if budget_exhausted or ideation_budget_exhausted:
         summary["budget_exhausted"] = True
     summary["queue_composition"] = dict(Counter(h.source for h in queue))
     summary["features_range"] = [str(features.index.min()), str(features.index.max())]
