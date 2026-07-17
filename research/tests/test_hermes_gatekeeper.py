@@ -367,3 +367,65 @@ def test_gross_ir_is_undefined_on_a_flat_position():
     idx = pd.date_range("2024-01-01", periods=500, freq="h", tz="UTC")
     ret1 = pd.Series(np.linspace(0.001, 0.002, 500), index=idx)
     assert np.isnan(gross_ir(pd.Series(0.0, index=idx), ret1))
+
+
+def _trial(md, gross=None, net=0.0, interval="1H"):
+    from research.lib.research_ledger import append_event
+    d = {"sr_per_bar": net, "interval": interval, "factor_id": "f"}
+    if gross is not None:
+        d["gross_sr_per_bar"] = gross
+    append_event(md, kind="factor_trial", symbol="eth", detail=d)
+
+
+def test_foundry_dsr_counts_legacy_trials_but_ignores_their_variance(tmp_path):
+    """The 39 legacy eth trials recorded NET Sharpe, whose spread tracks turnover
+    rather than search noise -- drop the variance. But we really did cast 39 times,
+    and that debt does not evaporate because the net was broken. Count them."""
+    from research.hermes.gatekeeper import foundry_dsr
+    for _ in range(39):
+        _trial(tmp_path, gross=None, net=-0.05)        # legacy: net only, wild spread
+    for g in (0.001, -0.001, 0.002, -0.002):
+        _trial(tmp_path, gross=g, net=g - 0.01)        # new: gross, tight spread
+
+    with_debt = foundry_dsr(0.02, "eth", "1H", tmp_path, T=20000)
+
+    # same variance sample, no legacy debt -> must be strictly more lenient
+    import shutil
+    clean = tmp_path / "clean"; clean.mkdir()
+    for g in (0.001, -0.001, 0.002, -0.002):
+        _trial(clean, gross=g, net=g - 0.01)
+    assert foundry_dsr(0.02, "eth", "1H", clean, T=20000) > with_debt
+
+
+def test_foundry_dsr_variance_uses_only_gross_rows(tmp_path):
+    """A legacy net row at -0.9 would blow up the variance if it leaked in."""
+    from research.hermes.gatekeeper import foundry_dsr
+    _trial(tmp_path, gross=None, net=-0.9)
+    for g in (0.001, -0.001, 0.002, -0.002):
+        _trial(tmp_path, gross=g)
+    assert foundry_dsr(0.02, "eth", "1H", tmp_path, T=20000) > 0.5
+
+
+def test_foundry_dsr_still_filters_by_interval(tmp_path):
+    from research.hermes.gatekeeper import foundry_dsr
+    for g in (0.5, -0.5, 0.6, -0.6):
+        _trial(tmp_path, gross=g, interval="15m")
+    assert foundry_dsr(0.02, "eth", "1H", tmp_path, T=20000) == 1.0   # no 1H trials
+
+
+def test_evaluate_feeds_dsr_the_gross_sharpe_and_the_sample_count(tmp_path, monkeypatch):
+    """T must be the observations that actually entered the estimate (n_samples),
+    not one year of bars."""
+    import research.hermes.gatekeeper as gk
+    seen = {}
+    monkeypatch.setattr(gk, "foundry_dsr",
+                        lambda best, sym, iv, md, T: seen.update(best=best, T=T) or 0.9)
+    idx = pd.date_range("2022-01-01", periods=400, freq="h", tz="UTC")
+    rng = np.random.default_rng(3)
+    ohlcv = pd.DataFrame({"close": 100 + np.cumsum(rng.standard_normal(400) * 0.1)}, index=idx)
+    factor = pd.Series(rng.standard_normal(400), index=idx)
+    res = gk.evaluate(factor, ohlcv, pd.Series("neutral", index=idx.normalize().unique()),
+                      pd.DataFrame(index=idx), "eth", tmp_path,
+                      gk.GateConfig(interval="1H", horizon_h=24))
+    assert seen["best"] == res.metrics["gross_ir"]     # gross, not net
+    assert seen["T"] == res.metrics["n_samples"]       # not bars_per_year (8760)
