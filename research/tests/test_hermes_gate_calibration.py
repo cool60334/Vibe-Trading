@@ -2,6 +2,8 @@
 
 The gate's blind spot lived for the project's whole life and was found by
 accident. These tests exist so it cannot come back quietly."""
+import pathlib
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -78,3 +80,64 @@ def test_plant_alpha_is_deterministic():
     idx = pd.date_range("2024-01-01", periods=1000, freq="h", tz="UTC")
     fwd = pd.Series(np.linspace(-0.01, 0.01, 1000), index=idx)
     pd.testing.assert_series_equal(plant_alpha(fwd, 0.2, seed=7), plant_alpha(fwd, 0.2, seed=7))
+
+
+_MANIFESTS = "research/manifests"
+_SYMBOL = "eth"
+
+
+def _gate_env():
+    """The real eth pre-oos panel, exactly as run_foundry builds it."""
+    from research.hermes.orchestrator import _align_ohlcv
+    from research.hermes.split import foundry_split
+    from research.lib.factor_io import load_features
+    feats_full = load_features(_SYMBOL, manifests_dir=_MANIFESTS)
+    ohlcv_full = _align_ohlcv(pd.read_parquet(f"{_MANIFESTS}/ohlcv_{_SYMBOL}.parquet"),
+                              feats_full.index)
+    tr, va = foundry_split(feats_full, "2025-01-01", val_frac=0.2)
+    features = pd.concat([tr, va])
+    return features, ohlcv_full.loc[features.index]
+
+
+def _run_gate(factor, features, ohlcv):
+    """Statistical gate only: dedup is off ON PURPOSE (empty existing_and_dead).
+
+    A control rejected for being `redundant` flatters the rejection rate while
+    telling us nothing about DSR -- and would hide it completely if DSR were
+    loosened. The dedup gate is not what this plan touches."""
+    from research.hermes.gatekeeper import evaluate, GateConfig
+    regime = pd.Series("neutral", index=features.index.normalize().unique())
+    return evaluate(factor, ohlcv, regime, pd.DataFrame(index=features.index),
+                    _SYMBOL, _MANIFESTS, GateConfig(interval="1H", horizon_h=24))
+
+
+@pytest.mark.skipif(not pathlib.Path(f"{_MANIFESTS}/features_{_SYMBOL}.parquet").exists(),
+                    reason="real eth panel not present in this checkout")
+def test_negative_control_false_positive_rate_stays_under_five_percent():
+    """Real buried factors, rolled forward so they cannot predict anything. They
+    keep their turnover, distribution and autocorrelation -- so the gate sees
+    something that looks exactly like its real workload, minus the alpha.
+
+    This is the guard that makes the calibration work falsifiable. Gutting a
+    threshold to raise sensitivity turns this test red immediately."""
+    from research.hermes.orchestrator import _graveyard_path
+    g = _graveyard_path(_SYMBOL, _MANIFESTS)
+    if not g.exists():
+        pytest.skip("no graveyard factors accumulated yet")
+    dead = pd.read_parquet(g)
+    features, ohlcv = _gate_env()
+
+    verdicts = []
+    for col in dead.columns:
+        s = dead[col].reindex(features.index)
+        if s.notna().mean() < 0.5:
+            continue
+        for days in PRIME_SHIFT_DAYS:
+            verdicts.append(_run_gate(circular_shift(s.fillna(0.0), days),
+                                      features, ohlcv).passed)
+
+    assert len(verdicts) >= 20, f"only {len(verdicts)} controls; too few to bound a rate"
+    fpr = sum(verdicts) / len(verdicts)
+    assert fpr <= 0.05, (
+        f"false-positive rate {fpr:.1%} > 5%: the gate is passing factors that "
+        f"cannot possibly predict ({sum(verdicts)}/{len(verdicts)})")
