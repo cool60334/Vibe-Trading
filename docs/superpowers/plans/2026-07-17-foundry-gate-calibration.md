@@ -155,7 +155,14 @@ def deflated_sharpe(
     return float(st.norm.cdf((best_sr_per_bar - expected_max_sr) / sr_std))
 ```
 
-**注意**：上面 docstring 裡的 `диverge` 是**故意留的錯字陷阱檢查** —— 實作時請寫成 `diverge`。（若你是自動化 agent：修正它，並在 commit 前用 `grep -nP '[^\x00-\x7f]' research/lib/deflated_sharpe.py` 確認檔案裡沒有非 ASCII 殘留。）
+**Commit 前對每個改到的 `.py` 跑這個**：
+
+```bash
+grep -nP '[^\x00-\x7f]' research/lib/deflated_sharpe.py || echo clean
+```
+Expected: `clean`。
+
+理由不是潔癖：撰寫這份 spec/plan 的過程中，**西里爾字母兩次混進英文字串**（`близко`、`диverge`），兩次都發生在寫長篇英文註解時，兩次都是肉眼幾乎看不出來的同形字。docstring 混進去只是難看，**但同樣的手滑掉進欄名或字典 key 就是一個找不到的 bug**。
 
 - [ ] **Step 4: 跑測試確認通過**
 
