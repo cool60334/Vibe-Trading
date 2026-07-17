@@ -85,6 +85,31 @@ def net_ir(weights: pd.Series, ret_1period: pd.Series, cost_frac: float) -> floa
     return float(strat.mean() / sd)
 
 
+def gross_ir(weights: pd.Series, ret_1period: pd.Series) -> float:
+    """Per-bar IR/Sharpe of the position's return BEFORE trading cost.
+
+    Same alignment contract as net_ir: ret_1period MUST be a TRAILING single-bar
+    return; this function shifts it forward internally.
+
+    This is what DSR must be fed. DSR asks whether a signal's predictive power is
+    luck, and under the null of zero alpha the expected GROSS Sharpe is exactly 0 --
+    which is the mean deflated_sharpe already assumes. Net Sharpe has no such
+    property: its mean sits wherever the cost drag puts it (measured median -0.018
+    on eth), and its spread across trials tracks how much turnover differs between
+    factors (0.02 to 0.39, a 20x range) rather than the noise of the search. Feeding
+    that to DSR inflated the trial variance 3x over the theoretical sampling noise
+    and pushed the gate's minimum detectable alpha to an annualised Sharpe of ~5.
+
+    Cost does not disappear; net_ir owns it, behind its own gate.
+    """
+    fwd1 = ret_1period.shift(-1)                      # weights_t earn ret_{t+1}
+    strat = (weights * fwd1).dropna()
+    sd = strat.std(ddof=0)
+    if len(strat) < 20 or sd <= 0:
+        return float("nan")
+    return float(strat.mean() / sd)
+
+
 def nonoverlap_ic(factor: pd.Series, fwd_ret: pd.Series, horizon_bars: int) -> float:
     """IC on non-overlapping subsample (every horizon_bars-th row) so a long
     horizon's overlapping windows don't inflate significance (agy C-4).
@@ -240,6 +265,7 @@ def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
         "ic_nonoverlap": nonoverlap_ic(  # agy-3 #5-2: horizon_h is HOURS -> bars
             factor, fwd, horizon_bars=max(1, horizon_bars)),
         "ir": sr_bar,
+        "gross_ir": gross_ir(weights, ret1),
         "dsr": foundry_dsr(sr_bar if np.isfinite(sr_bar) else 0.0, symbol,
                            cfg.interval, manifests_dir, T=bars_per_year(cfg.interval)),
         "pbo": None,                    # reserved; CPCV-based PBO is a later task

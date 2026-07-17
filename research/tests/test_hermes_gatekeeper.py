@@ -330,3 +330,40 @@ def test_evaluate_1d_horizon_not_multiple_of_24_raises(tmp_path, monkeypatch):
         evaluate(factor, ohlcv, daily_regime=pd.Series("bull", index=idx),
                  existing_and_dead=pd.DataFrame(index=idx), symbol="eth",
                  manifests_dir=tmp_path, cfg=GateConfig(interval="1D", horizon_h=5))
+
+
+def test_gross_ir_ignores_cost_while_net_ir_pays_it():
+    """DSR 的虛無假設是『零 alpha 下 gross SR 期望為 0』。成本是確定性的、
+    因子專屬的，不是搜尋的抽樣噪音 —— 混進 DSR 的變異數就毀掉它。"""
+    import numpy as np, pandas as pd
+    from research.hermes.gatekeeper import gross_ir, net_ir
+
+    idx = pd.date_range("2024-01-01", periods=500, freq="h", tz="UTC")
+    rng = np.random.default_rng(0)
+    ret1 = pd.Series(rng.standard_normal(500) * 0.01, index=idx)
+    weights = pd.Series(np.sign(rng.standard_normal(500)), index=idx)
+
+    g = gross_ir(weights, ret1)
+    n = net_ir(weights, ret1, cost_frac=0.0006)
+    assert np.isfinite(g) and np.isfinite(n)
+    assert g > n                       # 成本只會扣分
+
+
+def test_gross_ir_equals_net_ir_at_zero_cost():
+    import numpy as np, pandas as pd
+    from research.hermes.gatekeeper import gross_ir, net_ir
+
+    idx = pd.date_range("2024-01-01", periods=500, freq="h", tz="UTC")
+    rng = np.random.default_rng(1)
+    ret1 = pd.Series(rng.standard_normal(500) * 0.01, index=idx)
+    weights = pd.Series(rng.standard_normal(500), index=idx).clip(-1, 1)
+    assert gross_ir(weights, ret1) == pytest.approx(net_ir(weights, ret1, cost_frac=0.0))
+
+
+def test_gross_ir_is_undefined_on_a_flat_position():
+    import numpy as np, pandas as pd
+    from research.hermes.gatekeeper import gross_ir
+
+    idx = pd.date_range("2024-01-01", periods=500, freq="h", tz="UTC")
+    ret1 = pd.Series(np.linspace(0.001, 0.002, 500), index=idx)
+    assert np.isnan(gross_ir(pd.Series(0.0, index=idx), ret1))
