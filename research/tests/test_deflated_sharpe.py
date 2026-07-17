@@ -103,9 +103,36 @@ class TestDeflatedSharpe:
         assert deflated_sharpe(0.03, [0.01, -0.01], T=20000, n_trials=1) == 1.0
 
     def test_n_trials_can_exceed_the_variance_sample_count(self):
-        """真實用途：39 筆舊 trial 的『次數』要接續，但它們的 net SR 不進變異數。"""
-        r = deflated_sharpe(0.03, [0.01, -0.01, 0.02], T=20000, n_trials=42)
-        assert 0.0 <= r <= 1.0
+        """真實用途：39 筆舊 trial 的『次數』要接續，但它們的 net SR 不進變異數。
+
+        Proof: if two series have the same variance, and we call deflated_sharpe
+        with the same n_trials on both, the results must be identical. This proves
+        that sample length doesn't leak into n_trials' effect — only variance does.
+        """
+        import pytest
+        import numpy as np
+
+        # Two series with equal variance but different lengths
+        # (3 elements vs 6 elements). Constructed so that np.var(..., ddof=1)
+        # produces identical values to machine precision.
+        s1 = np.array([0.01, -0.01, 0.02])
+        s2 = np.array([0.01, -0.01, 0.02, -0.02, 0.0091287093, -0.0091287093])
+
+        # Verify they have equal variance (within machine precision, ~1e-10)
+        v1 = np.var(s1, ddof=1)
+        v2 = np.var(s2, ddof=1)
+        assert v1 == pytest.approx(v2, abs=1e-10)
+
+        # With equal variance and equal n_trials, results must be identical
+        # This demonstrates independence: n_trials drives the debt independently
+        # of how many values are in the variance sample
+        r1 = deflated_sharpe(0.03, s1, T=20000, n_trials=42)
+        r2 = deflated_sharpe(0.03, s2, T=20000, n_trials=42)
+        # Tolerances account for floating-point error in variance & formula
+        assert r1 == pytest.approx(r2, abs=1e-8, rel=1e-7)
+
+        # Also verify the original weak assertion still holds
+        assert 0.0 <= r1 <= 1.0
 
     def test_n_trials_must_be_positive(self):
         import pytest
