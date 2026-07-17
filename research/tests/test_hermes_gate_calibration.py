@@ -144,15 +144,38 @@ def test_negative_control_false_positive_rate_stays_under_five_percent():
 
 
 _BARS_PER_YEAR = 8760
+_N_SEEDS = 50
+_POWER_TARGET = 0.95
+_W_GRID = (0.025, 0.030, 0.035, 0.037, 0.040, 0.045)
 
 
 @pytest.mark.skipif(not pathlib.Path(f"{_MANIFESTS}/features_{_SYMBOL}.parquet").exists(),
                     reason="real eth panel not present in this checkout")
 def test_the_gate_can_see_an_alpha_worth_having():
-    """Before this work the weakest alpha the gate could see was an annualised
-    Sharpe of ~5. An alpha at 2.75 -- gross_ic 0.061, twice the gate, turnover
-    0.168, profitable after costs -- was rejected. Nothing in any market runs at 5,
-    so every negative result the project produced measured the tools.
+    """The weakest alpha the gate detects with 95% power, as an annualised Sharpe.
+
+    Detection is a property of the POPULATION of factors at a planted strength,
+    not of one draw from it, so this sweeps seeds at each `w` and reads the
+    expected Sharpe off a power curve. An earlier version planted one seed per `w`
+    and reported min(annualised Sharpe among the passing ones) -- three separate
+    upward biases stacked in that statistic:
+
+      selection  -- min() is taken CONDITIONAL on passing, and passing correlates
+                    with having drawn a lucky Sharpe realisation. The realised
+                    Sharpe at fixed w has sd ~0.68 (~the 0.630 sampling noise of a
+                    Sharpe on 22046 bars), so this is a large effect, not a nuance.
+      lucky seed -- seed=7, the only one it ever planted, runs ~+1 sigma hot the
+                    whole length of the curve (at w=0.037: 1.685 against a 0.975
+                    population mean).
+      grid       -- it jumped w=0.03 -> w=0.05 and reported the first passing
+                    point as if it were the boundary, with four passing strengths
+                    in between never measured.
+
+    Together those turned a real ~1.22 into a reported 2.75, and 2.75 was then
+    read as "the sample's statistical-power ceiling" -- it is not one. The ceiling
+    argument was checked and refuted: 2.75 is t = 4.37 against the 0.630 noise
+    floor, far above any principled detection threshold, and empirically power is
+    already 100% by an expected annualised Sharpe of 1.22.
 
     Read this together with the negative control: sensitivity on its own is bought
     trivially by deleting gates."""
@@ -160,23 +183,30 @@ def test_the_gate_can_see_an_alpha_worth_having():
     features, ohlcv = _gate_env()
     fwd, _ = forward_returns(ohlcv, GateConfig(interval="1H", horizon_h=24))
 
-    detected = []
-    for w in (0.02, 0.03, 0.05, 0.08, 0.12):
-        res = _run_gate(plant_alpha(fwd, w), features, ohlcv)
-        ann = res.metrics["ir"] * np.sqrt(_BARS_PER_YEAR)
-        if res.passed:
-            detected.append(ann)
+    curve = []
+    for w in _W_GRID:
+        results = [_run_gate(plant_alpha(fwd, w, seed=s), features, ohlcv)
+                   for s in range(_N_SEEDS)]
+        power = float(np.mean([r.passed for r in results]))
+        expected_ann = float(np.mean([r.metrics["ir"] for r in results]) * np.sqrt(_BARS_PER_YEAR))
+        curve.append((w, expected_ann, power))
 
-    assert detected, "the gate detected nothing at any planted strength"
-    # Measured on the real eth panel (~22k 1H bars) post-fix: weakest detected
-    # annualised Sharpe is 2.75 -- a real, large gain over the pre-fix floor of
-    # ~5 (unreachable in any market), but short of the 2.0 originally hoped for.
-    # This is the sample length's genuine statistical-power ceiling, not a bug --
-    # do not retune the gate to force this number down. A materially higher
-    # reading here would mean sensitivity regressed and is worth investigating.
-    assert min(detected) <= 3.0, (
-        f"weakest detected alpha is annualised Sharpe {min(detected):.2f}; "
-        f"the gate still cannot see an alpha worth having")
+    crossing = next((c for c in curve if c[2] >= _POWER_TARGET), None)
+    assert crossing is not None, (
+        f"the gate never reached {_POWER_TARGET:.0%} power at any planted strength: "
+        f"{[(w, round(e, 2), p) for w, e, p in curve]}")
+    w_star, mde, power = crossing
+
+    # Measured on the real eth panel (~22k 1H bars): 95% power arrives at w=0.040,
+    # an expected annualised Sharpe of 1.22 -- comfortably inside the <=2.0 the
+    # design called for, and a large real gain over the pre-fix floor of ~5
+    # (unreachable in any market). Do not retune any threshold to move this number:
+    # the negative control is what makes a low reading here meaningful, and gutting
+    # a gate would move both.
+    assert mde <= 2.0, (
+        f"the weakest alpha the gate detects with {power:.0%} power is an expected "
+        f"annualised Sharpe of {mde:.2f} (w={w_star}); the gate cannot see an alpha "
+        f"worth having")
 
 
 @pytest.mark.skipif(not pathlib.Path(f"{_MANIFESTS}/features_{_SYMBOL}.parquet").exists(),

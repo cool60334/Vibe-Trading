@@ -33,7 +33,7 @@
 6. Foundry OOS 鎖未接線修復（37% panel 曾含污染）
 7. Intrabar stop 審計（stage3 `--intrabar-audit`）、entry-lag 審計、策略級 lag-stress
 8. 窗口凍結 `window_end: 2026-04-01` + 終極 holdout（A2+A3）
-9. **⚠️ 2026-07-17 反向發現**：以上全是「證偽能力」。positive control 首次量測「偵測能力」→ **最低偵測門檻 ≈ 年化 Sharpe 5**（見下）。證偽強不代表找得到；先前「零結果 → 池子沒魚」的推論是邏輯跳躍，**待校準修完才能重新解讀所有負面結果**。
+9. **2026-07-17 反向發現＋已解決**：以上全是「證偽能力」。positive control 首次量測「偵測能力」→ 發現網眼太粗（當時測得 ≈ 年化 Sharpe 5）。證偽強不代表找得到；先前「零結果 → 池子沒魚」的推論是邏輯跳躍。**校準已修完並用 power 曲線重測：95% power 下偵測門檻＝年化 1.22**（見下），負面結果**現在可信**。
 
 ## 知識資產
 
@@ -64,17 +64,21 @@
 
 8-task plan（`docs/superpowers/plans/2026-07-17-foundry-gate-calibration.md`）用 subagent-driven-development 執行完，每 task 獨立 spec+quality review，終審 opus clean（0 Critical/Important）。三個統計錯誤都修了：`deflated_sharpe` 拆開 N（多重測試債）與變異數樣本；DSR 改吃 **gross** SR（虛無假設下期望 0），成本改由獨立 `net_ir>0` 閘管；`T` 改傳 `n_samples`（實際入樣本數）取代 `bars_per_year`。**門檻數值全未動**（`gross_ic_min=0.03`/`dsr_min=0.5`/`redundant_abs_spearman=0.7`/`max_turnover=0.5`）。新增 `research/hermes/calibration.py`（`plant_alpha`/`circular_shift`/`PRIME_SHIFT_DAYS`）當常設正/負控制迴歸測試。
 
-**真跑 eth 真資料量到的數字**（非估計）：
-- **最低偵測年化 Sharpe：5 → 2.75**（原本目標 ≤2.0 沒踩到，但這是 22k bar 樣本長度下的真實統計功效地板，不是 bug——已誠實記錄進測試斷言與註解，不硬調門檻湊）
+**真跑 eth 真資料量到的數字**（非估計；power 曲線 25 seed/點）：
+- **最低偵測年化 Sharpe：~5 → 1.22（95% power）**。50% power→0.389、80%→0.975。**spec 驗收 ≤2.0 大幅達成。**
 - **負控制偽陽性率：0.64%**（1/156，真埋葬因子加 circular shift，遠低於 5% 上限）
+- **DSR 對植入 alpha 完全不綁**（通過點 dsr 全＝1.000）；綁的是 `gross_ic_min=0.03`＋`net_ir>0`。但 DSR 對**雜訊**有效（負控制靠它擋）——兩件事同時為真。
 - 過程中額外抓到 2 個 plan 本身的手滑 bug（`PRIME_SHIFT_DAYS` 誤植 101 通不過自己的 >15 清距檢查；Task 8 tripwire 測試合成變異數樣本比真實抽樣噪音緊太多）——都手算驗證公式本身無誤後才修，不是 code 端 regression。
 
-**這件事的意涵**：pipeline 兩個月負面結果 + Foundry 零 candidate 的解讀污染，**現在可以解封**——校準已修完，之後的負面結果才是可信的「真沒魚」，不再混雜「網破」的可能。
+**⚠️ 「2.75」是誤報，別再引用**（2026-07-17 二版更正，agy 二審後）。原宣稱「最低偵測 2.75、驗收沒達成、是樣本長度物理極限」，並把測試斷言從 `<=2.0` 放寬到 `<=3.0`。實際是三個向上偏誤疊加：**選擇性**（`min(detected)` 在「有通過」條件下取極值，而通過與抽到高 SR 實現正相關，固定 w 下實現 SR 的 sd≈0.68）、**幸運 seed**（只植 seed=7，整條曲線一致 +1 sigma）、**粗網格**（w 從 0.03 跳 0.05，把第一個通過點當邊界）。**一行除法就能拆穿**：年化 SR 的 1-sigma 噪音＝1/√22046×√8760＝**0.630**，2.75＝**t 4.37**，不可能是任何偵測門檻。測試已改 power-based，斷言歸位 `<=2.0` 且通過。**spec §6.1 從來沒被觸發，沒有專案可行性裁決要做。**
+
+**這件事的意涵**：pipeline 兩個月負面結果 + Foundry 零 candidate 的解讀污染，**已解封**——網在 95% power 下看得見年化 ≥1.22 的 alpha（落在真實策略常見區間 1~2 內），沒撈到就比較像真沒魚。**但仍界定**：看不見 <1.0 的薄 alpha；此結論限 eth/1H/22046 bar/現有 31 欄因子集，換幣/換頻率/換資料源都要重測。
 
 **下一步／掛著待決：**
-- 拿修好的閘重跑既有負面結果（ideation 兩輪 40 點子 0 candidate、eth/sol 既有因子）重新解讀，過濾掉舊校準問題污染
-- **24+ commits 未 push**（induction + ideation + calibration 三整弧）
-- ideation 現況：兩輪 40 點子 0 candidate，1H×31 欄疑似榨乾——但此結論受上述校準問題污染，須修完再判；擴資料源是備案
+- **擴資料源**＞原地重跑：網眼 1.22 已在真實策略區間內，重跑統計上有意義了，但 1H×31 欄已被 ideation 榨過兩輪，且每輪會累積 graveyard 擠壓正交空間。先擴資料源比較划算。
+- **39 commits 未 push**（`git rev-list --count origin/quant-trading-dashboard..HEAD`，2026-07-17 實測；induction + ideation + calibration 三整弧）
+- ideation 現況：兩輪 40 點子 0 candidate，1H×31 欄疑似榨乾——**校準污染已解除，此結論現在可信**
+- backlog：`gross_ic_min=0.03` 用 Bartlett 算只有 1.1-sigma（N_eff≈1376，IC 標準誤≈0.027），理論上放 ~27% 雜訊過該閘（下游 `net_ir`/DSR 擋掉了，故實測 FPR 仍 0.64%）。**別順手動**——它是門檻數值，spec §8 禁止；真要處理正確方向是讓門檻從 N_eff 推導而非硬編，且須連 power 曲線＋負控制一起重測
 - 斷点 C server 部署需 root（fable_ro 唯讀進不去）
 - eth_s5 / sol_s1 停用（regime 泄漏），**無現役可信策略運行中**
 - Paper trader lookback 壞死（F1/F3 修復待核准）
