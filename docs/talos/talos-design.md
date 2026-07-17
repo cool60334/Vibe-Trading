@@ -3,6 +3,7 @@
 > 產出：Part B 設計 spec · 2026-07-08 · 分支 `quant-trading-dashboard`
 > 前置：Part A 優化報告（`docs/talos/optimization-report.md`）已完成；憲法地基 A1/A2/A3 已落地並部署伺服器（HEAD `ec3ba86`）。
 > 性質：**設計文件，等核准才進 Part C 實作**。本文不寫任何 production code。
+> ⚠️ 2026-07-12：Part C Phase 0–1 已核准並**實作完成**，本文為歷史設計快照；真實進度見文末「交付狀態」與根目錄 `PROJECT_STATE.md`。
 >
 > **命名**：Talos = 守護克里特的青銅自動人 —— 確定性自動機 + 護欄。原代號 Hermes 於 2026-07-04 更名（與 NousResearch `hermes-agent` 撞名，本設計與該專案無關）。
 
@@ -262,7 +263,15 @@ agy 對抗式審查本設計 + 交叉核對既有 code（`resolve_anchor_date` /
 - [x] Part A 優化報告（`docs/talos/optimization-report.md`）
 - [x] 憲法地基 A1（成本模型）/ A2（window freeze）/ A3（ledger + final_holdout）落地 + 部署
 - [x] **Part B 全景設計（本文件）**
-- [ ] Part C Phase 0 硬化 + 假資料單測 —— **等核准**
-- [ ] Part C Phase 1 Factor Foundry —— 等核准
+- [x] Part C Phase 0 硬化 + 假資料單測 —— 完成（`research/hermes/` 5 模組，六輪審查）
+- [x] Part C Phase 1 Factor Foundry —— 完成（1A gatekeeper → 1B hypothesis queue → 1C forge → 1D orchestrator → 1E evidence card，全 merged）
+- [x] Foundry 首次真容器全鏈跑通（88dc898）+ 花費帳本/每日 LLM 上限 + LLM provider 泛化（OpenRouter/OpenAI）
+- [x] Foundry OHLCV refresh（對真 `research/manifests/` 跑的最後一哩）—— 完成（`2cacd5a` + cron wrapper `9de1927`）
+- [x] Foundry→pipeline 橋（斷点 B）+ 自動排程（斷点 A）—— 完成（`bc907d1` / `43a9d86` 起）
+- [x] 因子轉正 induction（Foundry 碼→production 因子庫，`induct.py`）—— 完成（`b5d93f1`→`551e574`）
+- [x] Foundry LLM ideation（panel schema→`ideator.py`→`run_foundry`）—— 完成（`8ebebcd`→`fd00758`）
+- [ ] **Foundry 偵測門檻校準** —— spec/plan 已 commit（`f5c23ea`→`d51a47f`），**實作未動**。positive control 量出最低偵測門檻 ≈ 年化 Sharpe 5；三個統計錯誤待修
+- [ ] Phase 2+（選幣自動化 / pipeline 編排 / paper 晉級推薦）—— 未開始
 
-**停在此。** 等使用者核准設計，才進 Part C Phase 0。
+> 2026-07-12 更新：本節原停在「等核准」；設計其後已核准並實作完畢，checklist 補記至真實進度。
+> 2026-07-17 更新：checklist 再次補記（OHLCV refresh / 斷点 A+B / induction / ideation 皆已完成；新增校準待辦）。真實進度以 `PROJECT_STATE.md` 為準。
