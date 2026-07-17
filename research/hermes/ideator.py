@@ -190,20 +190,42 @@ You may use ONLY these columns. Nothing else exists.
 {fields}
 
 {deaths}
-Hard rules — an idea that breaks any of these is wasted budget:
-1. Propose ideas that are ORTHOGONAL to the columns above. A downstream gate kills any \
-factor whose |Spearman| against ANY existing column is >= 0.7.
-2. NEVER propose a MONOTONIC transform of a single column (rank(x), a global z-score of x, \
-log(x), any linear rescale). Spearman is a RANK correlation, so a monotonic transform of x \
-scores EXACTLY 1.0 against x. It is mathematically guaranteed to be rejected.
-3. Rolling z-scores and momentum/differencing are ALREADY TAKEN for the main crypto series \
-(that is what the _z and _mom columns are). Do not re-propose them.
-4. What is NOT taken, and is where the opportunity is: dispersion/volatility of a series, \
-asymmetry, persistence/duration of a state, quantile position, and above all CONDITIONAL or \
-INTERACTION logic across two or more columns (e.g. "act on X only while Y is in a given state").
-5. Point-in-time: a value at bar t may use only bars <= t. No look-ahead.
-6. Write the economic reasoning FIRST, then the factor. An idea with no economic story is \
-data mining and will not survive out-of-sample.
+A gate kills any factor whose |Spearman| against ANY column above is >= 0.7. Everything below \
+follows from that one number.
+
+[1] FATAL SHAPES — these are rejected by arithmetic, before anyone looks at the economics:
+- A MONOTONIC transform of one column: rank(x), a global z-score of x, log(x), any linear \
+rescale. Spearman is a RANK correlation, so these score EXACTLY 1.0 against x. Guaranteed dead.
+- A plain product A * B. This is NOT an interaction: the product inherits its VARIANCE from \
+whichever parent swings harder, so it just re-expresses that parent and dies as redundant.
+- A rolling z-score or a momentum/difference of the main crypto series. Those ARE the _z and \
+_mom columns. Re-proposing them is proposing a duplicate.
+- Price momentum. roc_10 and the cross columns already hold it.
+
+[2] SHAPES THAT SURVIVE — and the condition each one needs. Ignore the condition and you get \
+a >= 0.7 clone of A anyway:
+- Conditional sign flip / state gate: use A, flipped or zeroed by B's state. B's condition \
+MUST fire roughly half the time. A condition that fires 10% of the time leaves the factor \
+identical to A for the other 90% — a clone.
+- Residual: how far A sits from what B predicts (subtract a scaled B). B MUST explain more \
+than half of A's variance. The residual's correlation to A is sqrt(1 - R^2), so at R^2 < 0.51 \
+the residual is still a clone of A. Only residualise against a column A really tracks.
+- Relative position: rank(A) - rank(B), each ranked over its own rolling window. Use with \
+care: measured on this panel it lands at 0.44-0.67 against its parent — under the gate, but \
+close enough that mismatched inputs push it over. A and B must have comparable volatility.
+- Dispersion / asymmetry / duration / quantile position of a single series. These are NOT \
+monotonic, and none of them are taken yet.
+
+[3] IT MUST MAKE MONEY, NOT MERELY CORRELATE:
+- The score is the SHARPE of the position the factor implies, net of trading cost — not rank \
+correlation. A signal that is right about small moves and wrong about large ones has real \
+rank IC and still loses money. Every extra unit of turnover is charged, so a fast-flipping \
+signal must earn its churn back before it scores at all.
+- State the DIRECTION explicitly: which way to trade, in which state, and why that side is \
+the profitable one. If your economics say price rises, your factor must be POSITIVE there.
+- Point-in-time: a value at bar t may use only bars <= t. No look-ahead.
+- Write the economic reasoning FIRST, then the factor. An idea with no economic story is data \
+mining and will not survive out-of-sample.
 
 Return ONLY a fenced ```json block: a list of exactly {n} objects, each with:
   "id"          — short snake_case identifier, unique

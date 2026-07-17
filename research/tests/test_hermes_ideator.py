@@ -316,3 +316,35 @@ def test_real_schema_notes_never_leak_ic_numbers_into_the_prompt():
     prompt = build_ideation_prompt(schema, [], 5)
     assert "0.104" not in prompt
     assert "0.03" not in prompt
+
+
+def test_prompt_warns_that_a_plain_product_tracks_its_loudest_parent():
+    """The first passing run lost 4 of 20 ideas to `redundant` at abs_spearman
+    0.81-0.90, every one of them a declared "interaction" that ended up hugging
+    one parent: depeg_stablecoin_supply -> 0.88 vs depeg, adx_bb_width -> 0.90 vs
+    bb_width_20. A * B inherits its variance from whichever parent is louder, so
+    on a RANK correlation the product just re-expresses that parent."""
+    p = build_ideation_prompt(_SCHEMA, [], 5)
+    low = p.lower()
+    assert "variance" in low
+    assert "a * b" in low or "a*b" in low
+
+
+def test_prompt_offers_concrete_orthogonal_constructions():
+    """Naming the trap is not enough; the LLM needs the shapes that escape it."""
+    p = build_ideation_prompt(_SCHEMA, [], 5)
+    low = p.lower()
+    assert "residual" in low                      # A's deviation from what B predicts
+    assert "rank(a) - rank(b)" in low             # relative, not multiplicative
+    assert "sign" in low or "flip" in low         # conditional sign/state gating
+
+
+def test_prompt_demands_a_directional_pnl_story_not_just_correlation():
+    """Every idea this run had a NEGATIVE per-bar Sharpe (median ir -0.018) while
+    some carried real IC -- mfi_stablecoin_supply scored gross_ic 0.0298 with
+    ir -0.0099. Rank correlation that does not convert into directional P&L is
+    not alpha, so the prompt must ask for the trade, not the correlation."""
+    p = build_ideation_prompt(_SCHEMA, [], 5)
+    low = p.lower()
+    assert "sharpe" in low or "profitable" in low
+    assert "direction" in low
