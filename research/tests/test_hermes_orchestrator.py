@@ -93,6 +93,69 @@ def test_process_hypothesis_forge_fail_writes_graveyard(tmp_path, monkeypatch):
     assert load_cards("eth", tmp_path)[0].verdict == "graveyard"
 
 
+@pytest.mark.parametrize("passed,reason", [
+    (True, ""),
+    (False, "weak gross_ic 0.001 < 0.03"),
+    (False, "net_ir -0.01 <= 0"),
+    (False, "DSR 0.01 < 0.5"),
+])
+def test_every_evaluated_factor_lands_in_the_ledger(tmp_path, monkeypatch, passed, reason):
+    """N is the multiple-testing debt. A factor that reached evaluate() WAS
+    tested -- whatever the verdict -- so it must be counted. Skipping the losers
+    undercounts N and lets only profitable factors shape the variance."""
+    import numpy as np, pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import process_hypothesis
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    from research.hermes.gatekeeper import GateConfig, GatekeeperResult
+    from research.hermes.forge import ForgeResult
+
+    idx = pd.date_range("2022-01-01", periods=300, freq="1D")
+    panel = pd.DataFrame({"close": 100 + np.cumsum(np.ones(300))}, index=idx)
+    series = pd.Series(np.arange(300.0), index=idx)
+    metrics = {"gross_ic": 0.05, "ic_nonoverlap": 0.04, "ir": 0.3, "gross_ir": 0.31,
+               "dsr": 0.9, "pbo": None, "turnover": 0.1, "n_samples": 300,
+               "regime_ic": {}, "yearly_ic": {}, "nearest_factor": None,
+               "nearest_abs_spearman": 0.1}
+    monkeypatch.setattr(orch, "forge", lambda *a, **k: ForgeResult(True, 1, code="c", series=series))
+    monkeypatch.setattr(orch, "evaluate", lambda *a, **k: GatekeeperResult(passed, metrics, reason))
+    events = []
+    monkeypatch.setattr(orch, "append_event", lambda md, **kw: events.append(kw))
+
+    process_hypothesis(Hypothesis("h1", "x", SOURCE_LLM), panel, panel,
+                       pd.Series("bull", index=idx), pd.DataFrame(index=idx),
+                       "eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                       llm=object(), run_sandbox=object())
+
+    trials = [e for e in events if e["kind"] == "factor_trial"]
+    assert len(trials) == 1, "an evaluated factor must be counted whatever the verdict"
+    assert trials[0]["detail"]["gross_sr_per_bar"] == 0.31
+    assert trials[0]["detail"]["sr_per_bar"] == 0.3          # kept for existing readers
+
+
+def test_a_forge_failure_is_not_a_trial(tmp_path, monkeypatch):
+    """forge_failed code never ran clean, so it was never statistically tested --
+    it is not a multiple-testing debt."""
+    import numpy as np, pandas as pd
+    from research.hermes import orchestrator as orch
+    from research.hermes.orchestrator import process_hypothesis
+    from research.hermes.hypothesis import Hypothesis, SOURCE_LLM
+    from research.hermes.gatekeeper import GateConfig
+    from research.hermes.forge import ForgeResult
+
+    idx = pd.date_range("2022-01-01", periods=50, freq="1D")
+    panel = pd.DataFrame({"close": np.arange(50.0)}, index=idx)
+    monkeypatch.setattr(orch, "forge",
+                        lambda *a, **k: ForgeResult(False, 3, code="bad", death_reason="UnsafeCodeError: x"))
+    events = []
+    monkeypatch.setattr(orch, "append_event", lambda md, **kw: events.append(kw))
+    process_hypothesis(Hypothesis("h2", "x", SOURCE_LLM), panel, panel,
+                       pd.Series("bull", index=idx), pd.DataFrame(index=idx),
+                       "eth", tmp_path, GateConfig(interval="1D", horizon_h=24),
+                       llm=object(), run_sandbox=object())
+    assert [e for e in events if e["kind"] == "factor_trial"] == []
+
+
 def test_two_passing_factors_both_survive_in_candidate_parquet(tmp_path, monkeypatch):
     # agy 3b (fatal): write_candidate replaces the whole parquet — the loop must merge
     import numpy as np, pandas as pd
