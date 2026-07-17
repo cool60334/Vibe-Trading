@@ -141,3 +141,55 @@ def test_negative_control_false_positive_rate_stays_under_five_percent():
     assert fpr <= 0.05, (
         f"false-positive rate {fpr:.1%} > 5%: the gate is passing factors that "
         f"cannot possibly predict ({sum(verdicts)}/{len(verdicts)})")
+
+
+_BARS_PER_YEAR = 8760
+
+
+@pytest.mark.skipif(not pathlib.Path(f"{_MANIFESTS}/features_{_SYMBOL}.parquet").exists(),
+                    reason="real eth panel not present in this checkout")
+def test_the_gate_can_see_an_alpha_worth_having():
+    """Before this work the weakest alpha the gate could see was an annualised
+    Sharpe of ~5. An alpha at 2.75 -- gross_ic 0.061, twice the gate, turnover
+    0.168, profitable after costs -- was rejected. Nothing in any market runs at 5,
+    so every negative result the project produced measured the tools.
+
+    Read this together with the negative control: sensitivity on its own is bought
+    trivially by deleting gates."""
+    from research.hermes.gatekeeper import forward_returns, GateConfig
+    features, ohlcv = _gate_env()
+    fwd, _ = forward_returns(ohlcv, GateConfig(interval="1H", horizon_h=24))
+
+    detected = []
+    for w in (0.02, 0.03, 0.05, 0.08, 0.12):
+        res = _run_gate(plant_alpha(fwd, w), features, ohlcv)
+        ann = res.metrics["ir"] * np.sqrt(_BARS_PER_YEAR)
+        if res.passed:
+            detected.append(ann)
+
+    assert detected, "the gate detected nothing at any planted strength"
+    assert min(detected) <= 2.0, (
+        f"weakest detected alpha is annualised Sharpe {min(detected):.2f}; "
+        f"the gate still cannot see an alpha worth having")
+
+
+@pytest.mark.skipif(not pathlib.Path(f"{_MANIFESTS}/features_{_SYMBOL}.parquet").exists(),
+                    reason="real eth panel not present in this checkout")
+def test_the_best_real_lead_is_still_rejected():
+    """rolling_std_stablecoin_supply is the strongest thing the project ever found:
+    gross_ic 0.0718, positive Sharpe, orthogonal at 0.237, non-overlapping IC
+    holding at 0.0643. It is still noise -- per-bar SR 0.00507 against a sampling
+    std of 0.00674, t = 0.75, annualised 0.47, in-sample.
+
+    If it ever passes, we cut too deep. That is what the slope looks like from the
+    inside: not a decision to cheat, just a threshold that finally let the thing
+    we wanted through."""
+    from research.hermes.evidence_store import load_cards
+    cards = [c for c in load_cards(_SYMBOL, _MANIFESTS)
+             if c.factor_id == "llm_rolling_std_stablecoin_supply"]
+    if not cards:
+        pytest.skip("the reference lead is not in this checkout's evidence store")
+    from research.lib.deflated_sharpe import deflated_sharpe
+    # its own gross SR, evaluated against a clean trial distribution
+    assert deflated_sharpe(0.00507, [0.001, -0.001, 0.002, -0.002, 0.0005],
+                           T=22046, n_trials=40) < 0.5
