@@ -231,7 +231,12 @@ class GateConfig:
     gross_ic_min: float = 0.03
     dsr_min: float = 0.5
     redundant_abs_spearman: float = 0.7
-    max_turnover: float = 0.5           # mean per-bar turnover ceiling (untradeable above)
+    # PHYSICAL execution ceiling, not an extension of the profit metric. net_ir
+    # already charges cost, so this is not the cost talking twice: the backtest's
+    # LINEAR cost model cannot see non-linear slippage, market impact, or execution
+    # latency. A factor churning 0.6 of the book per bar may clear fees on paper and
+    # eat through the order book live. This is the guard against that fantasy.
+    max_turnover: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -284,13 +289,12 @@ def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
             factor, fwd, horizon_bars=max(1, horizon_bars)),
         "ir": sr_bar,
         "gross_ir": gross_sr,
-        "dsr": foundry_dsr(
-            gross_sr if np.isfinite(gross_sr) else 0.0, symbol, cfg.interval,
-            manifests_dir,
-            # T is the observations that actually entered the SR estimate. The
-            # contract says train-window bar count; bars_per_year (8760) was one
-            # YEAR's bars against a 22046-bar window.
-            T=n_samples),
+        # Placeholder: DSR reads the trial ledger, which is not free, and there is
+        # nothing to ask it about a factor already rejected by a cheaper gate below.
+        # Overwritten with the real value only if the factor survives that far.
+        # EvidenceCard already treats a non-finite dsr as legitimate (it sanitizes
+        # to null), the same way it already does for the hardcoded-None pbo.
+        "dsr": float("nan"),
         "pbo": None,                    # reserved; CPCV-based PBO is a later task
         "turnover": mean_turnover,
         "n_samples": n_samples,
@@ -306,6 +310,21 @@ def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
         return GatekeeperResult(False, metrics, f"turnover {mean_turnover:.2f} > {cfg.max_turnover}")
     if np.isnan(gic) or abs(gic) < cfg.gross_ic_min:
         return GatekeeperResult(False, metrics, f"weak gross_ic {gic:.4f} < {cfg.gross_ic_min}")
+    # DSR is fed GROSS Sharpe now, so it no longer knows about cost -- this gate is
+    # where cost gets its say. It runs before DSR because it is cheap and
+    # deterministic, and because there is nothing to say about the significance of
+    # a factor that cannot pay for itself.
+    # `not > 0` rather than `<= 0`: nan <= 0 is False, and a degenerate/flat
+    # position must not sail through on that.
+    if not (sr_bar > 0):
+        return GatekeeperResult(False, metrics, f"net_ir {sr_bar:.5f} <= 0")
+    metrics["dsr"] = foundry_dsr(
+        gross_sr if np.isfinite(gross_sr) else 0.0, symbol, cfg.interval,
+        manifests_dir,
+        # T is the observations that actually entered the SR estimate. The
+        # contract says train-window bar count; bars_per_year (8760) was one
+        # YEAR's bars against a 22046-bar window.
+        T=n_samples)
     if metrics["dsr"] < cfg.dsr_min:
         return GatekeeperResult(False, metrics, f"DSR {metrics['dsr']:.2f} < {cfg.dsr_min}")
     return GatekeeperResult(True, metrics, "")
