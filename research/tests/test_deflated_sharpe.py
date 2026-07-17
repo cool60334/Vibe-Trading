@@ -77,3 +77,37 @@ class TestDeflatedSharpe:
         # z ≈ 0.06293  →  dsr ≈ 0.5251
         dsr = deflated_sharpe(0.01, [0.0, 0.01], 100)
         assert dsr == pytest.approx(0.525, abs=0.005)
+
+    def test_n_trials_defaults_to_the_sample_count(self):
+        """不給 n_trials 時行為完全不變（向後相容）。"""
+        srs = [0.01, -0.01, 0.02, -0.02, 0.005]
+        assert deflated_sharpe(0.03, srs, T=20000) == deflated_sharpe(
+            0.03, srs, T=20000, n_trials=len(srs))
+
+    def test_more_trials_is_stricter_at_the_same_variance(self):
+        """N 是多重測試債：試越多次，同一個 SR 越不顯著。
+        這是拆開參數的全部理由 —— 債務要能獨立於變異數樣本累計。"""
+        srs = [0.01, -0.01, 0.02, -0.02, 0.005]
+        few = deflated_sharpe(0.03, srs, T=20000, n_trials=5)
+        many = deflated_sharpe(0.03, srs, T=20000, n_trials=500)
+        assert many < few
+
+    def test_variance_still_comes_from_the_series_not_from_n_trials(self):
+        """n_trials 只影響 max_z，不得影響變異數估計。"""
+        tight = [0.001, -0.001, 0.002, -0.002]
+        wide = [0.10, -0.10, 0.20, -0.20]
+        assert deflated_sharpe(0.03, tight, T=20000, n_trials=50) > \
+               deflated_sharpe(0.03, wide, T=20000, n_trials=50)
+
+    def test_n_trials_below_two_is_undefined_and_never_blocks(self):
+        assert deflated_sharpe(0.03, [0.01, -0.01], T=20000, n_trials=1) == 1.0
+
+    def test_n_trials_can_exceed_the_variance_sample_count(self):
+        """真實用途：39 筆舊 trial 的『次數』要接續，但它們的 net SR 不進變異數。"""
+        r = deflated_sharpe(0.03, [0.01, -0.01, 0.02], T=20000, n_trials=42)
+        assert 0.0 <= r <= 1.0
+
+    def test_n_trials_must_be_positive(self):
+        import pytest
+        with pytest.raises(ValueError, match="n_trials"):
+            deflated_sharpe(0.03, [0.01, -0.01], T=20000, n_trials=0)
