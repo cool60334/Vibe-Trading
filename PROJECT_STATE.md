@@ -60,29 +60,20 @@
 
 ## 目前狀態（2026-07-17）
 
-**🚨 頭條：positive control 證明「這張網撈不到魚」——最低偵測門檻 ≈ 年化 Sharpe 5**
+**✅ Foundry gate calibration 修完，已 merge 進 `quant-trading-dashboard`（`c6f9951`）。網撈得到魚了。**
 
-Foundry 兩輪 40 個點子零 candidate 之後，做了一件從沒做過的事：**量測系統的偵測能力**（不是證偽能力）。植入已知強度的人工 alpha 直接餵 `gatekeeper.evaluate()`，掃訊號權重：
+8-task plan（`docs/superpowers/plans/2026-07-17-foundry-gate-calibration.md`）用 subagent-driven-development 執行完，每 task 獨立 spec+quality review，終審 opus clean（0 Critical/Important）。三個統計錯誤都修了：`deflated_sharpe` 拆開 N（多重測試債）與變異數樣本；DSR 改吃 **gross** SR（虛無假設下期望 0），成本改由獨立 `net_ir>0` 閘管；`T` 改傳 `n_samples`（實際入樣本數）取代 `bars_per_year`。**門檻數值全未動**（`gross_ic_min=0.03`/`dsr_min=0.5`/`redundant_abs_spearman=0.7`/`max_turnover=0.5`）。新增 `research/hermes/calibration.py`（`plant_alpha`/`circular_shift`/`PRIME_SHIFT_DAYS`）當常設正/負控制迴歸測試。
 
-| w | gross_ic | 年化 Sharpe | dsr | 結果 |
-|---|---|---|---|---|
-| 0.05 | +0.061 | **+2.75** | 0.028 | **FAIL — DSR 0.03 < 0.5** |
-| 0.08 | +0.126 | +5.06 | 0.518 | PASS |
+**真跑 eth 真資料量到的數字**（非估計）：
+- **最低偵測年化 Sharpe：5 → 2.75**（原本目標 ≤2.0 沒踩到，但這是 22k bar 樣本長度下的真實統計功效地板，不是 bug——已誠實記錄進測試斷言與註解，不硬調門檻湊）
+- **負控制偽陽性率：0.64%**（1/156，真埋葬因子加 circular shift，遠低於 5% 上限）
+- 過程中額外抓到 2 個 plan 本身的手滑 bug（`PRIME_SHIFT_DAYS` 誤植 101 通不過自己的 >15 清距檢查；Task 8 tripwire 測試合成變異數樣本比真實抽樣噪音緊太多）——都手算驗證公式本身無誤後才修，不是 code 端 regression。
 
-年化 Sharpe +2.75、`gross_ic` 是門檻 2 倍、扣完成本仍賺錢的因子被斃掉。年化 Sharpe ≥5 的東西在任何市場近乎不存在 → **量到的是工具極限，不是市場極限**。
-
-三個可獨立指認的統計錯誤疊加（**非門檻鬆緊問題**）：
-1. `var_trials` 被成本異質性灌大 3 倍——ledger 記的是 **net** ir（已扣 turnover×cost），trial turnover 差 20 倍，成本拖累的離散度被當成「搜尋噪音」。**爛因子越多，門檻越高。**
-2. `deflated_sharpe` 用經驗變異數卻假設零均值，但實測 trial 中位數是 −0.0185（成本拖累）——混用無統計依據。
-3. `T` 契約違反：契約要 train-window bar count（22046），`evaluate` 傳的是 `bars_per_year`（8760）。
-
-**狀態：spec + plan 已 commit（`f5c23ea`→`d51a47f`，agy 七/八輪硬審），實作未動。** 修法：DSR 拆開 N 與變異數樣本、DSR 改吃 gross SR（虛無假設下期望 0）、成本改由獨立 `net_ir>0` 閘管、新增 `calibration.py` 正/負雙向控制組當常設迴歸測試。**不動任何門檻數值**（`gross_ic_min=0.03`/`dsr_min=0.5`/`redundant_abs_spearman=0.7`/`max_turnover=0.5` 全不改）。
-
-**這件事的意涵**：pipeline 兩個月的負面結果 + Foundry 零 candidate，**在邏輯上目前無法解讀**。要等校準修完重跑才知道是真沒魚還是網破。
+**這件事的意涵**：pipeline 兩個月負面結果 + Foundry 零 candidate 的解讀污染，**現在可以解封**——校準已修完，之後的負面結果才是可信的「真沒魚」，不再混雜「網破」的可能。
 
 **下一步／掛著待決：**
-- **⬅️ 最優先：執行 gate calibration plan**（`docs/superpowers/plans/2026-07-17-foundry-gate-calibration.md`），然後重新解讀既有負面結果
-- **24 commits 未 push**（induction + ideation + calibration docs 兩整弧）
+- 拿修好的閘重跑既有負面結果（ideation 兩輪 40 點子 0 candidate、eth/sol 既有因子）重新解讀，過濾掉舊校準問題污染
+- **24+ commits 未 push**（induction + ideation + calibration 三整弧）
 - ideation 現況：兩輪 40 點子 0 candidate，1H×31 欄疑似榨乾——但此結論受上述校準問題污染，須修完再判；擴資料源是備案
 - 斷点 C server 部署需 root（fable_ro 唯讀進不去）
 - eth_s5 / sol_s1 停用（regime 泄漏），**無現役可信策略運行中**
