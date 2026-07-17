@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from research.lib.deflated_sharpe import deflated_sharpe, bars_per_year
+from research.lib.deflated_sharpe import deflated_sharpe
 from research.lib.factor_metrics import add_forward_returns
 from research.lib.regime import ffill_regime_to
 from research.lib.research_ledger import read_events
@@ -79,6 +79,31 @@ def net_ir(weights: pd.Series, ret_1period: pd.Series, cost_frac: float) -> floa
     tau = turnover_of(weights)
     strat = (weights * fwd1) - tau.fillna(0.0) * cost_frac
     strat = strat.dropna()
+    sd = strat.std(ddof=0)
+    if len(strat) < 20 or sd <= 0:
+        return float("nan")
+    return float(strat.mean() / sd)
+
+
+def gross_ir(weights: pd.Series, ret_1period: pd.Series) -> float:
+    """Per-bar IR/Sharpe of the position's return BEFORE trading cost.
+
+    Same alignment contract as net_ir: ret_1period MUST be a TRAILING single-bar
+    return; this function shifts it forward internally.
+
+    This is what DSR must be fed. DSR asks whether a signal's predictive power is
+    luck, and under the null of zero alpha the expected GROSS Sharpe is exactly 0 --
+    which is the mean deflated_sharpe already assumes. Net Sharpe has no such
+    property: its mean sits wherever the cost drag puts it (measured median -0.018
+    on eth), and its spread across trials tracks how much turnover differs between
+    factors (0.02 to 0.39, a 20x range) rather than the noise of the search. Feeding
+    that to DSR inflated the trial variance 3x over the theoretical sampling noise
+    and pushed the gate's minimum detectable alpha to an annualised Sharpe of ~5.
+
+    Cost does not disappear; net_ir owns it, behind its own gate.
+    """
+    fwd1 = ret_1period.shift(-1)                      # weights_t earn ret_{t+1}
+    strat = (weights * fwd1).dropna()
     sd = strat.std(ddof=0)
     if len(strat) < 20 or sd <= 0:
         return float("nan")
@@ -160,25 +185,41 @@ def nearest_correlate(factor: pd.Series, others: pd.DataFrame) -> tuple:
     return (str(top), float(abs_corr.loc[top]))
 
 
-def foundry_dsr(best_sr_per_bar: float, symbol: str, interval: str,
+def foundry_dsr(best_gross_sr_per_bar: float, symbol: str, interval: str,
                 manifests_dir, T: int) -> float:
-    """Deflated Sharpe using the symbol's HISTORICAL trials at the SAME interval
-    (agy #3/P2): count comes from the ledger (multiple-testing debt persists
-    across nights), but the trial SR distribution is kept homogeneous — mixing
-    different-T / different-interval trials breaks the DSR variance math."""
-    trials = [
-        e["detail"]["sr_per_bar"]
-        for e in read_events(manifests_dir)
+    """Deflated Sharpe on the symbol's historical trials at the SAME interval.
+
+    The count and the distribution come from different row sets, which is what
+    this function's docstring always claimed and never did:
+
+      n_trials  -- EVERY factor_trial at this interval, including the legacy rows
+                   that carry only a net sr_per_bar. The multiple-testing debt is
+                   a count of how many times we cast into this pool. Learning that
+                   a past measurement was on the wrong scale does not un-cast it,
+                   and letting a gate fix reset the count would make the debt
+                   erasable on demand -- an unlimited do-over.
+      variance  -- ONLY rows carrying gross_sr_per_bar. Net Sharpe's spread across
+                   trials tracks turnover (0.02 to 0.39 on eth) rather than the
+                   noise of the search, so mixing scales breaks the DSR variance
+                   math. Measured: net trial std 0.0215 against a theoretical
+                   sampling noise of 0.0067.
+
+    `best_gross_sr_per_bar` is GROSS for the same reason: under the null of zero
+    alpha its expectation is 0, which is the mean the formula already assumes.
+    """
+    events = [
+        e for e in read_events(manifests_dir)
         if e.get("kind") == "factor_trial" and e.get("symbol") == symbol
         and isinstance(e.get("detail"), dict)
         and e["detail"].get("interval") == interval
-        and "sr_per_bar" in e["detail"]
     ]
-    # agy-3 #3: the current factor is NOT yet in the ledger; include it so the
-    # trial population N and its variance are complete for the multiple-testing
-    # correction (otherwise N is short by 1 and the current sample is missing).
-    trials.append(best_sr_per_bar)
-    return deflated_sharpe(best_sr_per_bar, trials, T=T)
+    n_trials = len(events)
+    gross = [e["detail"]["gross_sr_per_bar"] for e in events
+             if e["detail"].get("gross_sr_per_bar") is not None]
+    if not n_trials:
+        return 1.0
+    return deflated_sharpe(best_gross_sr_per_bar, gross + [best_gross_sr_per_bar],
+                           T=T, n_trials=n_trials + 1)
 
 
 @dataclass(frozen=True)
@@ -190,7 +231,12 @@ class GateConfig:
     gross_ic_min: float = 0.03
     dsr_min: float = 0.5
     redundant_abs_spearman: float = 0.7
-    max_turnover: float = 0.5           # mean per-bar turnover ceiling (untradeable above)
+    # PHYSICAL execution ceiling, not an extension of the profit metric. net_ir
+    # already charges cost, so this is not the cost talking twice: the backtest's
+    # LINEAR cost model cannot see non-linear slippage, market impact, or execution
+    # latency. A factor churning 0.6 of the book per bar may clear fees on paper and
+    # eat through the order book live. This is the guard against that fantasy.
+    max_turnover: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -233,6 +279,8 @@ def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
     weights = factor_to_weights(factor)
     mean_turnover = float(turnover_of(weights).fillna(0.0).mean())
     sr_bar = net_ir(weights, ret1, cfg.cost_frac)
+    gross_sr = gross_ir(weights, ret1)
+    n_samples = int(pd.concat([factor, fwd], axis=1).dropna().shape[0])
     nearest, absrho = nearest_correlate(factor, existing_and_dead)
 
     metrics = {
@@ -240,11 +288,16 @@ def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
         "ic_nonoverlap": nonoverlap_ic(  # agy-3 #5-2: horizon_h is HOURS -> bars
             factor, fwd, horizon_bars=max(1, horizon_bars)),
         "ir": sr_bar,
-        "dsr": foundry_dsr(sr_bar if np.isfinite(sr_bar) else 0.0, symbol,
-                           cfg.interval, manifests_dir, T=bars_per_year(cfg.interval)),
+        "gross_ir": gross_sr,
+        # Placeholder: DSR reads the trial ledger, which is not free, and there is
+        # nothing to ask it about a factor already rejected by a cheaper gate below.
+        # Overwritten with the real value only if the factor survives that far.
+        # EvidenceCard already treats a non-finite dsr as legitimate (it sanitizes
+        # to null), the same way it already does for the hardcoded-None pbo.
+        "dsr": float("nan"),
         "pbo": None,                    # reserved; CPCV-based PBO is a later task
         "turnover": mean_turnover,
-        "n_samples": int(pd.concat([factor, fwd], axis=1).dropna().shape[0]),
+        "n_samples": n_samples,
         "regime_ic": regime_ic(factor, fwd, daily_regime),
         "yearly_ic": yearly_ic(factor, fwd),
         "nearest_factor": nearest,
@@ -257,6 +310,21 @@ def evaluate(factor, ohlcv, daily_regime, existing_and_dead, symbol,
         return GatekeeperResult(False, metrics, f"turnover {mean_turnover:.2f} > {cfg.max_turnover}")
     if np.isnan(gic) or abs(gic) < cfg.gross_ic_min:
         return GatekeeperResult(False, metrics, f"weak gross_ic {gic:.4f} < {cfg.gross_ic_min}")
+    # DSR is fed GROSS Sharpe now, so it no longer knows about cost -- this gate is
+    # where cost gets its say. It runs before DSR because it is cheap and
+    # deterministic, and because there is nothing to say about the significance of
+    # a factor that cannot pay for itself.
+    # `not > 0` rather than `<= 0`: nan <= 0 is False, and a degenerate/flat
+    # position must not sail through on that.
+    if not (sr_bar > 0):
+        return GatekeeperResult(False, metrics, f"net_ir {sr_bar:.5f} <= 0")
+    metrics["dsr"] = foundry_dsr(
+        gross_sr if np.isfinite(gross_sr) else 0.0, symbol, cfg.interval,
+        manifests_dir,
+        # T is the observations that actually entered the SR estimate. The
+        # contract says train-window bar count; bars_per_year (8760) was one
+        # YEAR's bars against a 22046-bar window.
+        T=n_samples)
     if metrics["dsr"] < cfg.dsr_min:
         return GatekeeperResult(False, metrics, f"DSR {metrics['dsr']:.2f} < {cfg.dsr_min}")
     return GatekeeperResult(True, metrics, "")

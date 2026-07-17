@@ -32,6 +32,7 @@ def deflated_sharpe(
     trial_srs_per_bar: "np.ndarray | list[float]",
     T: int,
     expected_sr: float = 0.0,
+    n_trials: "int | None" = None,
 ) -> float:
     """Probability the best trial's true per-bar Sharpe exceeds the expected
     maximum Sharpe of N trials under the null (skew=0, kurt=3).
@@ -39,11 +40,28 @@ def deflated_sharpe(
     All Sharpes MUST be per-bar (de-annualised). ``T`` = train-window bar count.
     Returns 1.0 when deflation is undefined (N<2, T<2, zero trial variance) so
     the gate never spuriously fails. Result is a probability in [0, 1].
+
+    ``n_trials`` separates the two things N was doing at once. The multiple-testing
+    DEBT is a count -- how many times we cast into this pool -- and it survives
+    anything we later learn about the measurements. The trial SR series is a
+    VARIANCE sample, and it is only usable while the trials are drawn from one
+    distribution. Those two can legitimately diverge: when a batch of past trials
+    turns out to have been measured on a different scale (e.g. net-of-cost Sharpe,
+    whose spread tracks turnover rather than search noise), its variance must be
+    dropped while its count must not. Defaults to the finite sample count, which
+    is the old behaviour.
+
+    foundry_dsr's docstring already promised this split ("count comes from the
+    ledger ... but the trial SR distribution is kept homogeneous"). It was never
+    implementable while n came from srs.size.
     """
     srs = np.asarray(list(trial_srs_per_bar), dtype=float)
     srs = srs[np.isfinite(srs)]
-    n = srs.size
-    if n < 2 or T < 2:
+    if n_trials is None:
+        n_trials = srs.size
+    elif n_trials < 1:
+        raise ValueError(f"n_trials must be >= 1, got {n_trials}")
+    if srs.size < 2 or n_trials < 2 or T < 2:
         return 1.0
 
     var_srs = float(np.var(srs, ddof=1))
@@ -51,6 +69,7 @@ def deflated_sharpe(
         return 1.0
 
     gamma = 0.5772156649  # Euler-Mascheroni
+    n = n_trials
     max_z = (1 - gamma) * st.norm.ppf(1 - 1.0 / n) + gamma * st.norm.ppf(
         1 - 1.0 / (n * np.e)
     )

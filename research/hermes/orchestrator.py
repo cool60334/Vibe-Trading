@@ -162,9 +162,19 @@ def process_hypothesis(hyp, panel, ohlcv, daily_regime, existing_and_dead,
     res = evaluate(fr.series, ohlcv, daily_regime, existing_and_dead, symbol, manifests_dir, cfg)
     # write factor_trial AFTER evaluate: foundry_dsr already appends the CURRENT
     # trial in-memory, so pre-writing it would double-count (1A agy-3 #3).
+    #
+    # Written AFTER evaluate and for EVERY verdict -- this is a contract, not an
+    # accident (spec §3.4). N is the multiple-testing debt: a factor that reached
+    # evaluate() WAS tested, so it counts even when it loses. Skipping the losers
+    # would undercount N and leave only profitable factors shaping the variance.
+    # A forge_failed factor never gets here, and correctly so: its code never ran
+    # clean, so it was never statistically tested.
     append_event(manifests_dir, kind="factor_trial", symbol=symbol,
-                 detail={"sr_per_bar": res.metrics.get("ir"), "interval": cfg.interval,
-                         "factor_id": hyp.id})
+                 detail={"sr_per_bar": res.metrics.get("ir"),
+                         # DSR reads this one; sr_per_bar stays for existing readers
+                         # and for the historical rows that predate the split.
+                         "gross_sr_per_bar": res.metrics.get("gross_ir"),
+                         "interval": cfg.interval, "factor_id": hyp.id})
     m = res.metrics
     card = EvidenceCard(
         **common,

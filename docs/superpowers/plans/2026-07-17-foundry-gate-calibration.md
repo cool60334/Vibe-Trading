@@ -800,7 +800,7 @@ EOF
 **Interfaces:**
 - Consumes: 無
 - Produces:
-  - `PRIME_SHIFT_DAYS: tuple = (101, 149, 227, 311)`
+  - `PRIME_SHIFT_DAYS: tuple = (107, 149, 227, 311)`（原文誤植 101——`abs(101-90)=11`，過不了本檔自己 `>15` 的清距檢查；實作已修正為 107）
   - `circular_shift(s: pd.Series, days: int, bars_per_day: int = 24) -> pd.Series`
   - `plant_alpha(fwd: pd.Series, w: float, seed: int = 7, smooth_bars: int = 24) -> pd.Series`
 
@@ -929,7 +929,7 @@ import pandas as pd
 # quarterly expiry and funding cycles. A control shifted by a whole quarter can
 # ALIGN with the periodicity it was meant to destroy, keep real predictive power,
 # and quietly understate the rejection rate.
-PRIME_SHIFT_DAYS: tuple = (101, 149, 227, 311)
+PRIME_SHIFT_DAYS: tuple = (107, 149, 227, 311)
 
 
 def circular_shift(s: pd.Series, days: int, bars_per_day: int = 24) -> pd.Series:

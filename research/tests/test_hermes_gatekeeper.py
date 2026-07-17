@@ -330,3 +330,169 @@ def test_evaluate_1d_horizon_not_multiple_of_24_raises(tmp_path, monkeypatch):
         evaluate(factor, ohlcv, daily_regime=pd.Series("bull", index=idx),
                  existing_and_dead=pd.DataFrame(index=idx), symbol="eth",
                  manifests_dir=tmp_path, cfg=GateConfig(interval="1D", horizon_h=5))
+
+
+def test_gross_ir_ignores_cost_while_net_ir_pays_it():
+    """DSR 的虛無假設是『零 alpha 下 gross SR 期望為 0』。成本是確定性的、
+    因子專屬的，不是搜尋的抽樣噪音 —— 混進 DSR 的變異數就毀掉它。"""
+    import numpy as np, pandas as pd
+    from research.hermes.gatekeeper import gross_ir, net_ir
+
+    idx = pd.date_range("2024-01-01", periods=500, freq="h", tz="UTC")
+    rng = np.random.default_rng(0)
+    ret1 = pd.Series(rng.standard_normal(500) * 0.01, index=idx)
+    weights = pd.Series(np.sign(rng.standard_normal(500)), index=idx)
+
+    g = gross_ir(weights, ret1)
+    n = net_ir(weights, ret1, cost_frac=0.0006)
+    assert np.isfinite(g) and np.isfinite(n)
+    assert g > n                       # 成本只會扣分
+
+
+def test_gross_ir_equals_net_ir_at_zero_cost():
+    import numpy as np, pandas as pd
+    from research.hermes.gatekeeper import gross_ir, net_ir
+
+    idx = pd.date_range("2024-01-01", periods=500, freq="h", tz="UTC")
+    rng = np.random.default_rng(1)
+    ret1 = pd.Series(rng.standard_normal(500) * 0.01, index=idx)
+    weights = pd.Series(rng.standard_normal(500), index=idx).clip(-1, 1)
+    assert gross_ir(weights, ret1) == pytest.approx(net_ir(weights, ret1, cost_frac=0.0))
+
+
+def test_gross_ir_is_undefined_on_a_flat_position():
+    import numpy as np, pandas as pd
+    from research.hermes.gatekeeper import gross_ir
+
+    idx = pd.date_range("2024-01-01", periods=500, freq="h", tz="UTC")
+    ret1 = pd.Series(np.linspace(0.001, 0.002, 500), index=idx)
+    assert np.isnan(gross_ir(pd.Series(0.0, index=idx), ret1))
+
+
+def _trial(md, gross=None, net=0.0, interval="1H"):
+    from research.lib.research_ledger import append_event
+    d = {"sr_per_bar": net, "interval": interval, "factor_id": "f"}
+    if gross is not None:
+        d["gross_sr_per_bar"] = gross
+    append_event(md, kind="factor_trial", symbol="eth", detail=d)
+
+
+def test_foundry_dsr_counts_legacy_trials_but_ignores_their_variance(tmp_path):
+    """The 39 legacy eth trials recorded NET Sharpe, whose spread tracks turnover
+    rather than search noise -- drop the variance. But we really did cast 39 times,
+    and that debt does not evaporate because the net was broken. Count them."""
+    from research.hermes.gatekeeper import foundry_dsr
+    for _ in range(39):
+        _trial(tmp_path, gross=None, net=-0.05)        # legacy: net only, wild spread
+    for g in (0.001, -0.001, 0.002, -0.002):
+        _trial(tmp_path, gross=g, net=g - 0.01)        # new: gross, tight spread
+
+    with_debt = foundry_dsr(0.02, "eth", "1H", tmp_path, T=20000)
+
+    # same variance sample, no legacy debt -> must be strictly more lenient
+    import shutil
+    clean = tmp_path / "clean"; clean.mkdir()
+    for g in (0.001, -0.001, 0.002, -0.002):
+        _trial(clean, gross=g, net=g - 0.01)
+    assert foundry_dsr(0.02, "eth", "1H", clean, T=20000) > with_debt
+
+
+def test_foundry_dsr_variance_uses_only_gross_rows(tmp_path):
+    """A legacy net row at -0.9 would blow up the variance if it leaked in."""
+    from research.hermes.gatekeeper import foundry_dsr
+    _trial(tmp_path, gross=None, net=-0.9)
+    for g in (0.001, -0.001, 0.002, -0.002):
+        _trial(tmp_path, gross=g)
+    assert foundry_dsr(0.02, "eth", "1H", tmp_path, T=20000) > 0.5
+
+
+def test_foundry_dsr_still_filters_by_interval(tmp_path):
+    from research.hermes.gatekeeper import foundry_dsr
+    for g in (0.5, -0.5, 0.6, -0.6):
+        _trial(tmp_path, gross=g, interval="15m")
+    assert foundry_dsr(0.02, "eth", "1H", tmp_path, T=20000) == 1.0   # no 1H trials
+
+
+def test_evaluate_feeds_dsr_the_gross_sharpe_and_the_sample_count(tmp_path, monkeypatch):
+    """T must be the observations that actually entered the estimate (n_samples),
+    not one year of bars."""
+    import research.hermes.gatekeeper as gk
+    seen = {}
+    monkeypatch.setattr(gk, "foundry_dsr",
+                        lambda best, sym, iv, md, T: seen.update(best=best, T=T) or 0.9)
+    # DSR is now computed lazily -- only once a factor clears every earlier gate,
+    # Task 5's net_ir gate included -- so reaching it requires this fixture to
+    # pass all of them. Verified directly: this fixture's real random-noise
+    # factor fails THREE of them on its own (turnover 0.68 > 0.5, weak gross_ic
+    # 0.029 < 0.03, net_ir -0.59 <= 0), none of which is what this test is
+    # about -- it only cares what DSR gets fed. Mock the gate-determining
+    # metrics to guaranteed-passing values and raise max_turnover, the same way
+    # the net_ir-gate tests construct a guaranteed-pass factor.
+    monkeypatch.setattr(gk, "gross_ic", lambda *a, **k: 0.10)
+    monkeypatch.setattr(gk, "net_ir", lambda *a, **k: 0.01)
+    idx = pd.date_range("2022-01-01", periods=400, freq="h", tz="UTC")
+    rng = np.random.default_rng(3)
+    ohlcv = pd.DataFrame({"close": 100 + np.cumsum(rng.standard_normal(400) * 0.1)}, index=idx)
+    factor = pd.Series(rng.standard_normal(400), index=idx)
+    res = gk.evaluate(factor, ohlcv, pd.Series("neutral", index=idx.normalize().unique()),
+                      pd.DataFrame(index=idx), "eth", tmp_path,
+                      gk.GateConfig(interval="1H", horizon_h=24, max_turnover=1.0))
+    assert seen["best"] == res.metrics["gross_ir"]     # gross, not net
+    assert seen["T"] == res.metrics["n_samples"]       # not bars_per_year (8760)
+
+
+def test_a_factor_that_loses_money_is_rejected_before_dsr(tmp_path, monkeypatch):
+    """DSR no longer sees cost, so something must still require profit. It runs
+    before DSR: it is cheap and deterministic, and there is nothing to say about
+    the significance of a factor that cannot pay for itself."""
+    import research.hermes.gatekeeper as gk
+    called = []
+    monkeypatch.setattr(gk, "foundry_dsr", lambda *a, **k: called.append(1) or 0.99)
+    monkeypatch.setattr(gk, "net_ir", lambda *a, **k: -0.01)
+    monkeypatch.setattr(gk, "gross_ir", lambda *a, **k: 0.05)
+    monkeypatch.setattr(gk, "gross_ic", lambda *a, **k: 0.10)
+    monkeypatch.setattr(gk, "nonoverlap_ic", lambda *a, **k: 0.09)
+
+    idx = pd.date_range("2022-01-01", periods=400, freq="h", tz="UTC")
+    ohlcv = pd.DataFrame({"close": np.linspace(100, 110, 400)}, index=idx)
+    res = gk.evaluate(pd.Series(np.arange(400.0), index=idx),
+                      ohlcv, pd.Series("neutral", index=idx.normalize().unique()),
+                      pd.DataFrame(index=idx), "eth", tmp_path,
+                      gk.GateConfig(interval="1H", horizon_h=24))
+    assert not res.passed
+    assert "net_ir" in res.rejection_reason
+    assert called == [], "DSR must not be asked about a factor that loses money"
+
+
+def test_a_profitable_significant_factor_still_passes(tmp_path, monkeypatch):
+    import research.hermes.gatekeeper as gk
+    monkeypatch.setattr(gk, "foundry_dsr", lambda *a, **k: 0.99)
+    monkeypatch.setattr(gk, "net_ir", lambda *a, **k: 0.02)
+    monkeypatch.setattr(gk, "gross_ir", lambda *a, **k: 0.05)
+    monkeypatch.setattr(gk, "gross_ic", lambda *a, **k: 0.10)
+    monkeypatch.setattr(gk, "nonoverlap_ic", lambda *a, **k: 0.09)
+    idx = pd.date_range("2022-01-01", periods=400, freq="h", tz="UTC")
+    ohlcv = pd.DataFrame({"close": np.linspace(100, 110, 400)}, index=idx)
+    res = gk.evaluate(pd.Series(np.arange(400.0), index=idx),
+                      ohlcv, pd.Series("neutral", index=idx.normalize().unique()),
+                      pd.DataFrame(index=idx), "eth", tmp_path,
+                      gk.GateConfig(interval="1H", horizon_h=24))
+    assert res.passed
+
+
+def test_a_nan_net_ir_is_rejected_not_passed(tmp_path, monkeypatch):
+    """nan <= 0 is False in Python -- a flat/degenerate position must not sail
+    through on that."""
+    import research.hermes.gatekeeper as gk
+    monkeypatch.setattr(gk, "foundry_dsr", lambda *a, **k: 0.99)
+    monkeypatch.setattr(gk, "net_ir", lambda *a, **k: float("nan"))
+    monkeypatch.setattr(gk, "gross_ir", lambda *a, **k: 0.05)
+    monkeypatch.setattr(gk, "gross_ic", lambda *a, **k: 0.10)
+    monkeypatch.setattr(gk, "nonoverlap_ic", lambda *a, **k: 0.09)
+    idx = pd.date_range("2022-01-01", periods=400, freq="h", tz="UTC")
+    ohlcv = pd.DataFrame({"close": np.linspace(100, 110, 400)}, index=idx)
+    res = gk.evaluate(pd.Series(np.arange(400.0), index=idx),
+                      ohlcv, pd.Series("neutral", index=idx.normalize().unique()),
+                      pd.DataFrame(index=idx), "eth", tmp_path,
+                      gk.GateConfig(interval="1H", horizon_h=24))
+    assert not res.passed and "net_ir" in res.rejection_reason
